@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "697ea9be_0a21a4d8",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 29551
+      },
+      "writtenOn": "2024-12-25T07:31:35Z",
+      "side": 1,
+      "message": "Hi, this is the upstream patch merged from android-4.19-stable 4.19.323, tested on my 4.9 (xiaomi-grus), encryption and data (f2fs) are loaded correctly, no data corruption issues.",
+      "revId": "7c2cf5ab271b92f7a0248d28862e50814146e80f",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
