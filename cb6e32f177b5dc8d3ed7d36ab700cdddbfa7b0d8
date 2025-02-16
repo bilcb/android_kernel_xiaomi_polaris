@@ -16,6 +16,24 @@
       "message": "Fixes build on oneplus after:\nhttps://github.com/LineageOS/android_kernel_qcom_sdm845/commit/ae8164e13f54998c894ce3923b335c3366047d16\n\nAlternatively we could pick this:\nhttps://github.com/LineageOS/android_kernel_motorola_sm7250/commit/08c5ba7b570b8d663ca61bc12a7d5e366e941799",
       "revId": "cb6e32f177b5dc8d3ed7d36ab700cdddbfa7b0d8",
       "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "04037ef3_e18648a0",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4550
+      },
+      "writtenOn": "2025-02-16T20:24:05Z",
+      "side": 1,
+      "message": "I think the second commit is preferrable. Isn\u0027t there a fix for this in newer kernels as well?",
+      "parentUuid": "482f8398_4ff9df0f",
+      "revId": "cb6e32f177b5dc8d3ed7d36ab700cdddbfa7b0d8",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
     }
   ]
 }
