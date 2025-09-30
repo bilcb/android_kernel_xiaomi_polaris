@@ -16,6 +16,24 @@
       "message": "If you want to fix up some code use the fixup! prefix with the main line of the commit message that involves the fix, or even just go back and fix the commit properly since this is all staged right now.",
       "revId": "3dbf0c7e29fe7970955e6fbae8db1691c448bd0c",
       "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "2299dd63_08250c2a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 28223
+      },
+      "writtenOn": "2025-09-30T19:13:46Z",
+      "side": 1,
+      "message": "it should not be a fixup; ideally, you’d properly backport the changes",
+      "parentUuid": "d5a11b44_4a362df5",
+      "revId": "3dbf0c7e29fe7970955e6fbae8db1691c448bd0c",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
     }
   ]
 }
