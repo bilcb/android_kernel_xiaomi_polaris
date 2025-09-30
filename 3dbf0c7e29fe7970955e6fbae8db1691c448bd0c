@@ -52,6 +52,23 @@
       "parentUuid": "2299dd63_08250c2a",
       "revId": "3dbf0c7e29fe7970955e6fbae8db1691c448bd0c",
       "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
+      "unresolved": true,
+      "key": {
+        "uuid": "8c7c95cb_38da149b",
+        "filename": "include/uapi/linux/bpf.h",
+        "patchSetId": 1
+      },
+      "lineNbr": 660,
+      "author": {
+        "id": 34512
+      },
+      "writtenOn": "2025-09-30T20:10:35Z",
+      "side": 1,
+      "message": "Please don\u0027t do this, if you have done a 1:1 backport then this NEEDS to be with the commit where the corresponding BPF code was introduced, also if you didn\u0027t already know this section is VERY position dependant since it interacts with userspace, so also please also make sure the correct order is kept (saying this because of how setsockopt and other such functions moved)",
+      "revId": "3dbf0c7e29fe7970955e6fbae8db1691c448bd0c",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
     }
   ]
 }
