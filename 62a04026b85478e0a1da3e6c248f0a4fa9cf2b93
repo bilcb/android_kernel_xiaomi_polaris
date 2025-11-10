@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "377bfaaf_baef2b32",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 19252
+      },
+      "writtenOn": "2025-11-10T02:27:07Z",
+      "side": 1,
+      "message": "../../../../../../kernel/asus/sdm845/kernel/bpf/core.c:1490:15: error: incompatible function pointer types assigning to \u0027unsigned int (*)(const struct sk_buff *, const struct bpf_insn *)\u0027 from \u0027unsigned int (*)(const void *, const struct bpf_insn *)\u0027 [-Wincompatible-function-pointer-types]\n 1490 |         fp-\u003ebpf_func \u003d interpreters[(round_up(stack_depth, 32) / 32) - 1];\n      |                      ^ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n1 error generated.",
+      "revId": "62a04026b85478e0a1da3e6c248f0a4fa9cf2b93",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
