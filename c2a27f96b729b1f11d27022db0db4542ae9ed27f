@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "7f7c6ad1_14b664dc",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 19252
+      },
+      "writtenOn": "2025-11-10T02:43:18Z",
+      "side": 1,
+      "message": "../../../../../../kernel/asus/sdm845/drivers/net/bonding/bond_main.c:2333:2: error: implicit declaration of function \u0027netdev_for_each_all_upper_dev_rcu\u0027 [-Werror,-Wimplicit-function-declaration]\n 2333 |         netdev_for_each_all_upper_dev_rcu(bond-\u003edev, upper, iter) {\n      |         ^\n../../../../../../kernel/asus/sdm845/drivers/net/bonding/bond_main.c:2333:2: note: did you mean \u0027netdev_walk_all_upper_dev_rcu\u0027?\n../../../../../../kernel/asus/sdm845/include/linux/netdevice.h:3856:5: note: \u0027netdev_walk_all_upper_dev_rcu\u0027 declared here\n 3856 | int netdev_walk_all_upper_dev_rcu(struct net_device *dev,\n      |     ^\n../../../../../../kernel/asus/sdm845/drivers/net/bonding/bond_main.c:2333:59: error: expected \u0027;\u0027 after expression\n 2333 |         netdev_for_each_all_upper_dev_rcu(bond-\u003edev, upper, iter) {\n      |                                                                  ^\n      |                                                                  ;\n../../../../../../kernel/asus/sdm845/drivers/net/bonding/bond_main.c:2336:4: error: \u0027break\u0027 statement not in loop or switch statement\n 2336 |                         break;\n      |                         ^\n3 errors generated.",
+      "revId": "c2a27f96b729b1f11d27022db0db4542ae9ed27f",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
