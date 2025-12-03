@@ -33,6 +33,23 @@
       "message": "sorry, forgot to CR-1 on my previous comment",
       "revId": "62a04026b85478e0a1da3e6c248f0a4fa9cf2b93",
       "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "f19a9046_f3f78099",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 19252
+      },
+      "writtenOn": "2025-12-03T19:43:23Z",
+      "side": 1,
+      "message": "I\u0027m not very good at code tbh so I\u0027m unsure how to fix it myself sorry \n\nHopefully someone can finish what you started though, I would love to one day have my Asus Zenfone 5z on LOS 23 and beyond and afaik, I just need the BPF backports",
+      "revId": "62a04026b85478e0a1da3e6c248f0a4fa9cf2b93",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
     }
   ],
   "submitRequirementResults": []
