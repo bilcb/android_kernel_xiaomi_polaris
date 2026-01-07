@@ -16,6 +16,23 @@
       "message": "ask mike or bruno, I have no idea on this.",
       "revId": "0742881c5a13a33f563b71b7af67049ea3897bbe",
       "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "1e82a21c_b2bbc33a",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 4550
+      },
+      "writtenOn": "2026-01-07T12:57:44Z",
+      "side": 1,
+      "message": "What does this chain achieve?",
+      "revId": "0742881c5a13a33f563b71b7af67049ea3897bbe",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
     }
   ]
 }
