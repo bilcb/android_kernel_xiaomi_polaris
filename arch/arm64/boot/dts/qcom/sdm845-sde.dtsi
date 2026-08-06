@@ -16,10 +16,12 @@
 		compatible = "qcom,sde-kms";
 		reg = <0x0ae00000 0x81d40>,
 		      <0x0aeb0000 0x2008>,
-		      <0x0aeac000 0xf0>;
+		      <0x0aeac000 0xf0>,
+		      <0x0ae06000 0x800>;
 		reg-names = "mdp_phys",
 			"vbif_phys",
-			"regdma_phys";
+			"regdma_phys",
+			"vbif_nrt_phys";
 
 		clocks =
 			<&clock_gcc GCC_DISP_AHB_CLK>,
@@ -490,8 +492,10 @@
 		compatible = "qcom,dsi-phy-v3.0";
 		label = "dsi-phy-0";
 		cell-index = <0>;
-		reg = <0xae94400 0x7c0>;
-		reg-names = "dsi_phy";
+		reg = <0xae94400 0x7c0>,
+		      <0xae94200 0x100>;
+		reg-names = "dsi_phy",
+			"dyn_refresh_base";
 		gdsc-supply = <&mdss_core_gdsc>;
 		vdda-0p9-supply = <&pm8998_l1>;
 		qcom,platform-strength-ctrl = [55 03
@@ -523,8 +527,10 @@
 		compatible = "qcom,dsi-phy-v3.0";
 		label = "dsi-phy-1";
 		cell-index = <1>;
-		reg = <0xae96400 0x7c0>;
-		reg-names = "dsi_phy";
+		reg = <0xae96400 0x7c0>,
+		      <0xae96200 0x100>;
+		reg-names = "dsi_phy",
+			"dyn_refresh_base";
 		gdsc-supply = <&mdss_core_gdsc>;
 		vdda-0p9-supply = <&pm8998_l1>;
 		qcom,platform-strength-ctrl = [55 03
