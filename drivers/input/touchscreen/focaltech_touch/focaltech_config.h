@@ -102,7 +102,7 @@
  * show debug log info
  * enable it for debug, disable it for release
  */
-#define FTS_DEBUG_EN                            1
+#define FTS_DEBUG_EN                            0
 
 /*
  * Linux MultiTouch Protocol
@@ -129,12 +129,6 @@
 #define FTS_ESDCHECK_EN                         0
 
 /*
- * Production test enable
- * 1: enable, 0:disable(default)
- */
-#define FTS_TEST_EN                             1
-
-/*
  * Glove mode enable
  * 1: enable, 0:disable(default)
  */
@@ -144,6 +138,11 @@
  * 1: enable, 0:disable(default)
  */
 #define FTS_COVER_EN                            0
+/*
+ * psensor enable
+ * 1: enable, 0:disable(default)
+ */
+#define FTS_PSENSOR_EN                          0
 /*
  * Charger enable
  * 1: enable, 0:disable(default)
@@ -194,10 +193,8 @@
  * vendor_id(s) for vendor(s) to be compatible with.
  * a confirmation of vendor_id(s) is recommended.
  * FTS_VENDOR_ID = PANEL_ID << 8 + VENDOR_ID
- * FTS_GET_VENDOR_ID_NUM == 0/1, no check vendor id, you may ignore them
- * FTS_GET_VENDOR_ID_NUM > 1, compatible with FTS_VENDOR_ID
- * FTS_GET_VENDOR_ID_NUM >= 2, compatible with FTS_VENDOR_ID2
- * FTS_GET_VENDOR_ID_NUM >= 3, compatible with FTS_VENDOR_ID3
+ * NOTE: firmware is selected by project_name (FW_UPDATE_BY_VENDOR_ID
+ * is not defined), vendor ids are informational only.
  */
 #define FTS_VENDOR_ID                          0x0000
 #define FTS_VENDOR_ID2                         0x0000
@@ -206,19 +203,17 @@
 /*
  * FW.i file for auto upgrade, you must replace it with your own
  * define your own fw_file, the sample one to be replaced is invalid
- * NOTE: if FTS_GET_VENDOR_ID_NUM > 1, it's the fw corresponding with FTS_VENDOR_ID
+ * NOTE: firmware is selected by project_name match
  */
 #define FTS_UPGRADE_FW_FILE_E10                      "include/firmware/fw_ft8719_e10.i"
 #define FTS_UPGRADE_FW_FILE_E5                      "include/firmware/fw_ft3518_e5.i"
 
 /*
- * if FTS_GET_VENDOR_ID_NUM >= 2, fw corrsponding with FTS_VENDOR_ID2
  * define your own fw_file, the sample one is invalid
  */
 #define FTS_UPGRADE_FW2_FILE                     "include/firmware/fw_sample.i"
 
 /*
- * if FTS_GET_VENDOR_ID_NUM >= 3, fw corrsponding with FTS_VENDOR_ID3
  * define your own fw_file, the sample one is invalid
  */
 #define FTS_UPGRADE_FW3_FILE                     "include/firmware/fw_sample.i"

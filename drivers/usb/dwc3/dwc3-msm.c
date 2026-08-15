@@ -4613,7 +4613,6 @@ static int get_psy_type(struct dwc3_msm *mdwc)
 	return pval.intval;
 }
 
-#define ENUMERATE_MA		500
 static int dwc3_msm_gadget_vbus_draw(struct dwc3_msm *mdwc, unsigned int mA)
 {
 	union power_supply_propval pval = {0};
@@ -4630,8 +4629,7 @@ static int dwc3_msm_gadget_vbus_draw(struct dwc3_msm *mdwc, unsigned int mA)
 
 	if (mdwc->max_power == mA
 			|| (psy_type == POWER_SUPPLY_TYPE_USB_CDP)
-			|| ((psy_type != POWER_SUPPLY_TYPE_USB)
-				&& (mA != ENUMERATE_MA)))
+			|| (psy_type != POWER_SUPPLY_TYPE_USB))
 		return 0;
 
 	dev_info(mdwc->dev, "Avail curr from USB = %u\n", mA);

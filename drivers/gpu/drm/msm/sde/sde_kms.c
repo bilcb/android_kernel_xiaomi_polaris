@@ -2077,6 +2077,7 @@ static void _sde_kms_hw_destroy(struct sde_kms *sde_kms,
 
 	/* safe to call these more than once during shutdown */
 	_sde_debugfs_destroy(sde_kms);
+	sde_reg_dma_deinit();
 	_sde_kms_mmu_destroy(sde_kms);
 
 	if (sde_kms->iclient) {
@@ -2116,8 +2117,6 @@ static void _sde_kms_hw_destroy(struct sde_kms *sde_kms,
 	if (sde_kms->mmio)
 		msm_iounmap(pdev, sde_kms->mmio);
 	sde_kms->mmio = NULL;
-
-	sde_reg_dma_deinit();
 }
 
 int sde_kms_mmu_detach(struct sde_kms *sde_kms, bool secure_only)
@@ -3441,17 +3440,17 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 
 	sde_kms->splash_data.resource_handoff_pending = true;
 
+	rc = _sde_kms_mmu_init(sde_kms);
+	if (rc) {
+		SDE_ERROR("sde_kms_mmu_init failed: %d\n", rc);
+		goto power_error;
+	}
+
 	/* Initialize reg dma block which is a singleton */
 	rc = sde_reg_dma_init(sde_kms->reg_dma, sde_kms->catalog,
 			sde_kms->dev);
 	if (rc) {
 		SDE_ERROR("failed: reg dma init failed\n");
-		goto power_error;
-	}
-
-	rc = _sde_kms_mmu_init(sde_kms);
-	if (rc) {
-		SDE_ERROR("sde_kms_mmu_init failed: %d\n", rc);
 		goto power_error;
 	}
 	sde_kms->hw_mdp = sde_rm_get_mdp(&sde_kms->rm);

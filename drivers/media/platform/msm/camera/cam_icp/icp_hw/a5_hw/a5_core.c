@@ -456,7 +456,8 @@ int cam_a5_process_cmd(void *device_priv, uint32_t cmd_type,
 			rc = cam_cpas_start(core_info->cpas_handle,
 					&cpas_vote->ahb_vote,
 					&cpas_vote->axi_vote);
-			core_info->cpas_start = true;
+			if (!rc)
+				core_info->cpas_start = true;
 		}
 		break;
 	}

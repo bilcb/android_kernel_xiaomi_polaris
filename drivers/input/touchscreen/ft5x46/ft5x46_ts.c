@@ -222,7 +222,7 @@ struct ft5x46_mode_switch {
 static struct ft5x46_keypad_data *vir_keypad;
 struct ft5x46_data *ft_data;
 
-static int ft5x46_recv_byte(struct ft5x46_data *ft5x46, u8 len, ...)
+static int ft5x46_recv_byte(struct ft5x46_data *ft5x46, unsigned int len, ...)
 {
 	int error = 0;
 	va_list varg;
@@ -252,7 +252,7 @@ static int ft5x46_recv_block(struct ft5x46_data *ft5x46,
 	return ft5x46->bops->recv(ft5x46->dev, buf, len);
 }
 
-static int ft5x46_send_byte(struct ft5x46_data *ft5x46, u8 len, ...)
+static int ft5x46_send_byte(struct ft5x46_data *ft5x46, unsigned int len, ...)
 {
 	va_list varg;
 	u8 i, buf[len];
@@ -662,6 +662,12 @@ static int ft5x46_load_firmware(struct ft5x46_data *ft5x46,
 		}
 	}
 
+	if (firmware->size < 12) {
+		dev_err(ft5x46->dev, "firmware size %d too small\n",
+			firmware->size);
+		return -EINVAL;
+	}
+
 	if (firmware->data[firmware->size - 12] == 30)
 		is_5336_fwsize_30 = true;
 	else
@@ -1054,7 +1060,7 @@ static u8 ft8716_get_factory_id(struct ft5x46_data *ft5x46)
 	int j, error = 0;
 	struct ft5x46_rd_flash_packet packet;
 	u8 val1, val2, flash_vendor_id;
-	u8 vid;
+	u8 vid = 0;
 
 	error = ft8716_load_pramboot(ft5x46, ft8716_pramboot, sizeof(ft8716_pramboot));
 	if (error)
@@ -1357,6 +1363,12 @@ static int ft8716_load_firmware(struct ft5x46_data *ft5x46,
 	}
 
 	/* step 1: check firmware id is different */
+	if (firmware->size <= FT8716_FIRMWARE_VERION) {
+		dev_err(ft5x46->dev, "firmware size %d too small\n",
+			firmware->size);
+		ft8716_reset_firmware(ft5x46);
+		return -EINVAL;
+	}
 
 	if (id == firmware->data[FT8716_FIRMWARE_VERION]) {
 		ft8716_reset_firmware(ft5x46);
@@ -1618,7 +1630,7 @@ static int ft5x46_read_touchdata(struct ft5x46_data *ft5x46)
 
 	for (i = 0; i < FT5X0X_MAX_FINGER; i++) {
 		point_id = (buf[FT5X46_TOUCH_LENGTH * i + FT5X46_ID_POS]) >> 4;
-		if (point_id >= FT5X46_MAX_ID)
+		if (point_id >= FT5X0X_MAX_FINGER)
 			break;
 		else
 			event->touch_point++;
@@ -1968,13 +1980,15 @@ static ssize_t ft5x46_vkeys_show(struct kobject *kobj,
 	int count = 0;
 
 	for (i = 0; i < vir_keypad->length; i++) {
-		cnt = snprintf(buf, PAGE_SIZE - count, "0x01:%d:%d:%d:%d:%d\n",
+		cnt = snprintf(buf + count, PAGE_SIZE - count,
+				"0x01:%d:%d:%d:%d:%d\n",
 				vir_keypad->keymap[i * 5 + 0],
 				vir_keypad->keymap[i * 5 + 1],
 				vir_keypad->keymap[i * 5 + 2],
 				vir_keypad->keymap[i * 5 + 3],
 				vir_keypad->keymap[i * 5 + 4]);
-		buf += cnt;
+		if (cnt >= PAGE_SIZE - count)
+			break;
 		count += cnt;
 	}
 
@@ -2194,6 +2208,10 @@ static int ft5x46_updatefw_with_filename(struct ft5x46_data *ft5x46,
 	error = request_firmware(&fw, filename, ft5x46->dev);
 	if (!error) {
 		firmware.data = kmalloc((int)fw->size, GFP_KERNEL);
+		if (!firmware.data) {
+			release_firmware(fw);
+			return -ENOMEM;
+		}
 		memcpy(firmware.data, fw->data, (int)fw->size);
 		firmware.size = fw->size;
 
@@ -2305,6 +2323,12 @@ static int ft5x46_get_rawData(struct ft5x46_data *ft5x46_ts,
 	int tx_num = pdata->testdata[index].tx_num;
 	int rx_num = pdata->testdata[index].rx_num;
 
+	if (rx_num > FT5X0X_MAX_RX_NUM) {
+		dev_err(ft5x46_ts->dev, "rx_num %d exceeds max %d\n",
+			rx_num, FT5X0X_MAX_RX_NUM);
+		return -EINVAL;
+	}
+
 	error = ft5x46_read_byte(ft5x46_ts, FT5X0X_REG_DEVIDE_MODE, &val);
 	if (error < 0) {
 		dev_err(ft5x46_ts->dev, "ERROR: Read mode failed!\n");
@@ -2392,15 +2416,19 @@ static ssize_t ft5x46_rawdata_show(struct device *dev,
 	}
 
 	error = ft5x46_get_rawData(ft5x46, rawdata);
-	if (error < 0)
-		sprintf(buf, "%s", "Could not get rawdata\n");
-	else {
+	if (error < 0) {
+		num_read_chars = snprintf(buf, PAGE_SIZE, "%s",
+				"Could not get rawdata\n");
+	} else {
 		for (i = 0; i < tx_num; i++) {
-			for (j = 0; j < rx_num; j++) {
-				num_read_chars += sprintf(&buf[num_read_chars],
-								"%u ", rawdata[i * rx_num + j]);
+			for (j = 0; j < rx_num &&
+					num_read_chars < PAGE_SIZE - 16; j++) {
+				num_read_chars += snprintf(&buf[num_read_chars],
+						PAGE_SIZE - num_read_chars,
+						"%u ", rawdata[i * rx_num + j]);
 			}
-			buf[num_read_chars-1] = '\n';
+			if (num_read_chars > 0 && num_read_chars < PAGE_SIZE)
+				buf[num_read_chars - 1] = '\n';
 		}
 	}
 
@@ -2434,7 +2462,7 @@ unsigned int ft5x46_do_selftest(struct ft5x46_data *ft5x46)
 	/* 1. test raw data */
 	error = ft5x46_get_rawData(ft5x46, testdata);
 	if (error)
-		return 0;
+		goto out;
 
 	if (tx_num > rx_num)
 		final_tx_num -= 1;
@@ -2445,11 +2473,14 @@ unsigned int ft5x46_do_selftest(struct ft5x46_data *ft5x46)
 		for (j = 0; j < final_rx_num; j++) {
 			if (testdata[i * rx_num + j] < pdata->raw_min ||
 				testdata[i * rx_num +j] > pdata->raw_max)
-				return 0;
+				goto out;
 		}
 	}
 
-	return 1;
+	error = 1;
+out:
+	kfree(testdata);
+	return error;
 }
 
 static ssize_t ft5x46_selftest_store(struct device *dev,
@@ -2475,7 +2506,8 @@ static ssize_t ft5x46_selftest_store(struct device *dev,
 		goto end;
 	}
 
-	ft5x46->test_result = ft5x46_do_selftest(ft5x46);
+	error = ft5x46_do_selftest(ft5x46);
+	ft5x46->test_result = error < 0 ? 0 : error;
 
 	error = ft5x46_enter_work(ft5x46);
 	if (error < 0)
@@ -3397,6 +3429,12 @@ static int ft5x46_parse_dt(struct device *dev,
 	pdata->cfg_size = num_fw;
 	j = 0;
 	for_each_child_of_node(np, sub_np) {
+		if (j >= num_fw) {
+			dev_err(dev, "too many child nodes for firmware array\n");
+			of_node_put(sub_np);
+			break;
+		}
+
 		rc = of_property_read_u32(sub_np, "ft5x46_i2c,chip", &temp_val);
 		if (rc) {
 			dev_err(dev, "can't get chip id\n");
@@ -3541,6 +3579,10 @@ static ssize_t ft5x46_apk_debug_read(struct file *file, char __user *buffer,
 	u8 val;
 
 	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	if (buflen > PAGE_SIZE)
+		buflen = PAGE_SIZE;
 
 	ft5x46_disable_irq(ft5x46);
 	mutex_lock(&ft5x46->mutex);
@@ -3583,11 +3625,16 @@ static ssize_t ft5x46_apk_debug_read(struct file *file, char __user *buffer,
 	ft5x46_enable_irq(ft5x46);
 
 	if (ret == 0) {
-		ret = copy_to_user(buffer, buf, min((int)buflen, num_read_chars));
+		if (copy_to_user(buffer, buf, min((int)buflen, num_read_chars))) {
+			kfree(buf);
+			return -EFAULT;
+		}
 	}
 
 	kfree(buf);
-	return ret;
+	if (ret < 0)
+		return ret;
+	return min((int)buflen, num_read_chars);
 }
 
 #define FT5X46_MAX_FIRMWARE_LENGTH 128
@@ -3600,6 +3647,9 @@ static ssize_t ft5x46_apk_debug_write(struct file *file, const char __user *buff
 	char upgrade_file_name[FT5X46_MAX_FIRMWARE_LENGTH];
 	int ret = 0;
 
+	if (buflen == 0)
+		return -EINVAL;
+
 	if (copy_from_user(&writebuf, buffer,
 		((buflen < FT5X0X_PACKET_LENGTH) ? buflen : FT5X0X_PACKET_LENGTH))) {
 		dev_err(ft5x46->dev, "%s: copy from user failed\n", __func__);
@@ -3611,8 +3661,9 @@ static ssize_t ft5x46_apk_debug_write(struct file *file, const char __user *buff
 		case FT5X46_PROC_UPGRADE:
 			memset(upgrade_file_name, 0, FT5X46_MAX_FIRMWARE_LENGTH);
 			snprintf(upgrade_file_name, FT5X46_MAX_FIRMWARE_LENGTH,
-				"%s", writebuf + 1);
-			upgrade_file_name[buflen - 1] = '\0';
+				"%.*s", (int)min(buflen - 1,
+					(size_t)(FT5X46_MAX_FIRMWARE_LENGTH - 1)),
+				writebuf + 1);
 			dev_info(ft5x46->dev, "%s: upgrade file name: %s\n",
 				__func__, upgrade_file_name);
 			ret = ft5x46_updatefw_with_filename(ft5x46, upgrade_file_name, NULL);
@@ -3653,7 +3704,8 @@ static ssize_t ft5x46_apk_debug_write(struct file *file, const char __user *buff
 		case FT5X46_PROC_READ_DATA:
 		case FT5X46_PROC_WRITE_DATA:
 			dev_info(ft5x46->dev, "%s: Read/Write data\n", __func__);
-			ret = ft5x46_send_block(ft5x46, writebuf + 1, buflen - 1);
+			ret = ft5x46_send_block(ft5x46, writebuf + 1,
+				(int)min(buflen - 1, (size_t)(FT5X0X_PACKET_LENGTH - 1)));
 			if (ret < 0) {
 				dev_err(ft5x46->dev, "%s: read/write data failed\n", __func__);
 				return ret;
@@ -3674,7 +3726,7 @@ static const struct file_operations ft5x46_proc_operations = {
 
 static int ft5x46_create_apk_debug_channel(struct ft5x46_data *ft5x46)
 {
-	ft5x46_proc_entry = proc_create(FT5X46_PROC_NAME, 0777, NULL, &ft5x46_proc_operations);
+	ft5x46_proc_entry = proc_create(FT5X46_PROC_NAME, 0644, NULL, &ft5x46_proc_operations);
 	if (!ft5x46_proc_entry) {
 		dev_err(ft5x46->dev, "Unable to create proc entry\n");
 		return -ENOMEM;
@@ -3795,6 +3847,7 @@ failed:
 	cancel_delayed_work_sync(&ft5x46->prox_enable_delayed_work);
 #endif
 	cancel_delayed_work_sync(&ft5x46->noise_filter_delayed_work);
+	destroy_workqueue(ft5x46->lcd_esdcheck_workqueue);
 	power_supply_unreg_notifier(&ft5x46->power_supply_notifier);
 	if (ft5x46->vkeys_dir)
 		sysfs_remove_file(ft5x46->vkeys_dir, &ft5x46->vkeys_attr.attr);
@@ -3869,12 +3922,14 @@ static ssize_t tpdbg_read(struct file *file, char __user *buf, size_t size, loff
 	if (pos >= len)
 		return 0;
 
-	if (copy_to_user(buf, str, len))
+	if (size < len - pos)
+		len = pos + size;
+	if (copy_to_user(buf, str + pos, len - pos))
 		return -EFAULT;
 
-	*ppos = pos + len;
+	*ppos = len;
 
-	return len;
+	return len - pos;
 }
 
 static ssize_t tpdbg_write(struct file *file, const char __user *buf, size_t size, loff_t *ppos)
@@ -3944,12 +3999,14 @@ static ssize_t tp_ic_vendor_read(struct file *file, char __user *buf, size_t siz
 	if (pos >= len)
 		return 0;
 
-	if (copy_to_user(buf, str, len))
+	if (size < len - pos)
+		len = pos + size;
+	if (copy_to_user(buf, str + pos, len - pos))
 		return -EFAULT;
 
-	*ppos = pos + len;
+	*ppos = len;
 
-	return len;
+	return len - pos;
 }
 
 static const struct file_operations tp_ic_vendor_operations = {
@@ -4344,7 +4401,7 @@ struct ft5x46_data *ft5x46_probe(struct device *dev,
 	ft5x46->lcd_esdcheck_workqueue = create_workqueue("touch_lcd_esdcheck_wq");
 	if (!ft5x46->lcd_esdcheck_workqueue) {
 		dev_err(dev, "Failed to create lcd esd workqueue\n");
-		goto err_sysfs_create_virtualkeys;
+		goto err_power_supply_notifier;
 	}
 #ifdef CONFIG_TOUCHSCREEN_FT5X46P_PROXIMITY
 	INIT_DELAYED_WORK(&ft5x46->prox_enable_delayed_work,
@@ -4379,11 +4436,14 @@ struct ft5x46_data *ft5x46_probe(struct device *dev,
 
 	return ft5x46;
 
-#ifdef FT5X46_APK_DEBUG_CHANNEL
+err_power_supply_notifier:
+	power_supply_unreg_notifier(&ft5x46->power_supply_notifier);
 err_sysfs_create_virtualkeys:
+#ifdef FT5X46_APK_DEBUG_CHANNEL
+	ft5x46_release_apk_debug_channel(ft5x46);
+#endif
 	if (ft5x46->vkeys_dir)
 		sysfs_remove_file(ft5x46->vkeys_dir, &ft5x46->vkeys_attr.attr);
-#endif
 err_put_vkeys_dir:
 	kobject_put(ft5x46->vkeys_dir);
 err_configure_sleep:
@@ -4463,6 +4523,7 @@ void ft5x46_remove(struct ft5x46_data *ft5x46)
 #endif
 	cancel_delayed_work_sync(&ft5x46->noise_filter_delayed_work);
 	cancel_delayed_work_sync(&ft5x46->lcd_esdcheck_work);
+	destroy_workqueue(ft5x46->lcd_esdcheck_workqueue);
 	power_supply_unreg_notifier(&ft5x46->power_supply_notifier);
 	if (ft5x46->vkeys_dir)
 		sysfs_remove_file(ft5x46->vkeys_dir, &ft5x46->vkeys_attr.attr);
@@ -4471,6 +4532,10 @@ void ft5x46_remove(struct ft5x46_data *ft5x46)
 #ifdef FT5X46_APK_DEBUG_CHANNEL
 	ft5x46_release_apk_debug_channel(ft5x46);
 #endif
+	debugfs_remove_recursive(ft5x46->debugfs);
+	debugfs_remove_recursive(ft5x46->tpfs);
+	remove_proc_entry("tp_fw_version", NULL);
+	remove_proc_entry("tp_lockdown_info", NULL);
 	sysfs_remove_group(&ft5x46->dev->kobj, &ft5x46_attr_group);
 	free_irq(ft5x46->irq, ft5x46);
 #ifdef CONFIG_TOUCHSCREEN_FT5X46P_PROXIMITY

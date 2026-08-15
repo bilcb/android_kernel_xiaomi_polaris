@@ -1932,6 +1932,7 @@ static void sde_cp_ad_set_prop(struct sde_crtc *sde_crtc,
 	u32 num_mixers = sde_crtc->num_mixers;
 	int i = 0, ret = 0;
 
+	memset(&hw_cfg, 0, sizeof(hw_cfg));
 	hw_cfg.num_of_mixers = sde_crtc->num_mixers;
 
 	for (i = 0; i < num_mixers && !ret; i++) {

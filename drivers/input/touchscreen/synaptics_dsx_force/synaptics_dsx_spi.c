@@ -338,7 +338,7 @@ static int synaptics_rmi4_spi_set_page(struct synaptics_rmi4_data *rmi4_data,
 			rmi4_data->hw_if->board_data;
 
 	page = ((addr >> 8) & MASK_8BIT);
-	if ((page >> 7) == (rmi4_data->current_page >> 7))
+	if (page == rmi4_data->current_page)
 		return PAGE_SELECT_LEN;
 
 	spi_message_init(&msg);
@@ -561,13 +561,14 @@ static struct platform_device *synaptics_dsx_spi_device;
 static void synaptics_rmi4_spi_dev_release(struct device *dev)
 {
 	kfree(synaptics_dsx_spi_device);
+	synaptics_dsx_spi_device = NULL;
 
 	return;
 }
 
 static int synaptics_rmi4_spi_probe(struct spi_device *spi)
 {
-	int retval;
+	int retval = -ENOMEM;
 
 	if (spi->master->flags & SPI_MASTER_HALF_DUPLEX) {
 		dev_err(&spi->dev,
@@ -595,7 +596,7 @@ static int synaptics_rmi4_spi_probe(struct spi_device *spi)
 			dev_err(&spi->dev,
 					"%s: Failed to allocate memory for board data\n",
 					__func__);
-			return -ENOMEM;
+			goto err_free_spi_device;
 		}
 		hw_if.board_data->cap_button_map = devm_kzalloc(&spi->dev,
 				sizeof(struct synaptics_dsx_button_map),
@@ -604,7 +605,7 @@ static int synaptics_rmi4_spi_probe(struct spi_device *spi)
 			dev_err(&spi->dev,
 					"%s: Failed to allocate memory for 0D button map\n",
 					__func__);
-			return -ENOMEM;
+			goto err_free_spi_device;
 		}
 		hw_if.board_data->vir_button_map = devm_kzalloc(&spi->dev,
 				sizeof(struct synaptics_dsx_button_map),
@@ -613,9 +614,15 @@ static int synaptics_rmi4_spi_probe(struct spi_device *spi)
 			dev_err(&spi->dev,
 					"%s: Failed to allocate memory for virtual button map\n",
 					__func__);
-			return -ENOMEM;
+			goto err_free_spi_device;
 		}
-		parse_dt(&spi->dev, hw_if.board_data);
+		retval = parse_dt(&spi->dev, hw_if.board_data);
+		if (retval < 0) {
+			dev_err(&spi->dev,
+					"%s: Failed to parse device tree\n",
+					__func__);
+			goto err_free_spi_device;
+		}
 	}
 #else
 	hw_if.board_data = spi->dev.platform_data;
@@ -631,7 +638,7 @@ static int synaptics_rmi4_spi_probe(struct spi_device *spi)
 		dev_err(&spi->dev,
 				"%s: Failed to perform SPI setup\n",
 				__func__);
-		return retval;
+		goto err_free_spi_device;
 	}
 
 	synaptics_dsx_spi_device->name = PLATFORM_DRIVER_NAME;
@@ -646,10 +653,15 @@ static int synaptics_rmi4_spi_probe(struct spi_device *spi)
 		dev_err(&spi->dev,
 				"%s: Failed to register platform device\n",
 				__func__);
-		return -ENODEV;
+		goto err_free_spi_device;
 	}
 
 	return 0;
+
+err_free_spi_device:
+	kfree(synaptics_dsx_spi_device);
+	synaptics_dsx_spi_device = NULL;
+	return retval;
 }
 
 static int synaptics_rmi4_spi_remove(struct spi_device *spi)
@@ -696,11 +708,12 @@ int synaptics_rmi4_bus_init_force(void)
 
 void synaptics_rmi4_bus_exit_force(void)
 {
-	kfree(buf);
-
-	kfree(xfer);
-
 	spi_unregister_driver(&synaptics_rmi4_spi_driver);
+
+	kfree(buf);
+	buf = NULL;
+	kfree(xfer);
+	xfer = NULL;
 
 	return;
 }

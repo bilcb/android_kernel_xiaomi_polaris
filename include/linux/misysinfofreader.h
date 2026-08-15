@@ -1,6 +1,8 @@
 #ifndef __MISYSINFOFREADER_H__
 #define __MISYSINFOFREADER_H__
 
+#include <linux/jiffies.h>
+
 #ifdef CONFIG_MISYSINFOFREADER
 extern u32 *misysinfo_jiffies;
 static __always_inline void update_misysinfo_jiffies(void)

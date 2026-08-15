@@ -64,6 +64,12 @@ static int tiload_open(struct inode *in, struct file *filp)
 {
 	struct tas2559_priv *pTAS2559 = g_TAS2559;
 
+	if (!pTAS2559 || pTAS2559->mbShutdown) {
+		dev_err(pTAS2559 ? pTAS2559->dev : NULL,
+			"%s: tiload is shutting down\n", __func__);
+		return -ENODEV;
+	}
+
 	dev_info(pTAS2559->dev, "%s\n", __func__);
 
 	if (tiload_opened) {
@@ -72,6 +78,8 @@ static int tiload_open(struct inode *in, struct file *filp)
 	}
 
 	filp->private_data = (void *)pTAS2559;
+	gPage = 0;
+	gBook = 0;
 	tiload_opened++;
 	return 0;
 }
@@ -124,7 +132,7 @@ static ssize_t tiload_read(struct file *filp, char __user *buf,
 		return -EINVAL;
 	}
 
-	rd_data = kmalloc(MAX_LENGTH + 1, GFP_KERNEL | GFP_DMA);
+	rd_data = kzalloc(MAX_LENGTH + 1, GFP_KERNEL | GFP_DMA);
 
 	if(rd_data == NULL) {
 		dev_err(pTAS2559->dev, "kmalloc fail \n");
@@ -147,9 +155,12 @@ static ssize_t tiload_read(struct file *filp, char __user *buf,
 						  0x80000000 | nCompositeRegister, rd_data, size);
 		}
 
-	if (ret < 0)
+	if (ret < 0) {
 		dev_err(pTAS2559->dev, "%s, %d, ret=%d, count=%zu error happen!\n",
 			__func__, __LINE__, ret, count);
+		kfree(rd_data);
+		return ret;
+	}
 
 	if (size != count)
 		dev_err(pTAS2559->dev, "read %d registers from the codec\n", (int) size);
@@ -188,7 +199,7 @@ static ssize_t tiload_write(struct file *filp, const char __user *buf,
 		return -EINVAL;
 	}
 
-	wr_data = kmalloc(MAX_LENGTH + 1, GFP_KERNEL | GFP_DMA);
+	wr_data = kzalloc(MAX_LENGTH + 1, GFP_KERNEL | GFP_DMA);
 	if(wr_data == NULL) {
 		dev_err(pTAS2559->dev, "kmalloc fail \n");
 		return -EINVAL;
@@ -205,6 +216,13 @@ static ssize_t tiload_write(struct file *filp, const char __user *buf,
 
 	nRegister = wr_data[0];
 	size = count;
+
+	if (count < 2) {
+		dev_err(pTAS2559->dev, "%s, count too small: %zu\n",
+			__func__, count);
+		kfree(wr_data);
+		return -EINVAL;
+	}
 
 	if ((nRegister == 127) && (gPage == 0)) {
 		gBook = wr_data[1];
@@ -229,9 +247,12 @@ static ssize_t tiload_write(struct file *filp, const char __user *buf,
 						   0x80000000 | nCompositeRegister, &pData[1], count - 1);
 		}
 
-	if (ret < 0)
+	if (ret < 0) {
 		dev_err(pTAS2559->dev, "%s, %d, ret=%d, count=%zu, ERROR Happen\n", __func__,
 			__LINE__, ret, count);
+		kfree(wr_data);
+		return ret;
+	}
 	kfree(wr_data);
 	return size;
 }
@@ -266,20 +287,27 @@ static long tiload_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case TILOAD_IOMAGICNUM_SET:
 		dev_info(pTAS2559->dev, "TILOAD_IOMAGICNUM_SET=0x%x\n", cmd);
 		num = copy_from_user(&magic_num, argp, sizeof(int));
+		if (num != 0)
+			break;
 		tiload_route_IO(pTAS2559, magic_num);
 		break;
 
 	case TILOAD_BPR_READ:
 		dev_info(pTAS2559->dev, "TILOAD_BPR_READ=0x%x\n", cmd);
-		break;
+		return -EINVAL;
 
 	case TILOAD_BPR_WRITE:
-		dev_info(pTAS2559->dev, "TILOAD_BPR_WRITE=0x%x\n", cmd);
 		num = copy_from_user(&bpr, argp, sizeof(struct BPR));
+		if (num != 0) {
+			return -EFAULT;
+		}
 		break;
 
 	case TILOAD_IOCTL_SET_CHL:
 		num = copy_from_user(&val, argp, sizeof(int));
+		if (num != 0) {
+			return -EFAULT;
+		}
 		addr = (unsigned char)(val >> 1);
 
 		if (addr == pTAS2559->mnDevAAddr) {
@@ -298,12 +326,16 @@ static long tiload_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case TILOAD_IOCTL_SET_CONFIG:
 		dev_info(pTAS2559->dev, "TILOAD_IOCTL_SET_CONFIG=0x%x\n", cmd);
 		num = copy_from_user(&val, argp, sizeof(val));
+		if (num != 0)
+			break;
 		pTAS2559->set_config(pTAS2559, val);
 		break;
 
 	case TILOAD_IOCTL_SET_CALIBRATION:
 		dev_info(pTAS2559->dev, "TILOAD_IOCTL_SET_CALIBRATION=0x%x\n", cmd);
 		num = copy_from_user(&val, argp, sizeof(val));
+		if (num != 0)
+			break;
 		pTAS2559->set_calibration(pTAS2559, val);
 		break;
 
@@ -312,7 +344,7 @@ static long tiload_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	}
 
-	return num;
+	return num ? -EFAULT : 0;
 }
 
 #ifdef CONFIG_COMPAT
@@ -438,6 +470,24 @@ int tiload_driver_init_tas2559(struct tas2559_priv *pTAS2559)
 	dev_info(pTAS2559->dev, "Registered TiLoad driver, Major number: %d\n", tiload_major);
 	/* class_device_create(tiload_class, NULL, dev, NULL, DEVICE_NAME, 0); */
 	return 0;
+}
+
+void tiload_driver_exit_tas2559(void)
+{
+	dev_t dev = MKDEV(tiload_major, 0);
+
+	g_TAS2559 = NULL;
+
+	if (tiload_cdev)
+		cdev_del(tiload_cdev);
+	if (tiload_class)
+		device_destroy(tiload_class, dev);
+	if (tiload_class)
+		class_destroy(tiload_class);
+	unregister_chrdev_region(dev, 1);
+	tiload_cdev = NULL;
+	tiload_class = NULL;
+	tiload_opened = 0;
 }
 
 MODULE_AUTHOR("Texas Instruments Inc.");

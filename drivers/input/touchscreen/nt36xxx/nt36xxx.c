@@ -135,6 +135,9 @@ int32_t CTP_I2C_READ(struct i2c_client *client, uint16_t address, uint8_t *buf, 
 	int32_t ret = -1;
 	int32_t retries = 0;
 
+	if (len == 0)
+		return -EINVAL;
+
 	msgs[0].flags = !I2C_M_RD;
 	msgs[0].addr  = address;
 	msgs[0].len   = 1;
@@ -484,6 +487,11 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 		return -EFAULT;
 	}
 
+	if (count < 2 || str[1] < 2 || str[1] > sizeof(str) - 2) {
+		NVT_ERR("error, count=%zu str[1]=%u\n", count, str[1]);
+		return -EINVAL;
+	}
+
 #if NVT_TOUCH_ESD_PROTECT
 	cancel_delayed_work_sync(&nvt_esd_check_work);
 	nvt_esd_check_enable(false);
@@ -504,10 +512,8 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 
 		if (unlikely(retries == 20)) {
 			NVT_ERR("error, ret = %d\n", ret);
-			return -EIO;
+			ret = -EIO;
 		}
-
-		return ret;
 	} else if (i2c_wr == 1) {	/*I2C read*/
 		while (retries < 20) {
 			ret = CTP_I2C_READ(ts->client, (str[0] & 0x7F), &str[2], str[1]);
@@ -521,20 +527,27 @@ static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count
 
 		/* copy buff to user if i2c transfer */
 		if (retries < 20) {
-			if (copy_to_user(buff, str, count))
-				return -EFAULT;
+			if (copy_to_user(buff, str, count)) {
+				ret = -EFAULT;
+				goto esd_reenable;
+			}
 		}
 
 		if (unlikely(retries == 20)) {
 			NVT_ERR("error, ret = %d\n", ret);
-			return -EIO;
+			ret = -EIO;
 		}
-
-		return ret;
 	} else {
 		NVT_ERR("Call error, str[0]=%d\n", str[0]);
-		return -EFAULT;
+		ret = -EFAULT;
 	}
+
+esd_reenable:
+#if NVT_TOUCH_ESD_PROTECT
+	nvt_esd_check_enable(true);
+#endif /* #if NVT_TOUCH_ESD_PROTECT */
+
+	return ret;
 }
 
 /*******************************************************
@@ -797,6 +810,11 @@ static int nvt_parse_dt(struct device *dev)
 
 	config_info = ts->config_array;
 	for_each_child_of_node(np, temp) {
+		if ((config_info - ts->config_array) >= ts->config_array_size) {
+			NVT_LOG("Warning: DT has more children than config_array_size\n");
+			of_node_put(temp);
+			break;
+		}
 		retval = of_property_read_u32(temp, "novatek,tp-vendor", &temp_val);
 
 		if (retval) {
@@ -880,31 +898,34 @@ static int nvt_get_reg(struct nvt_ts_data *ts, bool get)
 	if ((ts->vddio_reg_name != NULL) && (*ts->vddio_reg_name != 0)) {
 		ts->vddio_reg = regulator_get(&ts->client->dev,
 				ts->vddio_reg_name);
-		if (IS_ERR(ts->vddio_reg)) {
-			NVT_ERR("Failed to get power regulator\n");
-			retval = PTR_ERR(ts->vddio_reg);
-			goto regulator_put;
-		}
+	if (IS_ERR(ts->vddio_reg)) {
+		NVT_ERR("Failed to get power regulator\n");
+		retval = PTR_ERR(ts->vddio_reg);
+		ts->vddio_reg = NULL;
+		goto regulator_put;
+	}
 	}
 
 	if ((ts->lab_reg_name != NULL) && (*ts->lab_reg_name != 0)) {
 		ts->lab_reg = regulator_get(&ts->client->dev,
 				ts->lab_reg_name);
-		if (IS_ERR(ts->lab_reg)) {
-			NVT_ERR("Failed to get lab regulator\n");
-			retval = PTR_ERR(ts->lab_reg);
-			goto regulator_put;
-		}
+	if (IS_ERR(ts->lab_reg)) {
+		NVT_ERR("Failed to get lab regulator\n");
+		retval = PTR_ERR(ts->lab_reg);
+		ts->lab_reg = NULL;
+		goto regulator_put;
+	}
 	}
 
 	if ((ts->ibb_reg_name != NULL) && (*ts->ibb_reg_name != 0)) {
 		ts->ibb_reg = regulator_get(&ts->client->dev,
 				ts->ibb_reg_name);
-		if (IS_ERR(ts->ibb_reg)) {
-			NVT_ERR("Failed to get ibb regulator\n");
-			retval = PTR_ERR(ts->ibb_reg);
-			goto regulator_put;
-		}
+	if (IS_ERR(ts->ibb_reg)) {
+		NVT_ERR("Failed to get ibb regulator\n");
+		retval = PTR_ERR(ts->ibb_reg);
+		ts->ibb_reg = NULL;
+		goto regulator_put;
+	}
 	}
 
 	return 0;
@@ -1009,6 +1030,8 @@ static int nvt_gpio_config(struct nvt_ts_data *ts)
 	return ret;
 
 err_request_reset_gpio:
+	if (gpio_is_valid(ts->irq_gpio))
+		gpio_free(ts->irq_gpio);
 err_request_irq_gpio:
 	return ret;
 }
@@ -1480,18 +1503,21 @@ static ssize_t tpdbg_read(struct file *file, char __user *buf, size_t size, loff
 
 	loff_t pos = *ppos;
 	int len = strlen(str);
+	size_t copy_len;
 
 	if (pos < 0)
 		return -EINVAL;
 	if (pos >= len)
 		return 0;
 
-	if (copy_to_user(buf, str, len))
+	copy_len = min_t(size_t, len - pos, size);
+
+	if (copy_to_user(buf, str + pos, copy_len))
 		return -EFAULT;
 
-	*ppos = pos + len;
+	*ppos = pos + copy_len;
 
-	return len;
+	return copy_len;
 }
 
 static ssize_t tpdbg_write(struct file *file, const char __user *buf, size_t size, loff_t *ppos)
@@ -1608,6 +1634,7 @@ static struct attribute *nvt_attr_group[] = {
 	&dev_attr_panel_vendor.attr,
 	&dev_attr_panel_color.attr,
 	&dev_attr_panel_display.attr,
+	NULL,
 };
 
 /*******************************************************
@@ -1623,7 +1650,6 @@ static int32_t nvt_ts_probe(struct i2c_client *client, const struct i2c_device_i
 #if ((TOUCH_KEY_NUM > 0) || WAKEUP_GESTURE)
 	int32_t retry = 0;
 #endif
-	char *tp_maker = NULL;
 
 	NVT_LOG("start\n");
 
@@ -1637,7 +1663,11 @@ static int32_t nvt_ts_probe(struct i2c_client *client, const struct i2c_device_i
 	i2c_set_clientdata(client, ts);
 
 	/*---parse dts---*/
-	nvt_parse_dt(&client->dev);
+	ret = nvt_parse_dt(&client->dev);
+	if (ret) {
+		NVT_ERR("nvt_parse_dt failed, ret=%d\n", ret);
+		goto err_free_ts;
+	}
 
 	ret = nvt_pinctrl_init(ts);
 	if (!ret && ts->ts_pinctrl) {
@@ -1755,8 +1785,10 @@ static int32_t nvt_ts_probe(struct i2c_client *client, const struct i2c_device_i
 	ret = input_register_device(ts->input_dev);
 	if (ret) {
 		NVT_ERR("register input device (%s) failed. ret=%d\n", ts->input_dev->name, ret);
-		goto err_input_register_device_failed;
+		input_free_device(ts->input_dev);
+		goto err_input_dev_alloc_failed;
 	}
+	ts->input_registered = true;
 
 	/*--- request regulator---*/
 	nvt_get_reg(ts, true);
@@ -1766,7 +1798,7 @@ static int32_t nvt_ts_probe(struct i2c_client *client, const struct i2c_device_i
 
 	/*---set int-pin & request irq---*/
 	client->irq = gpio_to_irq(ts->irq_gpio);
-	if (client->irq) {
+	if (client->irq > 0) {
 		NVT_LOG("int_trigger_type=%d\n", ts->int_trigger_type);
 
 #if WAKEUP_GESTURE
@@ -1793,10 +1825,6 @@ static int32_t nvt_ts_probe(struct i2c_client *client, const struct i2c_device_i
 				ts->lockdown_info[4], ts->lockdown_info[5], ts->lockdown_info[6], ts->lockdown_info[7]);
 	}
 	ts->fw_name = nvt_get_config(ts);
-
-	tp_maker = kzalloc(20, GFP_KERNEL);
-	if (tp_maker == NULL)
-		NVT_ERR("fail to alloc vendor name memory\n");
 
 	device_init_wakeup(&client->dev, 1);
 	ts->dev_pm_suspend = false;
@@ -1930,14 +1958,37 @@ err_register_early_suspend_failed:
 #if (NVT_TOUCH_PROC || NVT_TOUCH_EXT_PROC || NVT_TOUCH_MP)
 err_init_NVT_ts:
 #endif
-	free_irq(client->irq, ts);
+#if NVT_TOUCH_PROC
+	remove_proc_entry(DEVICE_NAME, NULL);
+#endif
+#if NVT_TOUCH_EXT_PROC
+	remove_proc_entry("nvt_fw_version", NULL);
+	remove_proc_entry("nvt_baseline", NULL);
+	remove_proc_entry("nvt_raw", NULL);
+	remove_proc_entry("nvt_diff", NULL);
+	remove_proc_entry("nvt_xiaomi_config_info", NULL);
+	remove_proc_entry("tp_lockdown_info", NULL);
+#endif
 #if BOOT_UPDATE_FIRMWARE
 err_create_nvt_fwu_wq_failed:
+	if (nvt_fwu_wq) {
+		cancel_delayed_work_sync(&ts->nvt_fwu_work);
+		destroy_workqueue(nvt_fwu_wq);
+		nvt_fwu_wq = NULL;
+	}
 #endif
+	free_irq(client->irq, ts);
 err_int_request_failed:
-err_input_register_device_failed:
-	input_free_device(ts->input_dev);
+	if (ts->input_registered)
+		input_unregister_device(ts->input_dev);
+	else if (ts->input_dev)
+		input_free_device(ts->input_dev);
+	ts->input_dev = NULL;
 err_input_dev_alloc_failed:
+	if (nvt_wq) {
+		destroy_workqueue(nvt_wq);
+		nvt_wq = NULL;
+	}
 err_create_nvt_wq_failed:
 	mutex_destroy(&ts->lock);
 err_chipvertrim_failed:
@@ -1946,8 +1997,10 @@ err_check_functionality_failed:
 	if (gpio_is_valid(ts->reset_gpio))
 		gpio_free(ts->reset_gpio);
 err_gpio_config_failed:
+err_free_ts:
 	i2c_set_clientdata(client, NULL);
 	kfree(ts);
+	ts = NULL;
 	return ret;
 }
 
@@ -1962,6 +2015,14 @@ static int32_t nvt_ts_remove(struct i2c_client *client)
 {
 	/*struct nvt_ts_data *ts = i2c_get_clientdata(client);*/
 
+	free_irq(client->irq, ts);
+	input_unregister_device(ts->input_dev);
+
+	debugfs_remove_recursive(ts->debugfs);
+#if NVT_TOUCH_PROC
+	remove_proc_entry(DEVICE_NAME, NULL);
+#endif
+
 #if defined(CONFIG_DRM)
 	if (drm_unregister_client(&ts->notifier))
 		NVT_ERR("Error occurred while unregistering drm_notifier.\n");
@@ -1969,7 +2030,7 @@ static int32_t nvt_ts_remove(struct i2c_client *client)
 	unregister_early_suspend(&ts->early_suspend);
 #endif
 #ifdef NVT_TOUCH_COUNT_DUMP
-	if (ts->dump_click_count && !ts->current_clicknum_file) {
+	if (ts->dump_click_count && ts->current_clicknum_file) {
 		kfree(ts->current_clicknum_file);
 		ts->current_clicknum_file = NULL;
 	}
@@ -1980,6 +2041,23 @@ static int32_t nvt_ts_remove(struct i2c_client *client)
 	ts->nvt_tp_class = NULL;
 #endif
 	destroy_workqueue(ts->event_wq);
+	if (nvt_fwu_wq) {
+		cancel_delayed_work_sync(&ts->nvt_fwu_work);
+		destroy_workqueue(nvt_fwu_wq);
+		nvt_fwu_wq = NULL;
+	}
+#if NVT_TOUCH_ESD_PROTECT
+	if (nvt_esd_check_wq) {
+		cancel_delayed_work_sync(&nvt_esd_check_work);
+		destroy_workqueue(nvt_esd_check_wq);
+		nvt_esd_check_wq = NULL;
+	}
+#endif
+	if (nvt_wq) {
+		destroy_workqueue(nvt_wq);
+		nvt_wq = NULL;
+	}
+	flush_scheduled_work();
 
 	nvt_get_reg(ts, false);
 
@@ -1989,10 +2067,9 @@ static int32_t nvt_ts_remove(struct i2c_client *client)
 
 	NVT_LOG("Removing driver...\n");
 
-	free_irq(client->irq, ts);
-	input_unregister_device(ts->input_dev);
 	i2c_set_clientdata(client, NULL);
 	kfree(ts);
+	ts = NULL;
 
 	return 0;
 }
@@ -2232,7 +2309,7 @@ return:
 *******************************************************/
 static void nvt_ts_early_suspend(struct early_suspend *h)
 {
-	nvt_ts_suspend(ts->client, PMSG_SUSPEND);
+	nvt_ts_suspend(&ts->client->dev);
 }
 
 /*******************************************************
@@ -2244,7 +2321,7 @@ return:
 *******************************************************/
 static void nvt_ts_late_resume(struct early_suspend *h)
 {
-	nvt_ts_resume(ts->client);
+	nvt_ts_resume(&ts->client->dev);
 }
 #endif
 

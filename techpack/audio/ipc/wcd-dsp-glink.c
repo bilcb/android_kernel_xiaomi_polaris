@@ -1085,6 +1085,8 @@ static int wdsp_glink_release(struct inode *inode, struct file *file)
 
 	if (wpriv->glink_state.handle)
 		glink_unregister_link_state_cb(wpriv->glink_state.handle);
+
+	wdsp_glink_close_all_ch(wpriv);
 	/*
 	 * Wait for channel local and remote disconnect state notifications
 	 * before freeing channel memory.
@@ -1092,18 +1094,17 @@ static int wdsp_glink_release(struct inode *inode, struct file *file)
 	for (i = 0; i < wpriv->no_of_channels; i++) {
 		if (wpriv->ch && wpriv->ch[i]) {
 			ret = wait_event_timeout(wpriv->ch[i]->ch_free_wait,
-					(wpriv->ch[i]->ch_close_state ==
-					(GLINK_LOCAL_DISCONNECTED | GLINK_REMOTE_DISCONNECTED)),
+					(wpriv->ch[i]->ch_close_state !=
+					GLINK_CONNECTED),
 					msecs_to_jiffies(TIMEOUT_MS));
 			if (!ret) {
 				pr_err("%s: glink channel %s is failed to notify states properly %d\n",
 					__func__, wpriv->ch[i]->ch_cfg.name,
 					wpriv->ch[i]->ch_close_state);
-				ret = -EINVAL;
-				goto done;
 			}
 		}
 	}
+	ret = 0;
 
 	flush_workqueue(wpriv->work_queue);
 	destroy_workqueue(wpriv->work_queue);

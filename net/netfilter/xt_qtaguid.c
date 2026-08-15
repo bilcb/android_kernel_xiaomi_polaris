@@ -272,8 +272,10 @@ static void system_app_stats_tree_insert(struct system_app_stat_node *data,
 			new = &((*new)->rb_left);
 		else if (result > 0)
 			new = &((*new)->rb_right);
-		else
+		else {
 			RB_DEBUG("qtaguid: error happens while searching");
+			return;
+		}
 	}
 
 	rb_link_node(&data->node, parent, new);
@@ -576,7 +578,8 @@ static struct tag_ref *get_tag_ref(tag_t full_tag,
 	DR_DEBUG("qtaguid: get_tag_ref(0x%llx)\n",
 		 full_tag);
 	tr_entry = lookup_tag_ref(full_tag, &utd_entry);
-	BUG_ON(IS_ERR_OR_NULL(utd_entry));
+	if (IS_ERR(utd_entry))
+		return ERR_CAST(utd_entry);
 	if (!tr_entry)
 		tr_entry = new_tag_ref(full_tag, utd_entry);
 
@@ -1341,10 +1344,16 @@ done:
 static struct system_app_stat_node *create_if_system_app_stat(
 			struct iface_stat *iface_entry, const char *package)
 {
-	struct system_app_stat_node *new_system_app_stat_entry = NULL;
+	struct system_app_stat_node *new_system_app_stat_entry;
 
 	IF_DEBUG("qtaguid: iface_stat: %s(): ife=%p package=%s",
 		 __func__, iface_entry, package);
+
+	new_system_app_stat_entry = system_app_stats_tree_search(
+		&iface_entry->system_app_stas_tree, package);
+	if (new_system_app_stat_entry)
+		return new_system_app_stat_entry;
+
 	new_system_app_stat_entry = kzalloc(sizeof(*new_system_app_stat_entry),
 					    GFP_ATOMIC);
 	if (new_system_app_stat_entry) {
@@ -1398,7 +1407,7 @@ static void if_tag_stat_update(const char *ifname, uid_t uid,
 	char package_name[100] = {0};
 	bool is_system_package = false;
 	struct system_app_stat_node *system_stats_entry;
-	uid_t current_fsuid;
+	uid_t fsuid;
 	struct task_struct *p_task = NULL;
 	MT_DEBUG("qtaguid: if_tag_stat_update(ifname=%s "
 		"uid=%u sk=%p dir=%d proto=%d bytes=%d)\n",
@@ -1421,7 +1430,7 @@ static void if_tag_stat_update(const char *ifname, uid_t uid,
 	 * Look for a tagged sock.
 	 * It will have an acct_uid.
 	 */
-	current_fsuid = from_kuid(&init_user_ns, current_fsuid());
+	fsuid = from_kuid(&init_user_ns, current_fsuid());
 	sock_tag_entry = get_sock_stat(sk);
 	if (sock_tag_entry) {
 		tag = sock_tag_entry->tag;
@@ -1448,7 +1457,7 @@ static void if_tag_stat_update(const char *ifname, uid_t uid,
 					put_task_struct(p_task);
 				}
 				rcu_read_unlock();
-			} else if (current_fsuid == 1000) {
+			} else if (fsuid == 1000) {
 				strlcpy(package_name,
 					current->group_leader->comm, 100);
 			}
@@ -2201,8 +2210,12 @@ static int ctrl_cmd_delete(const char *input)
 			/* Can't sockfd_put() within spinlock, do it later. */
 			sock_tag_tree_insert(st_entry, &st_to_free_tree);
 			tr_entry = lookup_tag_ref(st_entry->tag, NULL);
-			BUG_ON(tr_entry->num_sock_tags <= 0);
-			tr_entry->num_sock_tags--;
+			if (IS_ERR_OR_NULL(tr_entry)) {
+				pr_err("qtaguid: ctrl_cmd_delete: no tag ref for tag 0x%llx\n",
+				       st_entry->tag);
+			} else {
+				tr_entry->num_sock_tags--;
+			}
 			/*
 			 * TODO: remove if, and start failing.
 			 * This is a hack to work around the fact that in some
@@ -2222,7 +2235,7 @@ static int ctrl_cmd_delete(const char *input)
 	/* Delete tag counter-sets */
 	spin_lock_bh(&tag_counter_set_list_lock);
 	/* Counter sets are only on the uid tag, not full tag */
-	tcs_entry = tag_counter_set_tree_search(&tag_counter_set_tree, tag);
+	tcs_entry = tag_counter_set_tree_search(&tag_counter_set_tree, get_utag_from_tag(tag));
 	if (tcs_entry) {
 		CT_DEBUG("qtaguid: ctrl_delete(%s): "
 			 "erase tcs: tag=0x%llx (uid=%u) set=%d\n",
@@ -2392,11 +2405,11 @@ static int ctrl_cmd_tag(const char *input)
 	struct tag_ref *tag_ref_entry;
 	struct uid_tag_data *uid_tag_data_entry;
 	struct proc_qtu_data *pqd_entry;
-	pid_t pid;
+	pid_t pid = -1;
 	struct task_struct *p_task = NULL;
 
 	/* Unassigned args will get defaulted later. */
-	argc = sscanf(input, "%c %d %llu %u %u", &cmd, &sock_fd, &acct_tag,
+	argc = sscanf(input, "%c %d %llu %u %d", &cmd, &sock_fd, &acct_tag,
 						&uid_int, &pid);
 	uid = make_kuid(&init_user_ns, uid_int);
 	CT_DEBUG("qtaguid: ctrl_tag(%s): argc=%d cmd=%c sock_fd=%d "
@@ -2470,7 +2483,15 @@ static int ctrl_cmd_tag(const char *input)
 			 atomic_read(&el_socket->sk->sk_refcnt));
 		prev_tag_ref_entry = lookup_tag_ref(sock_tag_entry->tag,
 						    &uid_tag_data_entry);
-		BUG_ON(IS_ERR_OR_NULL(prev_tag_ref_entry));
+		if (IS_ERR_OR_NULL(prev_tag_ref_entry)) {
+			res = -ENOMEM;
+			tag_ref_entry->num_sock_tags--;
+			free_tag_ref_from_utd_entry(tag_ref_entry,
+						    uid_tag_data_entry);
+			spin_unlock_bh(&uid_tag_data_tree_lock);
+			spin_unlock_bh(&sock_tag_list_lock);
+			goto err_put;
+		}
 		BUG_ON(prev_tag_ref_entry->num_sock_tags <= 0);
 		prev_tag_ref_entry->num_sock_tags--;
 		sock_tag_entry->tag = full_tag;
@@ -3197,7 +3218,7 @@ err_unlock:
 static int qtudev_release(struct inode *inode, struct file *file)
 {
 	struct proc_qtu_data  *pqd_entry = file->private_data;
-	struct uid_tag_data  *utd_entry = pqd_entry->parent_tag_data;
+	struct uid_tag_data  *utd_entry;
 	struct sock_tag *st_entry;
 	struct rb_root st_to_free_tree = RB_ROOT;
 	struct list_head *entry, *next;
@@ -3205,6 +3226,8 @@ static int qtudev_release(struct inode *inode, struct file *file)
 
 	if (unlikely(qtu_proc_handling_passive))
 		return 0;
+
+	utd_entry = pqd_entry->parent_tag_data;
 
 	/*
 	 * Do not trust the current->pid, it might just be a kworker cleaning
@@ -3417,12 +3440,41 @@ static struct xt_match qtaguid_mt_reg __read_mostly = {
 
 static int __init qtaguid_mt_init(void)
 {
-	if (qtaguid_proc_register(&xt_qtaguid_procdir)
-	    || iface_stat_init(xt_qtaguid_procdir)
-	    || xt_register_match(&qtaguid_mt_reg)
-	    || misc_register(&qtu_device))
-		return -EPERM;
+	int ret;
+
+	ret = qtaguid_proc_register(&xt_qtaguid_procdir);
+	if (ret)
+		return ret;
+
+	ret = iface_stat_init(xt_qtaguid_procdir);
+	if (ret)
+		goto err_zap_procdir;
+
+	ret = xt_register_match(&qtaguid_mt_reg);
+	if (ret)
+		goto err_unreg_iface_stat;
+
+	ret = misc_register(&qtu_device);
+	if (ret)
+		goto err_unreg_match;
+
 	return 0;
+
+err_unreg_match:
+	xt_unregister_match(&qtaguid_mt_reg);
+err_unreg_iface_stat:
+	unregister_inet6addr_notifier(&iface_inet6addr_notifier_blk);
+	unregister_inetaddr_notifier(&iface_inetaddr_notifier_blk);
+	unregister_netdevice_notifier(&iface_netdev_notifier_blk);
+	remove_proc_entry(iface_stat_fmt_procfilename, xt_qtaguid_procdir);
+	remove_proc_entry(iface_stat_all_procfilename, xt_qtaguid_procdir);
+	remove_proc_entry(iface_stat_procdirname, xt_qtaguid_procdir);
+err_zap_procdir:
+	remove_proc_entry("system_app_stats", xt_qtaguid_procdir);
+	remove_proc_entry("stats", xt_qtaguid_procdir);
+	remove_proc_entry("ctrl", xt_qtaguid_procdir);
+	remove_proc_entry(module_procdirname, init_net.proc_net);
+	return ret;
 }
 
 /*

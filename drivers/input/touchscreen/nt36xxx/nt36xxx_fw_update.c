@@ -60,6 +60,8 @@ int32_t update_firmware_request(char *filename)
 	/* check bin file size (116kb) */
 	if (fw_entry->size != FW_BIN_SIZE) {
 		NVT_ERR("bin file size not match. (%zu)\n", fw_entry->size);
+		release_firmware(fw_entry);
+		fw_entry = NULL;
 		return -EINVAL;
 	}
 
@@ -67,6 +69,8 @@ int32_t update_firmware_request(char *filename)
 	if (*(fw_entry->data + FW_BIN_VER_OFFSET) + *(fw_entry->data + FW_BIN_VER_BAR_OFFSET) != 0xFF) {
 		NVT_ERR("bin file FW_VER + FW_VER_BAR should be 0xFF!\n");
 		NVT_ERR("FW_VER=0x%02X, FW_VER_BAR=0x%02X\n", *(fw_entry->data+FW_BIN_VER_OFFSET), *(fw_entry->data+FW_BIN_VER_BAR_OFFSET));
+		release_firmware(fw_entry);
+		fw_entry = NULL;
 		return -EINVAL;
 	}
 
@@ -988,10 +992,15 @@ void Boot_Update_Firmware(struct work_struct *work)
 
 	char firmware_name[256] = "";
 
+	if (!ts) {
+		NVT_ERR("ts is NULL, firmware update aborted\n");
+		return;
+	}
+
 	if (ts->fw_name)
-		sprintf(firmware_name, ts->fw_name);
+		snprintf(firmware_name, sizeof(firmware_name), "%s", ts->fw_name);
 	else
-		sprintf(firmware_name, BOOT_UPDATE_FIRMWARE_NAME);
+		snprintf(firmware_name, sizeof(firmware_name), "%s", BOOT_UPDATE_FIRMWARE_NAME);
 
 	/* request bin file in "/etc/firmware" */
 	ret = update_firmware_request(firmware_name);

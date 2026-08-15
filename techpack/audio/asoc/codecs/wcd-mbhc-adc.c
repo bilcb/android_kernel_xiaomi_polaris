@@ -262,9 +262,10 @@ done:
 	/* Restore electrical detection */
 	WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_ELECT_SCHMT_ISRC, elect_ctl);
 
-	mbhc->mbhc_cb->mbhc_micbias_control(mbhc->codec,
-					    mbhc->mbhc_cfg->anc_micbias,
-					    MICB_DISABLE);
+	if (mbhc->mbhc_cb->mbhc_micbias_control)
+		mbhc->mbhc_cb->mbhc_micbias_control(mbhc->codec,
+						    mbhc->mbhc_cfg->anc_micbias,
+						    MICB_DISABLE);
 	pr_debug("%s: anc mic %sfound\n", __func__,
 		 anc_mic_found ? "" : "not ");
 
@@ -511,7 +512,8 @@ static void wcd_mbhc_adc_update_fsm_source(struct wcd_mbhc *mbhc,
 	case MBHC_PLUG_TYPE_HEADSET:
 	case MBHC_PLUG_TYPE_ANC_HEADPHONE:
 		WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_BTN_ISRC_CTL, 0);
-		mbhc->mbhc_cb->mbhc_micbias_control(mbhc->codec,
+		if (mbhc->mbhc_cb->mbhc_micbias_control)
+			mbhc->mbhc_cb->mbhc_micbias_control(mbhc->codec,
 				MIC_BIAS_2, MICB_PULLUP_ENABLE);
 		break;
 	default:
@@ -875,7 +877,7 @@ enable_supply:
 		wcd_mbhc_adc_update_fsm_source(mbhc, plug_type);
 exit:
 	if (mbhc->mbhc_cb->mbhc_micbias_control &&
-	    !mbhc->micbias_enable)
+	    !mbhc->micbias_enable && !mbhc->is_hs_recording)
 		mbhc->mbhc_cb->mbhc_micbias_control(codec, MIC_BIAS_2,
 						    MICB_DISABLE);
 
@@ -885,7 +887,7 @@ exit:
 	 * disable micbias.
 	 */
 	if (plug_type == MBHC_PLUG_TYPE_HEADPHONE &&
-	    mbhc->micbias_enable) {
+	    mbhc->micbias_enable && !mbhc->is_hs_recording) {
 		if (mbhc->mbhc_cb->mbhc_micbias_control)
 			mbhc->mbhc_cb->mbhc_micbias_control(
 					codec, MIC_BIAS_2,

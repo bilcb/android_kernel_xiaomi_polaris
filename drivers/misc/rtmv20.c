@@ -266,8 +266,12 @@ static int rtmv20_release(struct inode *inp, struct file *filp)
 	struct rtmv20_chip_data *chip =
 		container_of(inp->i_cdev, struct rtmv20_chip_data, cdev);
 
-	disable_irq_nosync(chip->ic_irq);
-	disable_irq_nosync(chip->strobe_irq);
+	if (gpio_is_valid(chip->pdata->irq_gpio))
+		disable_irq_nosync(chip->ic_irq);
+	if (gpio_is_valid(chip->pdata->strobe_irq_gpio))
+		disable_irq_nosync(chip->strobe_irq);
+	if (gpio_is_valid(chip->pdata->ito_detect_gpio))
+		disable_irq_nosync(chip->ito_irq);
 
 	rtmv20_power_down(chip);
 
@@ -286,8 +290,12 @@ static int rtmv20_open(struct inode *inp, struct file *filp)
 
 	filp->private_data = chip;
 
-	enable_irq(chip->ic_irq);
-	enable_irq(chip->strobe_irq);
+	if (gpio_is_valid(chip->pdata->irq_gpio))
+		enable_irq(chip->ic_irq);
+	if (gpio_is_valid(chip->pdata->strobe_irq_gpio))
+		enable_irq(chip->strobe_irq);
+	if (gpio_is_valid(chip->pdata->ito_detect_gpio))
+		enable_irq(chip->ito_irq);
 
 	return 0;
 }
@@ -301,9 +309,8 @@ static ssize_t rtmv20_write(struct file *filp, const char *buf, size_t len, loff
 
 static ssize_t rtmv20_read(struct file *filp, char *buf, size_t len, loff_t *fseek)
 {
-	int rc = 0;
 	struct rtmv20_chip_data *chip = filp->private_data;
-	rtmv20_report_data report_data;
+	rtmv20_report_data report_data = {0};
 
 	report_data.state = atomic_read(&chip->running);
 	report_data.ito_event = atomic_read(&chip->ito_event);
@@ -317,10 +324,13 @@ static ssize_t rtmv20_read(struct file *filp, char *buf, size_t len, loff_t *fse
 		chip->ic_error = 0;
 	}
 
-	if (copy_to_user(buf, &report_data, sizeof(rtmv20_report_data)) != 0)
-		dev_err(chip->dev, "Copy to user space failed!\n");
+	if (len < sizeof(rtmv20_report_data))
+		return -EINVAL;
 
-	return rc;
+	if (copy_to_user(buf, &report_data, sizeof(rtmv20_report_data)) != 0)
+		return -EFAULT;
+
+	return sizeof(rtmv20_report_data);
 }
 
 static unsigned int rtmv20_poll(struct file *filp, poll_table *wait)
@@ -350,6 +360,11 @@ static int rtmv20_data_write(struct rtmv20_chip_data *chip, void *data)
 		return -EFAULT;
 	}
 
+	if (reg_data->size > REG_MAX) {
+		dev_err(chip->dev, "Invalied data pointer\n");
+		return -EFAULT;
+	}
+
 	for (i = 0; i < reg_data->size; i++) {
 		dev_dbg(chip->dev, "num = %d, addr = 0x%x, data = 0x%x\n", i, reg_data->reg_data[i].reg_addr, reg_data->reg_data[i].reg_data);
 		rc = regmap_write(chip->regmap, reg_data->reg_data[i].reg_addr, reg_data->reg_data[i].reg_data);
@@ -364,12 +379,29 @@ static int rtmv20_data_write(struct rtmv20_chip_data *chip, void *data)
 	return rc;
 }
 
-static int rtmv20_data_read(void)
+static int rtmv20_data_read(struct rtmv20_chip_data *chip,
+	rtmv20_data *reg_data)
 {
+	int i;
+	unsigned int val;
 	int rc = 0;
 
+	if (!chip || !reg_data)
+		return -EINVAL;
 
-	return rc;
+	reg_data->size = REG_MAX;
+	for (i = 0; i < REG_MAX; i++) {
+		reg_data->reg_data[i].reg_addr = i;
+		rc = regmap_read(chip->regmap, i, &val);
+		if (rc) {
+			dev_err(chip->dev, "read reg 0x%x failed rc %d\n",
+				i, rc);
+			return -EIO;
+		}
+		reg_data->reg_data[i].reg_data = (uint8_t)val;
+	}
+
+	return 0;
 }
 
 static long rtmv20_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
@@ -391,7 +423,7 @@ static long rtmv20_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	if (rc)
 		return -EFAULT;
 
-	if (_IOC_DIR(cmd) & _IOC_WRITE) {
+	if (cmd == RTMV_IOC_WRITE_DATA) {
 		if (copy_from_user(&reg_data, (void __user *)arg, sizeof(reg_data))) {
 			dev_err(chip->dev, "Copy data from user space failed\n");
 			return -EFAULT;
@@ -411,12 +443,17 @@ static long rtmv20_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		rc = rtmv20_data_write(chip, &reg_data);
 		break;
 	case RTMV_IOC_READ_DATA:
-		rc = rtmv20_data_read();
+		rc = rtmv20_data_read(chip, &reg_data);
+		if (rc == 0) {
+			if (copy_to_user((void __user *)arg, &reg_data,
+					sizeof(reg_data)))
+				rc = -EFAULT;
+		}
 		break;
 	case RTMV_IOC_READ_INFO:
 	{
-		unsigned int val, val0, val_es_en, val_es;
-		unsigned int ret = 0;
+		unsigned int val = 0, val0 = 0, val_es_en = 0, val_es = 0;
+		int ret = 0;
 
 		ret += regmap_read(chip->regmap, REG_EN_CTRL, &val);
 		laser_info.laser_enable = ((val & 0x9) == 0x9) ? 1 : 0;
@@ -452,8 +489,15 @@ static long rtmv20_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		ret += regmap_read(chip->regmap, REG_EN_CTRL, &val);
 		laser_info.flood_enable = ((val & 0x84) == 0x84) ? 1 : 0;
 
-		if (copy_to_user((void __user *)arg, &laser_info, sizeof(laser_info)) != 0 || ret != 0)
+		if (copy_to_user((void __user *)arg, &laser_info, sizeof(laser_info)) != 0) {
 			dev_err(chip->dev, "copy to user failed!\n");
+			rc = -EFAULT;
+		}
+
+		if (ret != 0) {
+			dev_err(chip->dev, "Failed to read laser info\n");
+			rc = -EIO;
+		}
 		break;
 	}
 	default:
@@ -750,8 +794,10 @@ static ssize_t rtmv20_reg_opt_store(struct device *dev,
 	struct rtmv20_chip_data *chip = dev_get_drvdata(dev);
 
 	ret = sscanf(buf, "0x%x 0x%x", &addr, &val);
-	if (ret == 0)
-		dev_err(chip->dev, "rtmv20_reg_opt_store, reg=0x%x,val=0x%x.\n", addr, val);
+	if (ret != 2) {
+		dev_err(chip->dev, "rtmv20_reg_opt_store, invalid format\n");
+		return -EINVAL;
+	}
 
 	if (addr > 0x29 && addr != 0x30 && addr != 0x40 && addr != 0x50) {
 		dev_err(chip->dev, "rtmv20_reg_opt_store, addr invalid:0x%x\n", addr);
@@ -979,7 +1025,8 @@ static int rtmv20_i2c_probe(struct i2c_client *client,
 			goto err_free_ito_det_gpio;
 		}
 	}
-	disable_irq_nosync(chip->ito_irq);
+	if (gpio_is_valid(pdata->ito_detect_gpio))
+		disable_irq_nosync(chip->ito_irq);
 
 	/*IC Exception IRQ*/
 	if (gpio_is_valid(pdata->irq_gpio)) {
@@ -1006,7 +1053,8 @@ static int rtmv20_i2c_probe(struct i2c_client *client,
 			goto err_free_irq_gpio;
 		}
 	}
-	disable_irq_nosync(chip->ic_irq);
+	if (gpio_is_valid(pdata->irq_gpio))
+		disable_irq_nosync(chip->ic_irq);
 
 	/*IR Sensor Strobe IRQ*/
 	if (gpio_is_valid(pdata->strobe_irq_gpio)) {
@@ -1033,7 +1081,8 @@ static int rtmv20_i2c_probe(struct i2c_client *client,
 			goto err_free_strobe_gpio;
 		}
 	}
-	disable_irq_nosync(chip->strobe_irq);
+	if (gpio_is_valid(pdata->strobe_irq_gpio))
+		disable_irq_nosync(chip->strobe_irq);
 
 	/* Read chip revision */
 	rtmv20_power_up(chip);
@@ -1145,8 +1194,7 @@ err_pinctrl_sleep:
 static int rtmv20_i2c_remove(struct i2c_client *client)
 {
 	struct rtmv20_chip_data *chip = i2c_get_clientdata(client);
-	if (&chip->cdev)
-		cdev_del(&(chip->cdev));
+	cdev_del(&chip->cdev);
 
 	if (chip->chr_dev)
 		device_destroy(chip->chr_class, chip->dev_num);
@@ -1179,7 +1227,8 @@ static int rtmv20_i2c_remove(struct i2c_client *client)
 		gpio_free(chip->pdata->ito_detect_gpio);
 	}
 
-	rtmv20_pinctrl_select(chip, false);
+	if (chip->pinctrl)
+		rtmv20_pinctrl_select(chip, false);
 
 	return 0;
 }

@@ -406,6 +406,7 @@ struct sde_connector {
 
 	bool last_cmd_tx_sts;
 	bool panel_dead_skip;
+	int esd_irq;
 };
 
 /**

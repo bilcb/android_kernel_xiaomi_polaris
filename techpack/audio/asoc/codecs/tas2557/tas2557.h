@@ -424,6 +424,7 @@ struct tas2557_priv {
 	bool mbLoadConfigurationPrePowerUp;
 	bool mbLoadCalibrationPostPowerUp;
 	bool mbCalibrationLoaded;
+	bool mbShutdown;
 	int (*read)(struct tas2557_priv *pTAS2557,
 		unsigned int reg,
 		unsigned int *pValue);

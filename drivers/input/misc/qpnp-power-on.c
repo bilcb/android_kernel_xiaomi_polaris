@@ -507,11 +507,14 @@ qpnp_get_cfg(struct qpnp_pon *pon, u32 pon_type)
 static DEVICE_ATTR(debounce_us, 0664, qpnp_pon_dbc_show, qpnp_pon_dbc_store);
 
 static ssize_t qpnp_pshold_reboot_show(struct device *dev,
-			struct device_attribute*attr, char *buf)
+			struct device_attribute *attr, char *buf)
 {
 	struct qpnp_pon *pon = dev_get_drvdata(dev);
 	int val;
 	int rc;
+
+	if (!pon)
+		return -EINVAL;
 
 	rc = regmap_read(pon->regmap, QPNP_PON_PS_HOLD_RST_CTL(pon), &val);
 	if (rc) {
@@ -532,15 +535,20 @@ static ssize_t qpnp_pshold_reboot_store(struct device *dev,
 	int rc;
 
 	if (size > QPNP_PON_BUFFER_SIZE)
-	  return -EINVAL;
+		return -EINVAL;
 
 	rc = kstrtou32(buf, 10, &value);
 	if (rc)
-	  return rc;
+		return rc;
+
+	if (value != PON_POWER_OFF_WARM_RESET &&
+	    value != PON_POWER_OFF_SHUTDOWN &&
+	    value != PON_POWER_OFF_HARD_RESET)
+		return -EINVAL;
 
 	rc = qpnp_pon_system_pwr_off(value);
 	if (rc < 0)
-	  return rc;
+		return rc;
 
 	return size;
 }
@@ -553,6 +561,9 @@ static ssize_t qpnp_kpdpwr_reset_show(struct device *dev,
 	struct qpnp_pon *pon = dev_get_drvdata(dev);
 	int val;
 	int rc;
+
+	if (!pon)
+		return -EINVAL;
 
 	rc = regmap_read(pon->regmap, QPNP_PON_KPDPWR_S2_CNTL2(pon), &val);
 	if (rc) {
@@ -573,6 +584,9 @@ static ssize_t qpnp_kpdpwr_reset_store(struct device *dev,
 	u32 value;
 	int rc;
 
+	if (!pon)
+		return -EINVAL;
+
 	if (size > QPNP_PON_BUFFER_SIZE)
 		return -EINVAL;
 
@@ -584,6 +598,8 @@ static ssize_t qpnp_kpdpwr_reset_store(struct device *dev,
 	value &= QPNP_PON_S2_RESET_ENABLE;
 
 	rc = regmap_write(pon->regmap, QPNP_PON_KPDPWR_S2_CNTL2(pon), value);
+	if (rc)
+		return rc;
 
 	return size;
 }
@@ -879,20 +895,24 @@ int qpnp_pon_is_ps_hold_reset(void)
 		dev_err(&pon->pdev->dev,
 				"Unable to read addr=%x, rc(%d)\n",
 				QPNP_POFF_REASON1(pon), rc);
-		return 0;
+		return -EIO;
 	}
 
 	/* The bit 1 is 1, means by PS_HOLD/MSM controlled shutdown */
 	if (reg & 0x2)
 		return 1;
 
-	dev_info(&pon->pdev->dev,
+	dev_dbg(&pon->pdev->dev,
 			"hw_reset reason1 is 0x%x\n",
 			reg);
 
 	rc = regmap_read(pon->regmap, QPNP_POFF_REASON2(pon), &reg);
-
-	dev_info(&pon->pdev->dev,
+	if (rc)
+		dev_err(&pon->pdev->dev,
+			"Unable to read addr=%x, rc(%d)\n",
+			QPNP_POFF_REASON2(pon), rc);
+	else
+		dev_dbg(&pon->pdev->dev,
 			"hw_reset reason2 is 0x%x\n",
 			reg);
 	return 0;
@@ -913,20 +933,24 @@ int qpnp_pon_is_lpk(void)
 		dev_err(&pon->pdev->dev,
 				"Unable to read addr=%x, rc(%d)\n",
 				QPNP_POFF_REASON1(pon), rc);
-		return 0;
+		return -EIO;
 	}
 
 	/* The bit 7 is 1, means the off reason is powerkey */
 	if (reg & 0x80)
 		return 1;
 
-	dev_info(&pon->pdev->dev,
+	dev_dbg(&pon->pdev->dev,
 			"hw_reset reason1 is 0x%x\n",
 			reg);
 
 	rc = regmap_read(pon->regmap, QPNP_POFF_REASON2(pon), &reg);
-
-	dev_info(&pon->pdev->dev,
+	if (rc)
+		dev_err(&pon->pdev->dev,
+			"Unable to read addr=%x, rc(%d)\n",
+			QPNP_POFF_REASON2(pon), rc);
+	else
+		dev_dbg(&pon->pdev->dev,
 			"hw_reset reason2 is 0x%x\n",
 			reg);
 	return 0;
@@ -1107,7 +1131,6 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 			pr_debug("Ignoring kpdpwr event - within debounce time\n");
 			return 0;
 		}
-		dev_err(&pon->pdev->dev, "elapsed_us:%lld\n", elapsed_us);
 	}
 
 	/* check the RT status to get the current status of the line */
@@ -2307,7 +2330,7 @@ static int debug_pon_on_off_reg(struct qpnp_pon *pon)
 
 print_log:
 	strlcat(str_buf, "\n", sizeof(str_buf));
-	printk(str_buf);
+	printk("%s", str_buf);
 
 	return rc;
 }
@@ -2661,6 +2684,10 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(&pdev->dev, pon);
 
+	pon->warm_reset_poff_type = -EINVAL;
+	pon->hard_reset_poff_type = -EINVAL;
+	pon->shutdown_poff_type = -EINVAL;
+
 	INIT_DELAYED_WORK(&pon->bark_work, bark_work_func);
 
 	/* register the PON configurations */
@@ -2843,6 +2870,7 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 		rc = device_create_file(&pdev->dev, &dev_attr_kpdpwr_reset);
 		if (rc) {
 			dev_err(&pdev->dev, "sys file creation failed rc: %d\n", rc);
+			device_remove_file(&pdev->dev, &dev_attr_pshold_reboot);
 			goto err_out;
 		}
 	}
@@ -2873,6 +2901,9 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 	return 0;
 
 err_out:
+	device_remove_file(&pdev->dev, &dev_attr_debounce_us);
+	device_remove_file(&pdev->dev, &dev_attr_pshold_reboot);
+	device_remove_file(&pdev->dev, &dev_attr_kpdpwr_reset);
 	if (sys_reset)
 		sys_reset_dev = NULL;
 	return rc;
@@ -2884,6 +2915,8 @@ static int qpnp_pon_remove(struct platform_device *pdev)
 	unsigned long flags;
 
 	device_remove_file(&pdev->dev, &dev_attr_debounce_us);
+	device_remove_file(&pdev->dev, &dev_attr_pshold_reboot);
+	device_remove_file(&pdev->dev, &dev_attr_kpdpwr_reset);
 
 	cancel_delayed_work_sync(&pon->bark_work);
 

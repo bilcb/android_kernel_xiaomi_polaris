@@ -21,7 +21,7 @@
 
 #include <linux/pmic-voter.h>
 
-#define NUM_MAX_CLIENTS		24
+#define NUM_MAX_CLIENTS		32
 #define DEBUG_FORCE_CLIENT	"DEBUG_FORCE_CLIENT"
 
 static DEFINE_SPINLOCK(votable_list_slock);
@@ -108,7 +108,7 @@ static void vote_min(struct votable *votable, int client_id,
 	for (i = 0; i < votable->num_clients && votable->client_strs[i]; i++) {
 		if (strcmp(votable->name, "FG_WS") != 0) {
 			if (votable->votes[i].enabled)
-				pr_info("%s: val: %d\n", votable->client_strs[i],
+				pr_debug("%s: val: %d\n", votable->client_strs[i],
 							votable->votes[i].value);
 		}
 		if (votable->votes[i].enabled
@@ -414,7 +414,8 @@ int vote(struct votable *votable, const char *client_str, bool enabled, int val)
 				&effective_result, &effective_id);
 		break;
 	default:
-		return -EINVAL;
+		rc = -EINVAL;
+		goto out;
 	}
 
 	/*
@@ -423,13 +424,15 @@ int vote(struct votable *votable, const char *client_str, bool enabled, int val)
 	 */
 	if (!votable->voted_on
 			|| (effective_result != votable->effective_result)) {
+		int previous_result = votable->effective_result;
+
 		votable->effective_client_id = effective_id;
 		votable->effective_result = effective_result;
 		if (strcmp(votable->name, "FG_WS") != 0) {
 			pr_info("%s: current vote is now %d voted by %s,%d,previous voted %d\n",
 				votable->name, effective_result,
 				get_client_str(votable, effective_id),
-				effective_id, votable->effective_result);
+				effective_id, previous_result);
 		}
 		if (votable->callback && !votable->force_active)
 			rc = votable->callback(votable, votable->data,
@@ -630,10 +633,6 @@ struct votable *create_votable(const char *name,
 		votable->effective_result = 0;
 	votable->effective_client_id = -EINVAL;
 
-	spin_lock_irqsave(&votable_list_slock, flags);
-	list_add(&votable->list, &votable_list);
-	spin_unlock_irqrestore(&votable_list_slock, flags);
-
 	votable->root = debugfs_create_dir(name, debug_root);
 	if (!votable->root) {
 		pr_err("Couldn't create debug dir %s\n", name);
@@ -677,6 +676,10 @@ struct votable *create_votable(const char *name,
 		kfree(votable);
 		return ERR_PTR(-EEXIST);
 	}
+
+	spin_lock_irqsave(&votable_list_slock, flags);
+	list_add(&votable->list, &votable_list);
+	spin_unlock_irqrestore(&votable_list_slock, flags);
 
 	return votable;
 }

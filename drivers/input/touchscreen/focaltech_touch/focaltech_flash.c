@@ -69,14 +69,19 @@ struct fts_upgrade *fwupgrade;
 /*****************************************************************************
 * Static function prototypes
 *****************************************************************************/
-static u16 fts_pram_ecc_calc_host(u8 *pbuf, u16 length)
+static u16 fts_pram_ecc_calc_host(const u8 *pbuf, u16 length)
 {
 	u16 ecc = 0;
 	u16 i = 0;
 	u16 j = 0;
+	u8 last;
 
+	last = (length & 1) ? 0x00 : 0;
 	for (i = 0; i < length; i += 2) {
-		ecc ^= ((pbuf[i] << 8) | (pbuf[i + 1]));
+		if (i + 1 >= length)
+			ecc ^= ((pbuf[i] << 8) | last);
+		else
+			ecc ^= ((pbuf[i] << 8) | (pbuf[i + 1]));
 		for (j = 0; j < 16; j++) {
 			if (ecc & 0x01)
 				ecc = (u16) ((ecc >> 1) ^ AL2_FCS_COEF);
@@ -160,7 +165,7 @@ static int fts_pram_ecc_cal_xor(struct i2c_client *client)
 
 static int fts_pram_ecc_cal(struct i2c_client *client, u32 saddr, u32 len)
 {
-	if ((NULL == fwupgrade) && (NULL == fwupgrade->func)) {
+	if ((NULL == fwupgrade) || (NULL == fwupgrade->func)) {
 		FTS_ERROR("fwupgrade/func is null");
 		return -EINVAL;
 	}
@@ -177,7 +182,7 @@ static int fts_pram_ecc_cal(struct i2c_client *client, u32 saddr, u32 len)
  *
  * return pramboot ecc of host if success, otherwise return error code
  ***********************************************************************/
-static int fts_pram_write_buf(struct i2c_client *client, u8 *buf, u32 len)
+static int fts_pram_write_buf(struct i2c_client *client, const u8 *buf, u32 len)
 {
 	int ret = 0;
 	u32 i = 0;
@@ -191,7 +196,7 @@ static int fts_pram_write_buf(struct i2c_client *client, u8 *buf, u32 len)
 	int ecc_in_host = 0;
 
 	FTS_INFO("write pramboot to pram");
-	if ((NULL == fwupgrade) && (NULL == fwupgrade->func)) {
+	if ((NULL == fwupgrade) || (NULL == fwupgrade->func)) {
 		FTS_ERROR("fwupgrade/func is null");
 		return -EINVAL;
 	}
@@ -282,7 +287,7 @@ static int fts_pram_write_remap(struct i2c_client *client)
 	int ret = 0;
 	int ecc_in_host = 0;
 	int ecc_in_tp = 0;
-	u8 *pb_buf = NULL;
+	const u8 *pb_buf = NULL;
 	u32 pb_len = 0;
 	struct fts_upgrade *upg = fwupgrade;
 
@@ -518,6 +523,9 @@ int fts_fwupg_get_boot_state(struct i2c_client *client, enum FW_STATUS *fw_sts)
 	} else if ((val[0] == 0x87) && (val[1] == 0x19)) {
 		FTS_INFO("tp run in romboot");
 		*fw_sts = FTS_RUN_IN_ROM;
+	} else {
+		FTS_ERROR("boot id mismatch: 0x%02x%02x", val[0], val[1]);
+		return -EIO;
 	}
 
 	return 0;
@@ -821,9 +829,9 @@ int fts_fwupg_ecc_cal(struct i2c_client *client, u32 saddr, u32 len)
 		ret =
 		    fts_fwupg_check_flash_status(client, FTS_CMD_FLASH_STATUS_ECC_OK, FTS_RETRIES_ECC_CAL,
 						 FTS_RETRIES_DELAY_ECC_CAL);
-		if (ret < 0) {
-			FTS_ERROR("ecc flash status read fail");
-			return ret;
+		if (!ret) {
+			FTS_ERROR("ecc flash status check fail");
+			return -EIO;
 		}
 	}
 
@@ -908,16 +916,22 @@ int fts_flash_write_buf(struct i2c_client *client, u32 saddr, u8 *buf, u32 len, 
 		mdelay(delay);
 
 		/* read status */
-		wr_ok = FTS_CMD_FLASH_STATUS_WRITE_OK + addr / packet_len;
+		wr_ok = FTS_CMD_FLASH_STATUS_WRITE_OK + addr / FTS_FLASH_PACKET_LENGTH;
 		for (j = 0; j < FTS_RETRIES_WRITE; j++) {
 			cmd = FTS_CMD_FLASH_STATUS;
 			ret = fts_i2c_read(client, &cmd, 1, val, FTS_CMD_FLASH_STATUS_LEN);
+			if (ret < 0)
+				FTS_ERROR("read flash status fail, ret=%d", ret);
 			read_status = (((u16) val[0]) << 8) + val[1];
 			/*  FTS_INFO("%x %x", wr_ok, read_status); */
 			if (wr_ok == read_status) {
 				break;
 			}
 			mdelay(FTS_RETRIES_DELAY_WRITE);
+		}
+		if (j >= FTS_RETRIES_WRITE) {
+			FTS_ERROR("flash write status timeout, addr=%x", addr);
+			return -EIO;
 		}
 	}
 
@@ -1021,8 +1035,7 @@ int fts_flash_read(struct i2c_client *client, u32 addr, u8 *buf, u32 len)
 
 read_flash_err:
 	/* reset to normal boot */
-	ret = fts_fwupg_reset_in_boot(client);
-	if (ret < 0) {
+	if (fts_fwupg_reset_in_boot(client) < 0) {
 		FTS_ERROR("reset to normal boot fail");
 	}
 	return ret;
@@ -1161,11 +1174,16 @@ static int fts_lic_get_vid_in_tp(struct i2c_client *client, u16 *vid)
 	}
 
 	ret = fts_i2c_read_reg(client, FTS_REG_VENDOR_ID, &val[0]);
-	if (fts_data->ic_info.is_incell)
-		ret = fts_i2c_read_reg(client, FTS_REG_MODULE_ID, &val[1]);
 	if (ret < 0) {
 		FTS_ERROR("read vid from tp fail");
 		return ret;
+	}
+	if (fts_data->ic_info.is_incell) {
+		ret = fts_i2c_read_reg(client, FTS_REG_MODULE_ID, &val[1]);
+		if (ret < 0) {
+			FTS_ERROR("read vid from tp fail");
+			return ret;
+		}
 	}
 
 	*vid = *(u16 *) val;
@@ -1657,21 +1675,29 @@ int fts_fwupg_get_vendorid(struct fts_ts_data *ts_data, u16 *vid)
 	fwvalid = fts_fwupg_check_fw_valid(client);
 	if (fwvalid) {
 		ret = fts_i2c_read_reg(client, FTS_REG_VENDOR_ID, &vendor_id);
-		if (ts_data->ic_info.is_incell)
+		if (ret < 0) {
+			FTS_ERROR("fail to get vendor id from tp");
+			return ret;
+		}
+		if (ts_data->ic_info.is_incell) {
 			ret = fts_i2c_read_reg(client, FTS_REG_MODULE_ID, &module_id);
+			if (ret < 0) {
+				FTS_ERROR("fail to get vendor id from tp");
+				return ret;
+			}
+		}
 	} else {
 		fwcfg_addr = upg->func->fwcfgoff;
 		ret = fts_flash_read(client, fwcfg_addr, cfgbuf, FTS_HEADER_LEN);
+		if (ret < 0) {
+			FTS_ERROR("fail to get vendor id from tp");
+			return ret;
+		}
 		vendor_id = cfgbuf[FTS_CONIFG_VENDORID_OFF];
 		if (ts_data->ic_info.is_incell) {
 			if ((cfgbuf[FTS_CONIFG_MODULEID_OFF] + cfgbuf[FTS_CONIFG_MODULEID_OFF + 1]) == 0xFF)
 				module_id = cfgbuf[FTS_CONIFG_MODULEID_OFF];
 		}
-	}
-
-	if (ret < 0) {
-		FTS_ERROR("fail to get vendor id from tp");
-		return ret;
 	}
 
 	*vid = ((u16) module_id << 8) + vendor_id;
@@ -1685,8 +1711,8 @@ int fts_fwupg_get_vendorid(struct fts_ts_data *ts_data, u16 *vid)
  *
  * call it to get upgrade file which include in host driver
  * warning:
- *   1. if more fw files, please modify FTS_GET_VENDOR_ID_NUM&
- * FTS_VENDOR_ID
+ *   1. firmware is selected by project_name (FW_UPDATE_BY_VENDOR_ID
+ * is not defined), vendor id is not used here
  *   2. For incell ICs, vendor id = module id << 8 + panel id
  *      For others, vendor id = 0x0000 + panel id
  *   3. get fw file from reques_firmware(), this function unactive
@@ -1696,8 +1722,8 @@ static int fts_fwupg_get_fw_file(struct fts_ts_data *ts_data)
 	struct upgrade_fw *fw = &fw_list[0];
 	struct fts_upgrade *upg = fwupgrade;
 	int i = 0;
-	int len = 0;
 #ifdef FW_UPDATE_BY_VENDOR_ID
+	int len = 0;
 	int ret = 0;
 	u16 vendor_id = 0;
 #endif
@@ -1713,8 +1739,10 @@ static int fts_fwupg_get_fw_file(struct fts_ts_data *ts_data)
 #endif
 	for (i = 0; i < sizeof(fw_list)/sizeof(fw_list[0]); i++) {
 		fw = &fw_list[i];
-		len = strlen(ts_data->pdata->project_name) > strlen(fw->project_name) ? strlen(ts_data->pdata->project_name) : strlen(fw->project_name);
 #ifdef FW_UPDATE_BY_VENDOR_ID
+		len = 0;
+		if (ts_data->pdata->project_name)
+			len = strlen(ts_data->pdata->project_name) > strlen(fw->project_name) ? strlen(ts_data->pdata->project_name) : strlen(fw->project_name);
 		if (ts_data->pdata->project_name && !strncmp(ts_data->pdata->project_name, fw->project_name, len) && vendor_id == fw->vendor_id) {
 			FTS_INFO("project id and vendor id match, get fw file successfully");
 			break;
@@ -1871,7 +1899,9 @@ int fts_fwupg_init(struct fts_ts_data *ts_data)
 	}
 
 	if (NULL == fwupgrade->func) {
-		FTS_ERROR("no upgrade functin match, can't upgrade");
+		FTS_ERROR("no upgrade function match, can't upgrade");
+		kfree(fwupgrade);
+		fwupgrade = NULL;
 		return -ENODATA;
 	}
 
@@ -1896,8 +1926,10 @@ int fts_fwupg_init(struct fts_ts_data *ts_data)
 int fts_fwupg_exit(struct fts_ts_data *ts_data)
 {
 	FTS_FUNC_ENTER();
+	cancel_work_sync(&ts_data->fwupg_work);
 	if (fwupgrade) {
 		kfree(fwupgrade);
+		fwupgrade = NULL;
 	}
 	FTS_FUNC_EXIT();
 

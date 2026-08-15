@@ -98,9 +98,13 @@ int sl_eeprom_parse_memory_map(struct device_node *node,
 	int i;
 	struct    sl_eeprom_memory_map_t *map;
 	rc = copy_from_user(data, (void __user*)source, sizeof(struct sl_eeprom_memory_block_t));
-	if (rc < 0){
+	if (rc){
 		CAM_ERR(CAM_SL_EEPROM, "sl_eeprom_parse_memory_map copy from user failed\n");
-		return rc;
+		return -EFAULT;
+	}
+	if (!data->num_map || data->num_map > 256) {
+		CAM_ERR(CAM_SL_EEPROM, "invalid num_map %u", data->num_map);
+		return -EINVAL;
 	}
 	map = kzalloc((sizeof(*map) * data->num_map), GFP_KERNEL);
 	if (!map) {
@@ -108,11 +112,27 @@ int sl_eeprom_parse_memory_map(struct device_node *node,
 		return rc;
 	}
 	rc = copy_from_user(map, data->map, sizeof(struct sl_eeprom_memory_map_t) * data->num_map);
-	if (rc < 0){
+	if (rc){
 		CAM_ERR(CAM_SL_EEPROM, "sl_eeprom_parse_memory_map copy from user failed\n");
+		rc = -EFAULT;
 		goto ERROR;
 	}
 	data->map = map;
+	data->num_data = 0;
+	for (i = 0; i < data->num_map; i++) {
+		if (data->map[i].mem.valid_size) {
+			if (data->map[i].mem.valid_size > 16 * 1024 ||
+				data->num_data > 1024 * 1024 -
+					data->map[i].mem.valid_size) {
+				CAM_ERR(CAM_SL_EEPROM,
+					"invalid mem valid_size %u",
+					data->map[i].mem.valid_size);
+				rc = -EINVAL;
+				goto ERROR;
+			}
+			data->num_data += data->map[i].mem.valid_size;
+		}
+	}
 	for (i = 0; i < data->num_map; i++) {
 		CAM_DBG(CAM_SL_EEPROM,
 			"sl_eeprom_parse_memory_map saddr 0X%4x\n",
@@ -143,6 +163,11 @@ int sl_eeprom_parse_memory_map(struct device_node *node,
 			data->map[i].delay.data, data->map[i].delay.data_type,
 			data->map[i].delay.valid_size, data->map[i].delay.delay);
 	}
+	if (!data->num_data) {
+		CAM_ERR(CAM_SL_EEPROM, "sl_eeprom_parse_memory_map no data\n");
+		rc = -EINVAL;
+		goto ERROR;
+	}
 	*user_addr = data->mapdata;
 	data->mapdata = kzalloc(data->num_data, GFP_KERNEL);
 	if (!data->mapdata) {
@@ -151,7 +176,7 @@ int sl_eeprom_parse_memory_map(struct device_node *node,
 	}
 	return rc;
 ERROR:
-	kfree(data->map);
+	kfree(map);
 	memset(data, 0, sizeof(*data));
 	return rc;
 }
@@ -243,9 +268,12 @@ int sl_eeprom_parse_dt(struct sl_eeprom_ctrl_t *e_ctrl)
 	if ((e_ctrl->userspace_probe == false) &&
 			(e_ctrl->io_master_info.master_type != SPI_MASTER)) {
 		rc = of_property_read_u32(of_node, "slave-addr", &temp);
-		if (rc < 0)
+		if (rc < 0) {
 			CAM_ERR(CAM_SL_EEPROM, "failed: no slave-addr rc %d", rc);
-		soc_private->i2c_info.slave_addr = temp;
+			soc_private->i2c_info.slave_addr = 0;
+		} else {
+			soc_private->i2c_info.slave_addr = temp;
+		}
 		rc = of_property_read_u32(of_node, "i2c-freq-mode", &temp);
 		soc_private->i2c_info.i2c_freq_mode = temp;
 		if (rc < 0) {
@@ -262,7 +290,7 @@ int sl_eeprom_parse_dt(struct sl_eeprom_ctrl_t *e_ctrl)
 	for (i = 0; i < soc_info->num_clk; i++) {
 		soc_info->clk[i] = devm_clk_get(soc_info->dev,
 			soc_info->clk_name[i]);
-		if (!soc_info->clk[i]) {
+		if (IS_ERR(soc_info->clk[i])) {
 			CAM_ERR(CAM_SL_EEPROM, "get failed for %s",
 				soc_info->clk_name[i]);
 			rc = -ENOENT;

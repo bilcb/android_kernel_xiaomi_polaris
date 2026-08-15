@@ -1775,7 +1775,7 @@ static int cam_ife_mgr_config_hw(void *hw_mgr_priv,
 		cdm_cmd->userdata = ctx;
 		cdm_cmd->cookie = cfg->request_id;
 
-		for (i = 0 ; i <= cfg->num_hw_update_entries; i++) {
+		for (i = 0 ; i < cfg->num_hw_update_entries; i++) {
 			cmd = (cfg->hw_update_entries + i);
 			cdm_cmd->cmd[i].bl_addr.mem_handle = cmd->handle;
 			cdm_cmd->cmd[i].offset = cmd->offset;

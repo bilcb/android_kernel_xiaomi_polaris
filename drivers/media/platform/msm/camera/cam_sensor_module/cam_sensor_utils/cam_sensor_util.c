@@ -91,13 +91,14 @@ int32_t cam_sensor_handle_delay(
 	if (offset > 0) {
 		i2c_list =
 			list_entry(list_ptr, struct i2c_settings_list, list);
-		CAM_ERR(CAM_SENSOR, "generic_op_code: %d delay %d", generic_op_code, cmd_uncond_wait->delay);
+		CAM_DBG(CAM_SENSOR, "generic_op_code: %d delay %d", generic_op_code, cmd_uncond_wait->delay);
 		if (generic_op_code ==
-			CAMERA_SENSOR_WAIT_OP_HW_UCND && cmd_uncond_wait->delay < 1000)
+			CAMERA_SENSOR_WAIT_OP_HW_UCND && cmd_uncond_wait->delay < 400)
 			i2c_list->i2c_settings.reg_setting[offset - 1].delay =
 				cmd_uncond_wait->delay;
 		else
-			i2c_list->i2c_settings.delay = (cmd_uncond_wait->delay + 500) / 1000;
+			i2c_list->i2c_settings.delay =
+				max(1, (cmd_uncond_wait->delay + 500) / 1000);
 		(*cmd_buf) +=
 			sizeof(
 			struct cam_cmd_unconditional_wait) / sizeof(uint32_t);
@@ -329,13 +330,13 @@ int cam_sensor_i2c_command_parser(
 			return rc;
 		}
 
-		remain_len = len_of_buff;
 		if ((len_of_buff < sizeof(struct common_header)) ||
 			(cmd_desc[i].offset >
 			(len_of_buff - sizeof(struct common_header)))) {
 			CAM_ERR(CAM_SENSOR, "buffer provided too small");
 			return -EINVAL;
 		}
+		remain_len = len_of_buff - cmd_desc[i].offset;
 		cmd_buf = (uint32_t *)generic_ptr;
 		cmd_buf += cmd_desc[i].offset / sizeof(uint32_t);
 
@@ -968,7 +969,7 @@ int32_t cam_sensor_update_power_settings(void *cmd_buf,
 				sizeof(struct cam_cmd_unconditional_wait);
 			if (tot_size > cmd_length) {
 				CAM_ERR(CAM_SENSOR, "Command Buffer is wrong");
-				return -EINVAL;
+				goto free_power_settings;
 			}
 			scr = (void *) (wait_cmd);
 			ptr = (void *)
@@ -1639,7 +1640,7 @@ int cam_sensor_core_power_up(struct cam_sensor_power_ctrl_t *ctrl,
 		case SENSOR_CUSTOM_GPIO2:
 			if (no_gpio) {
 				CAM_ERR(CAM_SENSOR, "request gpio failed");
-				return no_gpio;
+				goto power_up_failed;
 			}
 			if (!gpio_num_info) {
 				CAM_ERR(CAM_SENSOR, "Invalid gpio_num_info");
@@ -1933,6 +1934,8 @@ int cam_sensor_util_power_down(struct cam_sensor_power_ctrl_t *ctrl,
 		case SENSOR_CUSTOM_GPIO1:
 		case SENSOR_CUSTOM_GPIO2:
 
+			if (!gpio_num_info)
+				continue;
 			if (!gpio_num_info->valid[pd->seq_type])
 				continue;
 

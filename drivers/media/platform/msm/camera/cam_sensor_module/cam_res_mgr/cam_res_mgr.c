@@ -556,31 +556,31 @@ int cam_res_mgr_gpio_set_value(unsigned int gpio, int value)
 				break;
 			}
 		}
-		mutex_unlock(&cam_res->gpio_res_lock);
-	}
 
-	/*
-	 * Set the value directly if can't find the gpio from
-	 * gpio_res_list, otherwise, need add ref count support
-	 **/
-	if (!found) {
-		gpio_set_value_cansleep(gpio, value);
-	} else {
-		if (value) {
-			gpio_res->power_on_count++;
-			if (gpio_res->power_on_count < 2) {
-				gpio_set_value_cansleep(gpio, value);
-				CAM_DBG(CAM_RES,
-					"Shared GPIO(%d) : HIGH", gpio);
-			}
-		} else {
-			gpio_res->power_on_count--;
-			if (gpio_res->power_on_count < 1) {
-				gpio_set_value_cansleep(gpio, value);
-				CAM_DBG(CAM_RES,
-					"Shared GPIO(%d) : LOW", gpio);
+		/*
+		 * Set the value directly if can't find the gpio from
+		 * gpio_res_list, otherwise, need add ref count support
+		 **/
+		if (found) {
+			if (value) {
+				gpio_res->power_on_count++;
+				if (gpio_res->power_on_count < 2) {
+					gpio_set_value_cansleep(gpio, value);
+					CAM_DBG(CAM_RES,
+						"Shared GPIO(%d) : HIGH", gpio);
+				}
+			} else {
+				gpio_res->power_on_count--;
+				if (gpio_res->power_on_count < 1) {
+					gpio_set_value_cansleep(gpio, value);
+					CAM_DBG(CAM_RES,
+						"Shared GPIO(%d) : LOW", gpio);
+				}
 			}
 		}
+		mutex_unlock(&cam_res->gpio_res_lock);
+	} else if (!found) {
+		gpio_set_value_cansleep(gpio, value);
 	}
 
 	return rc;

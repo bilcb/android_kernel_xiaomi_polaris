@@ -17,6 +17,11 @@
  *
  */
 
+#ifndef _LINUX_NVT_TOUCH_MEM_MAP_H
+#define _LINUX_NVT_TOUCH_MEM_MAP_H
+
+#include <linux/types.h>
+
 struct nvt_ts_mem_map {
 	uint32_t EVENT_BUF_ADDR;
 	uint32_t RAW_PIPE0_ADDR;
@@ -207,3 +212,5 @@ static const struct nvt_ts_trim_id_table trim_id_table[] = {
 	{.id = {0xFF, 0xFF, 0xFF, 0x76, 0x66, 0x03}, .mask = {0, 0, 0, 1, 1, 1},
 		.mmap = &NT36676F_memory_map, .carrier_system = 0}
 };
+
+#endif /* _LINUX_NVT_TOUCH_MEM_MAP_H */

@@ -104,7 +104,8 @@ static int device_open(struct inode *inode, struct file *filp)
 	}
 
 	if (down_interruptible(&ctrl_device.sem) != 0)
-		return -EEXIST;
+		return -EINTR;
+	filp->private_data = (void *)1;
 	EL_PRINT_I("Opened device %s", USERSPACE_CTRL_IO_DEVICE_NAME);
 	return 0;
 }
@@ -117,9 +118,11 @@ static ssize_t device_read(struct file *fp, char __user *buff,
 	uint8_t *ping_buffer;
 	int result;
 
-	if (user_buf_length < ELLIPTIC_MSG_BUF_SIZE)
+	if (user_buf_length < ELLIPTIC_MSG_BUF_SIZE) {
 		EL_PRINT_E("user space buffer user_buf_length too small : %zu",
 		user_buf_length);
+		return -EINVAL;
+	}
 
 	bytes_read = 0;
 	copy_result = 0;
@@ -158,6 +161,7 @@ static ssize_t device_read(struct file *fp, char __user *buff,
 				mutex_unlock(&ctrl_device.data_lock);
 			} else if (result == -EINTR) {
 				EL_PRINT_E("lock interrupted");
+				return -EINTR;
 			} else {
 				EL_PRINT_E("lock error = %d", result);
 			}
@@ -167,6 +171,7 @@ static ssize_t device_read(struct file *fp, char __user *buff,
 		}
 	} else if (result == -ERESTARTSYS) {
 		EL_PRINT_E("interrupted");
+		return -ERESTARTSYS;
 	} else {
 		EL_PRINT_E("wait_event error = %d", result);
 	}
@@ -174,11 +179,14 @@ static ssize_t device_read(struct file *fp, char __user *buff,
 fail:
 	atomic_set(&ctrl_device.data_state, 0);
 	mutex_unlock(&ctrl_device.data_lock);
-	return 0;
+	return -EFAULT;
 }
 
 static int device_close(struct inode *inode, struct file *filp)
 {
+	if (!filp->private_data)
+		return 0;
+	filp->private_data = NULL;
 	up(&ctrl_device.sem);
 	EL_PRINT_I("Closed device %s", USERSPACE_CTRL_IO_DEVICE_NAME);
 	return 0;
@@ -223,16 +231,19 @@ int elliptic_userspace_ctrl_driver_init(void)
 
 	cdev_init(&ctrl_device.cdev, &elliptic_userspace_ctrl_fops);
 	ctrl_device.cdev.owner = THIS_MODULE;
+	sema_init(&ctrl_device.sem, 1);
+	mutex_init(&ctrl_device.data_lock);
+	init_waitqueue_head(&ctrl_device.data_available);
 	err = cdev_add(&ctrl_device.cdev, device_number, 1);
 	if (err) {
 		EL_PRINT_W("error %d while trying to add %s%d",
 			err, ELLIPTIC_DEVICENAME, 0);
+		device_destroy(elliptic_class, device_number);
+		unregister_chrdev(elliptic_userspace_ctrl_major,
+			USERSPACE_CTRL_IO_DEVICE_NAME);
 		return err;
 	}
 
-	sema_init(&ctrl_device.sem, 1);
-	mutex_init(&ctrl_device.data_lock);
-	init_waitqueue_head(&ctrl_device.data_available);
 	return 0;
 }
 
@@ -243,7 +254,6 @@ void elliptic_userspace_ctrl_driver_exit(void)
 	cdev_del(&ctrl_device.cdev);
 	unregister_chrdev(elliptic_userspace_ctrl_major,
 		USERSPACE_CTRL_IO_DEVICE_NAME);
-	up(&ctrl_device.sem);
 }
 
 int32_t elliptic_userspace_ctrl_write(uint32_t message_id,
@@ -262,8 +272,8 @@ int32_t elliptic_userspace_ctrl_write(uint32_t message_id,
 	set_pong_buffer_size(&ctrl_device, data_size);
 
 	memcpy(pong_buffer, data, data_size);
-	wake_up_interruptible(&ctrl_device.data_available);
 	atomic_set(&ctrl_device.data_state, 1);
+	wake_up_interruptible(&ctrl_device.data_available);
 	mutex_unlock(&ctrl_device.data_lock);
 
 	return 0;

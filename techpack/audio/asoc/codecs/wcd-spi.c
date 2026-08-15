@@ -702,12 +702,8 @@ static int wcd_spi_clk_ctrl(struct spi_device *spi,
 			goto done;
 		else if (wcd_spi->clk_users == 1) {
 			ret = wcd_spi_clk_enable(spi);
-			if ((get_hw_version_platform() == HARDWARE_PLATFORM_PERSEUS) &&
-			     (get_hw_version_major() == 2) &&
-			     (get_hw_version_minor() == 0)) {
-				if (ret != 0)
-					wcd_spi->clk_users = 0;
-			}
+			if (ret != 0)
+				wcd_spi->clk_users--;
 		}
 
 	} else {

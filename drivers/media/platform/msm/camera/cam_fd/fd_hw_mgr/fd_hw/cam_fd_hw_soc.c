@@ -98,7 +98,7 @@ static int cam_fd_soc_set_clk_flags(struct cam_hw_soc_info *soc_info)
 					"Failed in NORETAIN_MEM i=%d, rc=%d",
 					i, rc);
 
-			cam_soc_util_set_clk_flags(soc_info, i,
+			rc = cam_soc_util_set_clk_flags(soc_info, i,
 				CLKFLAG_NORETAIN_PERIPH);
 			if (rc)
 				CAM_ERR(CAM_FD,
@@ -273,6 +273,9 @@ int cam_fd_soc_deinit_resources(struct cam_hw_soc_info *soc_info)
 	struct cam_fd_soc_private *soc_private =
 		(struct cam_fd_soc_private *)soc_info->soc_private;
 	int rc;
+
+	if (!soc_private)
+		return 0;
 
 	rc = cam_cpas_unregister_client(soc_private->cpas_handle);
 	if (rc)

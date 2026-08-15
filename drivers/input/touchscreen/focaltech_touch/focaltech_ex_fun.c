@@ -145,8 +145,7 @@ static ssize_t fts_debug_write(struct file *filp, const char __user *buff, size_
 		break;
 
 	case PROC_HW_RESET:
-		snprintf(tmp, PAGE_SIZE, "%s", writebuf + 1);
-		tmp[buflen - 1] = '\0';
+		snprintf(tmp, sizeof(tmp), "%.*s", buflen - 1, writebuf + 1);
 		if (strncmp(tmp, "focal_driver", 12) == 0) {
 			FTS_INFO("APK execute HW Reset");
 			fts_reset_proc(1);
@@ -266,8 +265,8 @@ static int fts_debug_write(struct file *filp, const char __user *buff, unsigned 
 	struct fts_ts_data *ts_data = fts_data;
 	struct i2c_client *client = ts_data->client;
 
-	if ((count == 0) || (count > PROC_WRITE_BUF_SIZE)) {
-		FTS_ERROR("apk proc wirte count(%d) fail", (int)count);
+	if ((len == 0) || (len > PROC_WRITE_BUF_SIZE)) {
+		FTS_ERROR("apk proc wirte count(%d) fail", (int)len);
 		return -EINVAL;
 	}
 
@@ -315,8 +314,7 @@ static int fts_debug_write(struct file *filp, const char __user *buff, unsigned 
 		break;
 
 	case PROC_HW_RESET:
-		snprintf(tmp, PAGE_SIZE, "%s", writebuf + 1);
-		tmp[buflen - 1] = '\0';
+		snprintf(tmp, sizeof(tmp), "%.*s", buflen - 1, writebuf + 1);
 		if (strncmp(tmp, "focal_driver", 12) == 0) {
 			FTS_INFO("Begin HW Reset");
 			fts_reset_proc(1);
@@ -419,7 +417,7 @@ static int fts_debug_read(char *page, char **start, off_t off, int count, int *e
 int fts_create_apk_debug_channel(struct fts_ts_data *ts_data)
 {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0))
-	ts_data->proc = proc_create(PROC_NAME, 0777, NULL, &fts_proc_fops);
+	ts_data->proc = proc_create(PROC_NAME, 0644, NULL, &fts_proc_fops);
 #else
 	ts_data->proc = create_proc_entry(PROC_NAME, 0777, NULL);
 #endif
@@ -454,6 +452,7 @@ void fts_release_apk_debug_channel(struct fts_ts_data *ts_data)
 #else
 		remove_proc_entry(PROC_NAME, NULL);
 #endif
+		ts_data->proc = NULL;
 	}
 }
 
@@ -524,14 +523,14 @@ static ssize_t fts_tpfwver_show(struct device *dev, struct device_attribute *att
 #endif
 	if (fts_i2c_read_reg(client, FTS_REG_FW_VER, &fwver) < 0) {
 		num_read_chars = snprintf(buf, PAGE_SIZE, "I2c transfer error!\n");
+	} else if ((fwver == 0xFF) || (fwver == 0x00)) {
+		num_read_chars = snprintf(buf, PAGE_SIZE, "get tp fw version fail!\n");
+	} else {
+		num_read_chars = snprintf(buf, PAGE_SIZE, "%02x\n", fwver);
 	}
 #if FTS_ESDCHECK_EN
 	fts_esdcheck_proc_busy(0);
 #endif
-	if ((fwver == 0xFF) || (fwver == 0x00))
-		num_read_chars = snprintf(buf, PAGE_SIZE, "get tp fw version fail!\n");
-	else
-		num_read_chars = snprintf(buf, PAGE_SIZE, "%02x\n", fwver);
 
 	mutex_unlock(&input_dev->mutex);
 	return num_read_chars;
@@ -576,15 +575,15 @@ static ssize_t fts_tprwreg_show(struct device *dev, struct device_attribute *att
 	} else {
 		if (RWREG_OP_READ == rw_op.type) {
 			count = snprintf(buf, PAGE_SIZE, "Read Reg: [%02X]-[%02X]\n", rw_op.reg, rw_op.reg + rw_op.len);
-			count += snprintf(buf + count, PAGE_SIZE, "Result: ");
+			count += snprintf(buf + count, PAGE_SIZE - count, "Result: ");
 			if (rw_op.res) {
-				count += snprintf(buf + count, PAGE_SIZE, "failed, ret: %d\n", rw_op.res);
+				count += snprintf(buf + count, PAGE_SIZE - count, "failed, ret: %d\n", rw_op.res);
 			} else {
 				if (rw_op.opbuf) {
 					for (i = 0; i < rw_op.len; i++) {
-						count += snprintf(buf + count, PAGE_SIZE, "%02X ", rw_op.opbuf[i]);
+						count += snprintf(buf + count, PAGE_SIZE - count, "%02X ", rw_op.opbuf[i]);
 					}
-					count += snprintf(buf + count, PAGE_SIZE, "\n");
+					count += snprintf(buf + count, PAGE_SIZE - count, "\n");
 				}
 			}
 		} else {
@@ -592,17 +591,17 @@ static ssize_t fts_tprwreg_show(struct device *dev, struct device_attribute *att
 			count =
 			    snprintf(buf, PAGE_SIZE, "Write Reg: [%02X]-[%02X]\n", rw_op.reg,
 				     rw_op.reg + rw_op.len - 1);
-			count += snprintf(buf + count, PAGE_SIZE, "Write Data: ");
+			count += snprintf(buf + count, PAGE_SIZE - count, "Write Data: ");
 			if (rw_op.opbuf) {
 				for (i = 1; i < rw_op.len; i++) {
-					count += snprintf(buf + count, PAGE_SIZE, "%02X ", rw_op.opbuf[i]);
+					count += snprintf(buf + count, PAGE_SIZE - count, "%02X ", rw_op.opbuf[i]);
 				}
-				count += snprintf(buf + count, PAGE_SIZE, "\n");
+				count += snprintf(buf + count, PAGE_SIZE - count, "\n");
 			}
 			if (rw_op.res) {
-				count += snprintf(buf + count, PAGE_SIZE, "Result: failed, ret: %d\n", rw_op.res);
+				count += snprintf(buf + count, PAGE_SIZE - count, "Result: failed, ret: %d\n", rw_op.res);
 			} else {
-				count += snprintf(buf + count, PAGE_SIZE, "Result: success\n");
+				count += snprintf(buf + count, PAGE_SIZE - count, "Result: success\n");
 			}
 		}
 		/*if (rw_op.opbuf) {
@@ -627,9 +626,9 @@ static int shex_to_int(const char *hex_buf, int size)
 
 		if ((single >= '0') && (single <= '9')) {
 			value += (single - '0') * base;
-		} else if ((single >= 'a') && (single <= 'z')) {
+		} else if ((single >= 'a') && (single <= 'f')) {
 			value += (single - 'a' + 10) * base;
-		} else if ((single >= 'A') && (single <= 'Z')) {
+		} else if ((single >= 'A') && (single <= 'F')) {
 			value += (single - 'A' + 10) * base;
 		} else {
 			return -EINVAL;
@@ -663,12 +662,20 @@ static int fts_parse_buf(const char *buf, size_t cmd_len)
 	length = shex_to_int(buf + 3, 2);
 
 	if (buf[0] == '1') {
+		if (length == 0) {
+			pr_err("read length is 0!\n");
+			return -EINVAL;
+		}
 		rw_op.len = length;
 		rw_op.type = RWREG_OP_READ;
-		FTS_DEBUG("read %02X, %d bytes", rw_op.reg, rw_op.len);
+		FTS_DEBUG("read %02X, %d bytes", rw_op.reg, length);
 	} else {
 		if (cmd_len < (length * 2 + 5)) {
 			pr_err("data invalided!\n");
+			return -EINVAL;
+		}
+		if (length == 0) {
+			pr_err("write length is 0!\n");
 			return -EINVAL;
 		}
 		FTS_DEBUG("write %02X, %d bytes", rw_op.reg, length);
@@ -727,12 +734,21 @@ static ssize_t fts_tprwreg_store(struct device *dev, struct device_attribute *at
 		rw_op.len = 1;
 
 		rw_op.reg = shex_to_int(buf, 2);
+		if (rw_op.reg < 0) {
+			FTS_ERROR("Invalid reg cmd");
+			mutex_unlock(&input_dev->mutex);
+			return -EINVAL;
+		}
 	} else if (4 == cmd_length) {
 		rw_op.type = RWREG_OP_WRITE;
 		rw_op.len = 1;
 		rw_op.reg = shex_to_int(buf, 2);
 		rw_op.val = shex_to_int(buf + 2, 2);
-
+		if ((rw_op.reg < 0) || (rw_op.val < 0)) {
+			FTS_ERROR("Invalid reg/val cmd");
+			mutex_unlock(&input_dev->mutex);
+			return -EINVAL;
+		}
 	} else if (cmd_length < 5) {
 		FTS_ERROR("Invalid cmd buffer");
 		mutex_unlock(&input_dev->mutex);
@@ -746,6 +762,8 @@ static ssize_t fts_tprwreg_store(struct device *dev, struct device_attribute *at
 #endif
 	if (rw_op.len < 0) {
 		FTS_ERROR("cmd buffer error!");
+		mutex_unlock(&input_dev->mutex);
+		return -EINVAL;
 
 	} else {
 		if (RWREG_OP_READ == rw_op.type) {
@@ -809,13 +827,19 @@ static ssize_t fts_fwupgradebin_store(struct device *dev, struct device_attribut
 	struct fts_ts_data *ts_data = fts_data;
 	struct input_dev *input_dev = ts_data->input_dev;
 	struct i2c_client *client = ts_data->client;
+	int ret;
+
+	if (ts_data->fw_loading) {
+		FTS_ERROR("fw upgrade in process, try later");
+		return -EBUSY;
+	}
 
 	if ((count <= 1) || (count >= FILE_NAME_LENGTH - 32)) {
 		FTS_ERROR("fw bin name's length(%d) fail", (int)count);
 		return -EINVAL;
 	}
 	memset(fwname, 0, sizeof(fwname));
-	snprintf(fwname, PAGE_SIZE, "%s", buf);
+	snprintf(fwname, sizeof(fwname), "%s", buf);
 	fwname[count - 1] = '\0';
 
 	FTS_INFO("upgrade with bin file through sysfs node");
@@ -826,7 +850,7 @@ static ssize_t fts_fwupgradebin_store(struct device *dev, struct device_attribut
 	fts_esdcheck_switch(DISABLE);
 #endif
 
-	fts_upgrade_bin(client, fwname, 0);
+	ret = fts_upgrade_bin(client, fwname, 0);
 
 #if FTS_ESDCHECK_EN
 	fts_esdcheck_switch(ENABLE);
@@ -835,7 +859,7 @@ static ssize_t fts_fwupgradebin_store(struct device *dev, struct device_attribut
 	ts_data->fw_loading = 0;
 	mutex_unlock(&input_dev->mutex);
 
-	return count;
+	return ret < 0 ? ret : count;
 }
 
 /*
@@ -852,13 +876,19 @@ static ssize_t fts_fwforceupg_store(struct device *dev, struct device_attribute 
 	struct fts_ts_data *ts_data = fts_data;
 	struct input_dev *input_dev = ts_data->input_dev;
 	struct i2c_client *client = ts_data->client;
+	int ret;
+
+	if (ts_data->fw_loading) {
+		FTS_ERROR("fw upgrade in process, try later");
+		return -EBUSY;
+	}
 
 	if ((count <= 1) || (count >= FILE_NAME_LENGTH - 32)) {
 		FTS_ERROR("fw bin name's length(%d) fail", (int)count);
 		return -EINVAL;
 	}
 	memset(fwname, 0, sizeof(fwname));
-	snprintf(fwname, PAGE_SIZE, "%s", buf);
+	snprintf(fwname, sizeof(fwname), "%s", buf);
 	fwname[count - 1] = '\0';
 
 	FTS_INFO("force upgrade through sysfs node");
@@ -869,7 +899,7 @@ static ssize_t fts_fwforceupg_store(struct device *dev, struct device_attribute 
 	fts_esdcheck_switch(DISABLE);
 #endif
 
-	fts_upgrade_bin(client, fwname, 1);
+	ret = fts_upgrade_bin(client, fwname, 1);
 
 #if FTS_ESDCHECK_EN
 	fts_esdcheck_switch(ENABLE);
@@ -878,7 +908,7 @@ static ssize_t fts_fwforceupg_store(struct device *dev, struct device_attribute 
 	ts_data->fw_loading = 0;
 	mutex_unlock(&input_dev->mutex);
 
-	return count;
+	return ret < 0 ? ret : count;
 }
 
 /*
@@ -921,37 +951,37 @@ static ssize_t fts_dumpreg_show(struct device *dev, struct device_attribute *att
 	fts_esdcheck_proc_busy(1);
 #endif
 	fts_i2c_read_reg(client, FTS_REG_POWER_MODE, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "Power Mode:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "Power Mode:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_FW_VER, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "FW Ver:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "FW Ver:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_LIC_VER, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "LCD Initcode Ver:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "LCD Initcode Ver:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_IDE_PARA_VER_ID, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "Param Ver:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "Param Ver:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_IDE_PARA_STATUS, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "Param status:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "Param status:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_VENDOR_ID, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "Vendor ID:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "Vendor ID:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_LCD_BUSY_NUM, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "LCD Busy Number:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "LCD Busy Number:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_GESTURE_EN, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "Gesture Mode:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "Gesture Mode:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_CHARGER_MODE_EN, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "charge stat:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "charge stat:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_INT_CNT, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "INT count:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "INT count:0x%02x\n", val);
 
 	fts_i2c_read_reg(client, FTS_REG_FLOW_WORK_CNT, &val);
-	count += snprintf(buf + count, PAGE_SIZE, "ESD count:0x%02x\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "ESD count:0x%02x\n", val);
 #if FTS_ESDCHECK_EN
 	fts_esdcheck_proc_busy(0);
 #endif

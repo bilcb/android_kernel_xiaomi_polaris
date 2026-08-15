@@ -366,7 +366,8 @@ static int tas2557_fs_get(struct snd_kcontrol *pKcontrol,
 
 	mutex_lock(&pTAS2557->codec_lock);
 
-	if (pTAS2557->mpFirmware->mnConfigurations)
+	if (pTAS2557->mpFirmware && pTAS2557->mpFirmware->mnConfigurations
+	    && pTAS2557->mnCurrentConfiguration < pTAS2557->mpFirmware->mnConfigurations)
 		nFS = pTAS2557->mpFirmware->mpConfigurations[pTAS2557->mnCurrentConfiguration].mnSamplingRate;
 	pValue->value.integer.value[0] = nFS;
 	dev_dbg(pTAS2557->dev, "tas2557_fs_get = %d\n", nFS);
@@ -413,6 +414,8 @@ static int tas2557_Cali_get(struct snd_kcontrol *pKcontrol,
 	ret = tas2557_get_Cali_prm_r0(pTAS2557, &prm_r0);
 	if (ret)
 		pValue->value.integer.value[0] = prm_r0;
+	else
+		pValue->value.integer.value[0] = 0;
 
 
 	mutex_unlock(&pTAS2557->codec_lock);

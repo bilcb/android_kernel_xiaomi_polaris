@@ -555,7 +555,7 @@ static int fg_get_sram_prop(struct fg_chip *chip, enum fg_sram_param_id id,
 	int temp, rc, i;
 	u8 buf[4];
 
-	if (id < 0 || id > FG_SRAM_MAX || chip->sp[id].len > sizeof(buf))
+	if (id < 0 || id >= FG_SRAM_MAX || chip->sp[id].len > sizeof(buf))
 		return -EINVAL;
 
 	if (chip->battery_missing)
@@ -685,13 +685,14 @@ static int fg_get_battery_temp(struct fg_chip *chip, int *val)
 static int fg_get_battery_esr(struct fg_chip *chip, int *val)
 {
 	int rc, esr_uohms;
-		rc = fg_get_sram_prop(chip, FG_SRAM_ESR, &esr_uohms);
+
+	rc = fg_get_sram_prop(chip, FG_SRAM_ESR, &esr_uohms);
 	if (rc < 0) {
 		pr_err("failed to get ESR, rc=%d\n", rc);
 		return rc;
 	}
 	*val = esr_uohms;
-	return esr_uohms;
+	return 0;
 }
 
 static int fg_get_battery_resistance(struct fg_chip *chip, int *val)
@@ -2154,7 +2155,7 @@ static int fg_set_recharge_soc(struct fg_chip *chip, int recharge_soc)
 static int fg_adjust_recharge_soc(struct fg_chip *chip)
 {
 	union power_supply_propval prop = {0, };
-	int rc, msoc, recharge_soc, new_recharge_soc = 0;
+	int rc, msoc = 0, recharge_soc, new_recharge_soc = 0;
 	bool recharge_soc_status;
 
 	if (!chip->dt.auto_recharge_soc)
@@ -2213,10 +2214,6 @@ static int fg_adjust_recharge_soc(struct fg_chip *chip)
 			new_recharge_soc = recharge_soc;
 			chip->recharge_soc_adjusted = false;
 		}
-
-		/* Adjust the recharge_soc threshold */
-		new_recharge_soc = msoc - (FULL_CAPACITY - recharge_soc);
-		chip->recharge_soc_adjusted = true;
 	} else if ((!is_input_present(chip) || chip->health == POWER_SUPPLY_HEALTH_GOOD)
 					&& chip->recharge_soc_adjusted) {
 		/* Restore the default value */
@@ -2723,7 +2720,7 @@ static void clear_cycle_counter(struct fg_chip *chip)
 	}
 	rc = fg_sram_write(chip, CYCLE_COUNT_WORD, CYCLE_COUNT_OFFSET,
 			(u8 *)&chip->cyc_ctr.count,
-			sizeof(chip->cyc_ctr.count) / (sizeof(u8 *)),
+			sizeof(chip->cyc_ctr.count),
 			FG_IMA_DEFAULT);
 	if (rc < 0)
 		pr_err("failed to clear cycle counter rc=%d\n", rc);
@@ -3004,6 +3001,12 @@ static int fg_set_cycle_count(struct fg_chip *chip, int value)
 	int i = 0;
 	u8 data[2];
 
+	if (value < 0 || value > 0xFFFF) {
+		pr_err("invalid cycle count %d\n", value);
+		return -EINVAL;
+	}
+
+	mutex_lock(&chip->cyc_ctr.lock);
 	for (i = 0; i < BUCKET_COUNT; i++) {
 		data[0] = value & 0xFF;
 		data[1] = value >> 8;
@@ -3017,6 +3020,7 @@ static int fg_set_cycle_count(struct fg_chip *chip, int value)
 		else
 			chip->cyc_ctr.count[i] = value;
 	}
+	mutex_unlock(&chip->cyc_ctr.lock);
 	return rc;
 }
 
@@ -5653,7 +5657,7 @@ static int fg_parse_dt(struct fg_chip *chip)
 	rc = of_property_read_u32(node, "qcom,fg-batt-temp-delta", &temp);
 	if (rc < 0)
 		chip->dt.batt_temp_delta = -EINVAL;
-	else if (temp > BTEMP_DELTA_LOW && temp <= BTEMP_DELTA_HIGH)
+	else if (temp >= BTEMP_DELTA_LOW && temp <= BTEMP_DELTA_HIGH)
 		chip->dt.batt_temp_delta = temp;
 
 	chip->dt.hold_soc_while_full = of_property_read_bool(node,
@@ -5748,7 +5752,7 @@ static int fg_parse_dt(struct fg_chip *chip)
 	rc = of_property_read_u32(node, "qcom,fg-esr-meas-curr-ma", &temp);
 	if (!rc) {
 		/* ESR measurement current range is 60-240 mA */
-		if (temp >= 60 || temp <= 240)
+		if (temp >= 60 && temp <= 240)
 			chip->dt.esr_meas_curr_ma = temp;
 	}
 
@@ -5777,20 +5781,29 @@ static int fg_parse_dt(struct fg_chip *chip)
 
 	chip->dt.optimize_sram = of_property_read_bool(node, "qcom,optimize-sram");
 	if (chip->dt.optimize_sram) {
-		of_get_property(node, "qcom,optimize-sram-seq", &size);
+		int rc;
+
+		if (!of_get_property(node, "qcom,optimize-sram-seq", &size)) {
+			dev_err(chip->dev, "missing optimize_sram_seq\n");
+			return -EINVAL;
+		}
 		chip->dt.optimize_sram_seq = devm_kzalloc(chip->dev,
 				size, GFP_KERNEL);
 		if (chip->dt.optimize_sram_seq) {
 			chip->dt.optimize_sram_seq_len =
 				(size / sizeof(*chip->dt.optimize_sram_seq));
-			if (chip->dt.optimize_sram_seq_len % 3) {
+			if (size % sizeof(*chip->dt.optimize_sram_seq)) {
 				dev_err(chip->dev, "invalid optimize_sram_seq len\n");
 				return -EINVAL;
 			}
-			of_property_read_u32_array(node,
+			rc = of_property_read_u32_array(node,
 					"qcom,optimize-sram-seq",
 					(int *)chip->dt.optimize_sram_seq,
 					chip->dt.optimize_sram_seq_len * 3);
+			if (rc < 0) {
+				dev_err(chip->dev, "error reading optimize_sram_seq\n");
+				return -EINVAL;
+			}
 		} else {
 			dev_dbg(chip->dev, "error alloc optimize_sram_seq\n");
 		}
@@ -5808,6 +5821,7 @@ static void soc_work_fn(struct work_struct *work)
 	int soc = 0;
 	int cycle_count;
 	int rc;
+	int sram_err = 0;
 	u8 buf_top[4], buf_auto[4], buf_profile[4];
 	static int prev_soc = -EINVAL;
 
@@ -5823,7 +5837,7 @@ static void soc_work_fn(struct work_struct *work)
 	if (rc < 0)
 		pr_err("failed to get ESR, rc=%d\n", rc);
 
-	fg_get_battery_current(chip, &curr_ua);
+	rc = fg_get_battery_current(chip, &curr_ua);
 	if (rc < 0)
 		pr_err("failed to get current, rc=%d\n", rc);
 
@@ -5840,33 +5854,35 @@ static void soc_work_fn(struct work_struct *work)
 	rc = fg_sram_read(chip, 0, 0, buf_top, 4, FG_IMA_DEFAULT);
 	if (rc < 0) {
 		pr_err("sram read failed: address=0, rc=%d\n", rc);
-		return;
+		sram_err = rc;
 	}
 	rc = fg_sram_read(chip, 19, 0, buf_auto, 4, FG_IMA_DEFAULT);
 	if (rc < 0) {
 		pr_err("sram read failed: address=19, rc=%d\n", rc);
-		return;
+		sram_err = rc;
 	}
 	rc = fg_sram_read(chip, PROFILE_INTEGRITY_WORD, 0, buf_profile, 4, FG_IMA_DEFAULT);
 	if (rc < 0) {
 		pr_err("sram read failed: address=79, rc=%d\n", rc);
-		return;
+		sram_err = rc;
 	}
-	pr_info("adjust_soc: s %d r %d i %d v %d t %d cc %d m 0x%02x\n",
-			soc,
-			esr_uohms,
-			curr_ua,
-			volt_uv,
-			temp,
-			cycle_count,
-			msoc);
-	pr_info("adjust_soc: 000: %02x, %02x, %02x, %02x\n", buf_top[0], buf_top[1], buf_top[2], buf_top[3]);
-	pr_info("adjust_soc: 019: %02x, %02x, %02x, %02x\n", buf_auto[0], buf_auto[1], buf_auto[2], buf_auto[3]);
-	pr_info("adjust_soc: 079: %02x, %02x, %02x, %02x\n", buf_profile[0], buf_profile[1], buf_profile[2], buf_profile[3]);
+	if (!sram_err) {
+		pr_info("adjust_soc: s %d r %d i %d v %d t %d cc %d m 0x%02x\n",
+				soc,
+				esr_uohms,
+				curr_ua,
+				volt_uv,
+				temp,
+				cycle_count,
+				msoc);
+		pr_info("adjust_soc: 000: %02x, %02x, %02x, %02x\n", buf_top[0], buf_top[1], buf_top[2], buf_top[3]);
+		pr_info("adjust_soc: 019: %02x, %02x, %02x, %02x\n", buf_auto[0], buf_auto[1], buf_auto[2], buf_auto[3]);
+		pr_info("adjust_soc: 079: %02x, %02x, %02x, %02x\n", buf_profile[0], buf_profile[1], buf_profile[2], buf_profile[3]);
+	}
 
 	if (temp < 450 && chip->last_batt_temp >= 450) {
 		/* follow the way that fg_notifier_cb use wake lock */
-		pm_stay_awake(chip->dev);
+		fg_stay_awake(chip, FG_STATUS_NOTIFY_WAKE);
 		schedule_work(&chip->status_change_work);
 	}
 
@@ -6045,7 +6061,8 @@ static void fg_battery_soc_smooth_tracking(struct fg_chip *chip)
 	if (chip->param.batt_soc != last_batt_soc) {
 		chip->param.batt_soc = last_batt_soc;
 		chip->param.last_soc_change_time = last_change_time;
-		power_supply_changed(chip->batt_psy);
+		if (chip->batt_psy)
+			power_supply_changed(chip->batt_psy);
 	}
 
 	pr_info("soc:%d, last_soc:%d, raw_soc:%d, soc_changed:%d.\n",
@@ -6099,6 +6116,10 @@ static void fg_cleanup(struct fg_chip *chip)
 	cancel_work_sync(&chip->status_change_work);
 	cancel_work_sync(&chip->esr_filter_work);
 	cancel_delayed_work_sync(&chip->pl_enable_work);
+	cancel_delayed_work_sync(&chip->soc_work);
+	cancel_delayed_work_sync(&chip->soc_monitor_work);
+	cancel_delayed_work_sync(&chip->empty_restart_fg_work);
+	cancel_delayed_work_sync(&chip->esr_timer_config_work);
 
 	for (i = 0; i < FG_IRQ_MAX; i++) {
 		if (fg_irqs[i].irq)
@@ -6372,16 +6393,31 @@ static int fg_gen3_probe(struct platform_device *pdev)
 	chip->param.batt_soc = -EINVAL;
 	schedule_delayed_work(&chip->soc_monitor_work,
 				msecs_to_jiffies(MONITOR_SOC_WAIT_MS));
-	/*
-         * if vbat is above 3.7V and msoc is 0% and battery temperature is
-         * above 15 degree, we restart fg to do new first soc calculate to
-         * improve user experience when device is shutdown in cold then
-         * try to power on in normal temperature room.
-         */
-	if ((volt_uv >= VBAT_RESTART_FG_EMPTY_UV)
+
+	if (batt_psy_initialized(chip)) {
+		rc = fg_get_msoc_raw(chip, &msoc);
+		if (rc < 0)
+			pr_err("Error in getting msoc, rc=%d\n", rc);
+
+		rc = fg_get_battery_voltage(chip, &volt_uv);
+		if (rc < 0)
+			pr_err("Error in getting battery voltage, rc=%d\n", rc);
+
+		rc = fg_get_battery_temp(chip, &batt_temp);
+		if (rc < 0)
+			pr_err("Error in getting battery temp, rc=%d\n", rc);
+
+		/*
+		 * if vbat is above 3.7V and msoc is 0% and battery temperature is
+		 * above 15 degree, we restart fg to do new first soc calculate to
+		 * improve user experience when device is shutdown in cold then
+		 * try to power on in normal temperature room.
+		 */
+		if ((volt_uv >= VBAT_RESTART_FG_EMPTY_UV)
 			   && (msoc == 0) && (batt_temp >= TEMP_THR_RESTART_FG))
-		schedule_delayed_work(&chip->empty_restart_fg_work,
+			schedule_delayed_work(&chip->empty_restart_fg_work,
 				 msecs_to_jiffies(RESTART_FG_START_WORK_MS));
+	}
 
 	pr_debug("FG GEN3 driver probed successfully\n");
 	return 0;
@@ -6420,7 +6456,7 @@ static int fg_gen3_resume(struct device *dev)
 				msecs_to_jiffies(fg_sram_dump_period_ms));
 
 	if (!work_pending(&chip->status_change_work)) {
-		pm_stay_awake(chip->dev);
+		fg_stay_awake(chip, FG_STATUS_NOTIFY_WAKE);
 		schedule_work(&chip->status_change_work);
 	}
 

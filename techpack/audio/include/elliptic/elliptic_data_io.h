@@ -119,7 +119,7 @@ void elliptic_data_update_debug_counters(struct elliptic_data *);
 void elliptic_data_print_debug_counters(struct elliptic_data *);
 
 /* Called from elliptic device read */
-size_t elliptic_data_pop(struct elliptic_data *,
+ssize_t elliptic_data_pop(struct elliptic_data *,
 	char __user *buffer, size_t buffer_size);
 
 /* Used for cancelling a blocking read */

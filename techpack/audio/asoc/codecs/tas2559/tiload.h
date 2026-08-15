@@ -57,5 +57,6 @@ struct BPR {
 #endif
 
 int tiload_driver_init_tas2559(struct tas2559_priv *pTAS2559);
+void tiload_driver_exit_tas2559(void);
 
 #endif

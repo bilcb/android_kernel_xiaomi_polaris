@@ -71,9 +71,11 @@
 #include "xhci.h"
 #include "xhci-trace.h"
 #include "xhci-mtk.h"
+#ifdef CONFIG_USB_PD_POLICY
 extern void kick_usbpd_vbus_sm(void);
+#endif
 extern unsigned int connected_usb_idVendor;
-extern int connected_usb_idProduct;
+extern unsigned int connected_usb_idProduct;
 
 /*
  * Returns zero if the TRB isn't in this segment, otherwise it returns the DMA
@@ -371,7 +373,7 @@ static int xhci_abort_cmd_ring(struct xhci_hcd *xhci, unsigned long flags)
 	}
 
 	ret = xhci_handshake_check_state(xhci, &xhci->op_regs->cmd_ring,
-			CMD_RING_RUNNING, 0, 1000 * 1000);
+			CMD_RING_RUNNING, 0, delay);
 
 	if (ret < 0) {
 		xhci_err(xhci, "Abort failed to stop command ring: %d\n", ret);
@@ -392,6 +394,7 @@ static int xhci_abort_cmd_ring(struct xhci_hcd *xhci, unsigned long flags)
 	if (!ret) {
 		xhci_dbg(xhci, "No stop event for abort, ring start fail?\n");
 		xhci_cleanup_command_queue(xhci);
+		return -ETIMEDOUT;
 	} else {
 		xhci_handle_stopped_cmd_ring(xhci, xhci_next_queued_cmd(xhci));
 	}
@@ -1336,11 +1339,13 @@ void xhci_handle_command_timeout(struct work_struct *work)
 		xhci->cmd_ring_state = CMD_RING_STATE_ABORTED;
 		xhci_dbg(xhci, "Command timeout\n");
 		ret = xhci_abort_cmd_ring(xhci, flags);
-		if (ret == -1) {
+		if (ret < 0) {
 			xhci_err(xhci, "Abort command ring failed reset usb device\n");
 			xhci_cleanup_command_queue(xhci);
 			spin_unlock_irqrestore(&xhci->lock, flags);
+#ifdef CONFIG_USB_PD_POLICY
 			kick_usbpd_vbus_sm();
+#endif
 			return;
 		}
 		goto time_out_completed;
@@ -1386,6 +1391,11 @@ static void handle_cmd_completion(struct xhci_hcd *xhci,
 	/* Does the DMA address match our internal dequeue pointer address? */
 	if (cmd_dma != (u64) cmd_dequeue_dma) {
 		xhci->error_bitmask |= 1 << 5;
+		return;
+	}
+
+	if (list_empty(&xhci->cmd_list)) {
+		xhci_dbg(xhci, "Command completion with empty cmd list\n");
 		return;
 	}
 

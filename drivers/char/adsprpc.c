@@ -2272,7 +2272,8 @@ static int fastrpc_init_process(struct fastrpc_file *fl,
 		remote_arg_t ra[1];
 		int tgid = fl->tgid;
 
-		if (fl->dev_minor == MINOR_NUM_DEV) {
+		if (fl->dev_minor == MINOR_NUM_DEV &&
+				chan->secure == SECURE_CHANNEL) {
 			err = -ECONNREFUSED;
 			pr_err("adsprpc: %s: untrusted apk trying to attach to privileged DSP PD\n",
 				__func__);
@@ -2400,7 +2401,8 @@ static int fastrpc_init_process(struct fastrpc_file *fl,
 			unsigned int pageslen;
 		} inbuf;
 
-		if (fl->dev_minor == MINOR_NUM_DEV) {
+		if (fl->dev_minor == MINOR_NUM_DEV &&
+				chan->secure == SECURE_CHANNEL) {
 			err = -ECONNREFUSED;
 			pr_err("adsprpc: %s: untrusted apk trying to attach to audio PD\n",
 				__func__);
@@ -2410,7 +2412,7 @@ static int fastrpc_init_process(struct fastrpc_file *fl,
 		if (!init->filelen)
 			goto bail;
 
-		proc_name = kzalloc(init->filelen, GFP_KERNEL);
+		proc_name = kzalloc(init->filelen + 1, GFP_KERNEL);
 		VERIFY(err, !IS_ERR_OR_NULL(proc_name));
 		if (err)
 			goto bail;

@@ -57,6 +57,7 @@ struct cam_vfe_hw_core_info {
 	uint32_t                            cpas_handle;
 	int                                 irq_handle;
 	int                                 irq_err_handle;
+	uint32_t                            err_irq_users;
 	spinlock_t                          spin_lock;
 };
 

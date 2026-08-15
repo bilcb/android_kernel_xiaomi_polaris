@@ -1803,6 +1803,22 @@ static void qpnp_led_set(struct led_classdev *led_cdev,
 	led->cdev.brightness = value;
 
 	if (led->id == QPNP_ID_RGB_RED || led->id == QPNP_ID_RGB_GREEN
+			|| led->id == QPNP_ID_RGB_BLUE
+			|| led->id == QPNP_ID_LED_MPP
+			|| led->id == QPNP_ID_KPDBL) {
+		if (in_interrupt() || in_atomic()) {
+			/* Cannot sleep in IRQ/softirq context; fall back
+			 * to the deferred workqueue path
+			 */
+			if (led->in_order_command_processing)
+				queue_work(led->workqueue, &led->work);
+			else
+				schedule_work(&led->work);
+			return;
+		}
+	}
+
+	if (led->id == QPNP_ID_RGB_RED || led->id == QPNP_ID_RGB_GREEN
 			|| led->id == QPNP_ID_RGB_BLUE) {
 		mutex_lock(&led->lock);
 		rc = qpnp_rgb_set(led);
@@ -3779,9 +3795,9 @@ static int qpnp_get_config_mpp(struct qpnp_led_data *led,
 	led->mpp_cfg->current_setting = LED_MPP_CURRENT_MIN;
 	rc = of_property_read_u32(node, "qcom,current-setting", &val);
 	if (!rc) {
-		if (led->mpp_cfg->current_setting < LED_MPP_CURRENT_MIN)
+		if (val < LED_MPP_CURRENT_MIN)
 			led->mpp_cfg->current_setting = LED_MPP_CURRENT_MIN;
-		else if (led->mpp_cfg->current_setting > LED_MPP_CURRENT_MAX)
+		else if (val > LED_MPP_CURRENT_MAX)
 			led->mpp_cfg->current_setting = LED_MPP_CURRENT_MAX;
 		else
 			led->mpp_cfg->current_setting = (u8) val;
@@ -4080,29 +4096,29 @@ static int qpnp_leds_probe(struct platform_device *pdev)
 		}
 
 		if (led->id == QPNP_ID_LED_MPP) {
-			if (!led->mpp_cfg->pwm_cfg)
-				break;
-			if (led->mpp_cfg->pwm_cfg->mode == PWM_MODE) {
-				rc = sysfs_create_group(&led->cdev.dev->kobj,
-					&pwm_attr_group);
-				if (rc)
-					goto fail_id_check;
-			}
-			if (led->mpp_cfg->pwm_cfg->use_blink) {
-				rc = sysfs_create_group(&led->cdev.dev->kobj,
-					&blink_attr_group);
-				if (rc)
-					goto fail_id_check;
+			if (led->mpp_cfg->pwm_cfg) {
+				if (led->mpp_cfg->pwm_cfg->mode == PWM_MODE) {
+					rc = sysfs_create_group(&led->cdev.dev->kobj,
+						&pwm_attr_group);
+					if (rc)
+						goto fail_id_check;
+				}
+				if (led->mpp_cfg->pwm_cfg->use_blink) {
+					rc = sysfs_create_group(&led->cdev.dev->kobj,
+						&blink_attr_group);
+					if (rc)
+						goto fail_id_check;
 
-				rc = sysfs_create_group(&led->cdev.dev->kobj,
-					&lpg_attr_group);
-				if (rc)
-					goto fail_id_check;
-			} else if (led->mpp_cfg->pwm_cfg->mode == LPG_MODE) {
-				rc = sysfs_create_group(&led->cdev.dev->kobj,
-					&lpg_attr_group);
-				if (rc)
-					goto fail_id_check;
+					rc = sysfs_create_group(&led->cdev.dev->kobj,
+						&lpg_attr_group);
+					if (rc)
+						goto fail_id_check;
+				} else if (led->mpp_cfg->pwm_cfg->mode == LPG_MODE) {
+					rc = sysfs_create_group(&led->cdev.dev->kobj,
+						&lpg_attr_group);
+					if (rc)
+						goto fail_id_check;
+				}
 			}
 		} else if ((led->id == QPNP_ID_RGB_RED) ||
 			(led->id == QPNP_ID_RGB_GREEN) ||
@@ -4302,4 +4318,3 @@ module_exit(qpnp_led_exit);
 MODULE_DESCRIPTION("QPNP LEDs driver");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("leds:leds-qpnp");
-

@@ -14,10 +14,9 @@
 
 #define NETLINK_TEST 25
 #define MAX_MSGSIZE 32
-int stringlength(char *s);
 void sendnlmsg(char *message);
 static int pid = -1;
-struct sock *nl_sk;
+static struct sock *nl_sk;
 
 void sendnlmsg(char *message)
 {
@@ -26,7 +25,7 @@ void sendnlmsg(char *message)
 	int len = NLMSG_SPACE(MAX_MSGSIZE);
 	int slen = 0;
 	int ret = 0;
-	if (!message || !nl_sk || !pid) {
+	if (!message || !nl_sk || pid <= 0) {
 		return;
 	}
 	skb_1 = alloc_skb(len, GFP_KERNEL);
@@ -35,18 +34,19 @@ void sendnlmsg(char *message)
 		return;
 	}
 	slen = strlen(message);
-	nlh = nlmsg_put(skb_1, 0, 0, 0, MAX_MSGSIZE, 0);
+	if (slen >= MAX_MSGSIZE)
+		slen = MAX_MSGSIZE - 1;
+
+	nlh = nlmsg_put(skb_1, 0, 0, 0, slen + 1, 0);
 
 	NETLINK_CB(skb_1).portid = 0;
 	NETLINK_CB(skb_1).dst_group = 0;
 
-	message[slen] = '\0';
-	memcpy(NLMSG_DATA(nlh), message, slen+1);
+	memcpy(NLMSG_DATA(nlh), message, slen + 1);
 
 	ret = netlink_unicast(nl_sk, skb_1, pid, MSG_DONTWAIT);
-	if (!ret) {
-		/*kfree_skb(skb_1);*/
-		pr_err("send msg from kernel to usespace failed ret 0x%x\n", ret);
+	if (ret < 0) {
+		pr_err("send msg from kernel to userspace failed ret %d\n", ret);
 	}
 
 }
@@ -56,14 +56,24 @@ void nl_data_ready(struct sk_buff *__skb)
 {
 	struct sk_buff *skb;
 	struct nlmsghdr *nlh;
+	int payload_len;
 	char str[100];
-	skb = skb_get (__skb);
+
+	skb = skb_get(__skb);
+	if (!skb)
+		return;
+
 	if (skb->len >= NLMSG_SPACE(0)) {
 		nlh = nlmsg_hdr(skb);
-		memcpy(str, NLMSG_DATA(nlh), sizeof(str));
+		payload_len = nlmsg_len(nlh);
+		if (payload_len > 0 && payload_len < sizeof(str) &&
+		    payload_len <= skb->len - NLMSG_HDRLEN) {
+			memcpy(str, NLMSG_DATA(nlh), payload_len);
+			str[payload_len] = '\0';
+		}
 		pid = nlh->nlmsg_pid;
-		kfree_skb(skb);
 	}
+	kfree_skb(skb);
 }
 
 
@@ -82,7 +92,7 @@ int netlink_init(void)
 
 	if (!nl_sk) {
 		pr_err("create netlink socket error\n");
-		return 1;
+		return -ENOMEM;
 	}
 	return 0;
 }

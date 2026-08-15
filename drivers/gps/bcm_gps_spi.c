@@ -181,6 +181,7 @@ struct bcm_spi_priv  {
 	int mcu_req;
 	int mcu_resp;
 	int nstandby;
+	int gps_power;
 
 	/* IRQ and its control */
 	atomic_t irq_enabled;
@@ -475,9 +476,13 @@ static ssize_t bcm_spi_read(struct file *filp, char __user *buf,
 							BCM_SPI_READ_BUF_SIZE);
 		size_t copied = min(cnt_to_end, size);
 
-		WARN_ON(copy_to_user(buf + rd_size,
+		if (copy_to_user(buf + rd_size,
 				(void *) circ->buf + circ->tail,
-				copied));
+				copied)) {
+			if (rd_size == 0)
+				rd_size = -EFAULT;
+			break;
+		}
 		size -= copied;
 		rd_size += copied;
 		circ->tail = (circ->tail + copied) & (BCM_SPI_READ_BUF_SIZE-1);
@@ -513,10 +518,14 @@ static ssize_t bcm_spi_write(struct file *filp, const char __user *buf,
 		size_t copied = min(space_to_end, size);
 
 
-		WARN_ON(copy_from_user((void *) circ->buf + circ->head,
+		if (copy_from_user((void *) circ->buf + circ->head,
 								buf +
 								wr_size,
-								copied));
+								copied)) {
+			if (wr_size == 0)
+				wr_size = -EFAULT;
+			break;
+		}
 		size -= copied;
 		wr_size += copied;
 		circ->head = (circ->head + copied) & (BCM_SPI_WRITE_BUF_SIZE-1);
@@ -542,7 +551,8 @@ static ssize_t bcm_spi_write(struct file *filp, const char __user *buf,
 
 		if (rxtx_work_run == true) {
 			//pr_info("[SSPBBD] %s-- serial_wq\n", __func__);
-			queue_work(priv->serial_wq, &(priv->rxtx_work));
+			if (priv->serial_wq)
+				queue_work(priv->serial_wq, &(priv->rxtx_work));
 			// queue_work( priv->serial_wq, &(priv->start_tx) );
 		}
 	}
@@ -734,11 +744,15 @@ static int bcm_ssi_tx(struct bcm_spi_priv *priv, int length)
 		}
 
 		Mwrite = bcm_ssi_get_len(strm->ctrl_byte, tx->data);
+		if (Mwrite > bytes_to_write)
+			Mwrite = bytes_to_write;
 
 		if (strm->ctrl_byte & SSI_MODE_FULL_DUPLEX) {
 			unsigned char *data_p = rx->data + strm->pckt_len;
 
 			Nread = bcm_ssi_get_len(strm->ctrl_byte, rx->data);
+			if (Nread > (strm->frame_len - strm->ctrl_len))
+				Nread = strm->frame_len - strm->ctrl_len;
 
 			if (Mwrite < Nread) {
 				/* Call BBD */
@@ -773,6 +787,7 @@ static int bcm_ssi_tx(struct bcm_spi_priv *priv, int length)
 					pr_err("[SSPBBD]: %s @ FC error %d\n",
 						__func__,
 						ssi_tx_fc_retry_errors-1);
+					ret = -EIO;
 					break;
 				}
 			}
@@ -782,7 +797,7 @@ static int bcm_ssi_tx(struct bcm_spi_priv *priv, int length)
 				break;
 
 			Mwrite  -= Bwritten;
-			memcpy(tx->data + strm->pckt_len,
+			memmove(tx->data + strm->pckt_len,
 				   tx->data + strm->pckt_len +
 			       Bwritten, Mwrite);
 		}
@@ -866,7 +881,7 @@ static int bcm_ssi_rx(struct bcm_spi_priv *priv, size_t *length)
 }
 
 void bcm_on_packet_received(void *_priv, unsigned char *data,
-							unsigned int size)
+							size_t size)
 {
 	struct bcm_spi_priv *priv = (struct bcm_spi_priv *)_priv;
 	struct circ_buf *rd_circ = &priv->read_buf;
@@ -910,7 +925,8 @@ static void bcm_start_tx_work(struct work_struct *work)
 
 	//pr_info("[SSPBBD] %s-- serial_wq\n", __func__);
 
-	queue_work(priv->serial_wq, &priv->rxtx_work);
+	if (priv->serial_wq)
+		queue_work(priv->serial_wq, &priv->rxtx_work);
 
 	spin_unlock(&priv->irq_lock);
 	// mutex_unlock(&priv->wlock);
@@ -925,9 +941,16 @@ static void bcm_rxtx_work(struct work_struct *work)
 	struct bcm_spi_strm_protocol *strm = &priv->tx_strm;
 	unsigned short rx_pckt_len = priv->rx_strm.pckt_len;
 
-
 	if (!bcm477x_hello(priv)) {
 		pr_err("[SSPBBD]: %s timeout!!\n", __func__);
+		{
+			unsigned long int flags;
+			spin_lock_irqsave(&priv->irq_lock, flags);
+			if (!atomic_read(&priv->suspending))
+				if (!atomic_xchg(&priv->irq_enabled, 1))
+					enable_irq(priv->spi->irq);
+			spin_unlock_irqrestore(&priv->irq_lock, flags);
+		}
 		return;
 	}
 
@@ -1039,7 +1062,7 @@ static irqreturn_t bcm_irq_handler(int irq, void *pdata)
 	spin_unlock(&priv->irq_lock);
 
 	/* we don't want to queue work in suspending and shutdown */
-	if (!atomic_read(&priv->suspending)) {
+	if (!atomic_read(&priv->suspending) && priv->serial_wq) {
 		//pr_info("[SSPBBD] %s-- serial_wq\n", __func__);
 		queue_work(priv->serial_wq, &priv->rxtx_work);
 	}
@@ -1157,8 +1180,11 @@ static void bcm_spi_shutdown(struct spi_device *spi)
 		disable_irq_nosync(spi->irq);
 
 	spin_unlock_irqrestore(&priv->irq_lock, flags);
-	flush_workqueue(priv->serial_wq);
-	destroy_workqueue(priv->serial_wq);
+	if (priv->serial_wq) {
+		flush_workqueue(priv->serial_wq);
+		destroy_workqueue(priv->serial_wq);
+		priv->serial_wq = NULL;
+	}
 }
 
 static int bcm_spi_probe(struct spi_device *spi)
@@ -1218,44 +1244,44 @@ static int bcm_spi_probe(struct spi_device *spi)
 	ret = gpio_direction_output(mcu_req, 0);
 	if (ret) {
 		pr_err("[SSPBBD]:set MCUREQ input mode,fail:%d", ret);
-		goto err_exit;
+		goto free_mcu_req;
 	}
 	ret = gpio_request(mcu_resp, "MCU RESP");
 	if (ret) {
 		pr_err("[SSPBBD]: failed to request MCU RESP, ret:%d", ret);
-		goto err_exit;
+		goto free_mcu_req;
 	}
 	ret = gpio_direction_input(mcu_resp);
 	if (ret) {
 		pr_err("SSPBBD MCU_RESP input mode fail:%d", ret);
-		goto err_exit;
+		goto free_mcu_resp;
 	}
 
 	ret = gpio_request(gps_power, "GPS POWER");
 	if (ret) {
 		pr_err("SSPBBD failed request GPS POWER :%d", ret);
-		goto err_exit;
+		goto free_mcu_resp;
 	}
 	ret = gpio_direction_output(gps_power, 1);
 	if (ret) {
 		pr_err("SSPBBD:set GPS POWER inputmode fail:%d", ret);
-		goto err_exit;
+		goto free_gps_power;
 	}
 	ret = gpio_request(nstandby, "GPS NSTANDBY");
 	if (ret) {
 		pr_err("SSPBBD request GPS NSTANDBY fail %d", ret);
-		goto err_exit;
+		goto free_gps_power;
 	}
 	ret = gpio_direction_output(nstandby, 0);
 	if (ret) {
 		pr_err("SSPBBD set GPS NSTANDBY as out mode fail %d", ret);
-		goto err_exit;
+		goto free_nstandby;
 	}
 
 	/* Alloc everything */
 	priv = kmalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
-		goto err_exit;
+		goto free_nstandby;
 
 	memset(priv, 0, sizeof(*priv));
 
@@ -1336,13 +1362,15 @@ static int bcm_spi_probe(struct spi_device *spi)
 	priv->mcu_req  = mcu_req;
 	priv->mcu_resp = mcu_resp;
 	priv->nstandby = nstandby;
+	priv->gps_power = gps_power;
 
 	/* Init - etc */
 	//wakeup_source_init(&priv->bcm_wake_lock, "bcm_spi_wake_lock");
 
 	g_bcm_gps = priv;
 	/* Init BBD & SSP */
-	bbd_init(&spi->dev, legacy_patch);
+	if (bbd_init(&spi->dev, legacy_patch))
+		pr_err("[SSPBBD]: failed to init BBD\n");
 	if (device_create_file(&priv->spi->dev, &dev_attr_nstandby))
 		pr_err("Unable to create sysfs 4775 nstandby entry");
 
@@ -1358,6 +1386,19 @@ free_mem:
 		kfree(priv->tx_buf);
 		kfree(priv->rx_buf);
 		kfree(priv);
+		gpio_free(nstandby);
+		gpio_free(gps_power);
+		gpio_free(mcu_resp);
+		gpio_free(mcu_req);
+		return -ENODEV;
+free_nstandby:
+	gpio_free(nstandby);
+free_gps_power:
+	gpio_free(gps_power);
+free_mcu_resp:
+	gpio_free(mcu_resp);
+free_mcu_req:
+	gpio_free(mcu_req);
 err_exit:
 	return -ENODEV;
 }
@@ -1373,6 +1414,8 @@ static int bcm_spi_remove(struct spi_device *spi)
 
 	atomic_set(&priv->suspending, 1);
 
+	misc_deregister(&priv->misc);
+
 	/* Disable irq */
 	spin_lock_irqsave(&priv->irq_lock, flags);
 	if (atomic_xchg(&priv->irq_enabled, 0))
@@ -1381,8 +1424,11 @@ static int bcm_spi_remove(struct spi_device *spi)
 	spin_unlock_irqrestore(&priv->irq_lock, flags);
 
 	/* Flush work */
+	if (priv->serial_wq) {
 	flush_workqueue(priv->serial_wq);
 	destroy_workqueue(priv->serial_wq);
+		priv->serial_wq = NULL;
+	}
 	if (priv->ts_pinctrl) {
 		if (gps_pinctrl_select(priv, false) < 0)
 			pr_err("[SSPBBD]Cannot get idle pinctrl state\n");
@@ -1394,6 +1440,10 @@ static int bcm_spi_remove(struct spi_device *spi)
 	device_remove_file(&priv->spi->dev, &dev_attr_nstandby);
 	kfree(priv->tx_buf);
 	kfree(priv->rx_buf);
+	gpio_free(priv->gps_power);
+	gpio_free(priv->nstandby);
+	gpio_free(priv->mcu_resp);
+	gpio_free(priv->mcu_req);
 	kfree(priv);
 
 	g_bcm_gps = NULL;
@@ -1403,16 +1453,15 @@ static int bcm_spi_remove(struct spi_device *spi)
 
 void bcm477x_debug_info(const char *buf)
 {
-	int pin_ttyBCM, pin_MCU_REQ, pin_MCU_RESP;
-	int irq_enabled, irq_count;
-
 	if (g_bcm_gps) {
-		pin_ttyBCM = gpio_get_value(g_bcm_gps->host_req);
-		pin_MCU_REQ = gpio_get_value(g_bcm_gps->mcu_req);
-		pin_MCU_RESP = gpio_get_value(g_bcm_gps->mcu_resp);
+		int pin_ttyBCM = gpio_get_value(g_bcm_gps->host_req);
+		int pin_MCU_REQ = gpio_get_value(g_bcm_gps->mcu_req);
+		int pin_MCU_RESP = gpio_get_value(g_bcm_gps->mcu_resp);
+		int irq_enabled = atomic_read(&g_bcm_gps->irq_enabled);
+		int irq_count = kstat_irqs_cpu(g_bcm_gps->spi->irq, 0);
 
-		irq_enabled = atomic_read(&g_bcm_gps->irq_enabled);
-		irq_count = kstat_irqs_cpu(g_bcm_gps->spi->irq, 0);
+		pr_debug("ttyBCM=%d MCU_REQ=%d MCU_RESP=%d irq_en=%d irq_cnt=%d\n",
+			pin_ttyBCM, pin_MCU_REQ, pin_MCU_RESP, irq_enabled, irq_count);
 	}
 }
 

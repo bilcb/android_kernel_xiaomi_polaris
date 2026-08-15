@@ -90,7 +90,7 @@ int cam_virtual_cdm_submit_bl(struct cam_hw_info *cdm_hw,
 		uintptr_t vaddr_ptr = 0;
 		size_t len = 0;
 
-		if ((!cdm_cmd->cmd[i].len) &&
+		if ((!cdm_cmd->cmd[i].len) ||
 			(cdm_cmd->cmd[i].len > 0x100000)) {
 			CAM_ERR(CAM_CDM,
 				"len(%d) is invalid count=%d total cnt=%d",
@@ -120,7 +120,7 @@ int cam_virtual_cdm_submit_bl(struct cam_hw_info *cdm_hw,
 			(len >= cdm_cmd->cmd[i].offset)) {
 
 
-			if ((len - cdm_cmd->cmd[i].offset) <=
+			if ((len - cdm_cmd->cmd[i].offset) <
 				cdm_cmd->cmd[i].len) {
 				CAM_ERR(CAM_CDM, "Not enough buffer");
 				rc = -EINVAL;
@@ -162,7 +162,7 @@ int cam_virtual_cdm_submit_bl(struct cam_hw_info *cdm_hw,
 				"write BL success for cnt=%d with tag=%d",
 				i, core->bl_tag);
 			if ((true == req->data->flag) &&
-				(i == req->data->cmd_arrary_count)) {
+				(i == (req->data->cmd_arrary_count - 1))) {
 				struct cam_cdm_bl_cb_request_entry *node;
 
 				node = kzalloc(sizeof(

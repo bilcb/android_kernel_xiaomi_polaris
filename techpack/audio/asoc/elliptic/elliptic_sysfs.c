@@ -33,7 +33,7 @@ static ssize_t calibration_store(struct device *dev,
 
 	if (count > calibration_obj->size) {
 		EL_PRINT_E("write length %zu larger than buffer", count);
-		return 0;
+		return -EINVAL;
 	}
 
 	memcpy(calibration_obj->buffer, buf, count);
@@ -56,7 +56,7 @@ static ssize_t calibration_v2_store(struct device *dev,
 
 	if (count > calibration_obj->size) {
 		EL_PRINT_E("write length %zu larger than buffer", count);
-		return 0;
+		return -EINVAL;
 	}
 
 	memcpy(calibration_obj->buffer, buf, count);
@@ -79,7 +79,7 @@ static ssize_t diagnostics_store(struct device *dev,
 
 	if (count > diagnostics_obj->size) {
 		EL_PRINT_E("write length %zu larger than buffer", count);
-		return 0;
+		return -EINVAL;
 	}
 
 	memcpy(diagnostics_obj->buffer, buf, count);
@@ -102,7 +102,7 @@ static ssize_t ml_store(struct device *dev,
 
 	if (count > ml_obj->size) {
 		EL_PRINT_E("write length %zu larger than buffer", count);
-		return 0;
+		return -EINVAL;
 	}
 
 	memcpy(ml_obj->buffer, buf, count);
@@ -111,7 +111,7 @@ static ssize_t ml_store(struct device *dev,
 }
 
 static ssize_t calibration_show_core(struct device *dev,
-	struct device_attribute *attr, char *buf, int pretty)
+	struct device_attribute *attr, char *buf, int pretty, size_t buf_size)
 {
 	ssize_t result;
 	int length;
@@ -142,21 +142,21 @@ static ssize_t calibration_show_core(struct device *dev,
 	if (pretty) {
 		if (caldata[0] == 0xDE &&
 			caldata[1] == 0xAD) {
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"Calibration Data: not loaded");
 		} else {
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"Calibration Data: ");
 			for (i = 0; i < calibration_obj->size; ++i)
-				length += snprintf(buf + length, PAGE_SIZE - length,
+				length += scnprintf(buf + length, buf_size - length,
 								"0x%02x ", caldata[i]);
 		}
 	} else {
 		for (i = 0; i < calibration_obj->size; ++i)
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"0x%02x ", caldata[i]);
 	}
-	length += snprintf(buf + length, PAGE_SIZE - length, "\n\n");
+	length += scnprintf(buf + length, buf_size - length, "\n\n");
 	result = (ssize_t)length;
 	return result;
 }
@@ -164,11 +164,11 @@ static ssize_t calibration_show_core(struct device *dev,
 static ssize_t calibration_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	return calibration_show_core(dev, attr, buf, 0);
+	return calibration_show_core(dev, attr, buf, 0, PAGE_SIZE);
 }
 
 static ssize_t calibration_v2_show_core(struct device *dev,
-	struct device_attribute *attr, char *buf, int pretty)
+	struct device_attribute *attr, char *buf, int pretty, size_t buf_size)
 {
 	ssize_t result;
 	int length;
@@ -199,20 +199,20 @@ static ssize_t calibration_v2_show_core(struct device *dev,
 	if (pretty) {
 		if (caldata[0] == 0xDE &&
 			caldata[1] == 0xAD) {
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"Calibration Ext Data: not loaded");
 		} else {
 			int j = (ELLIPTIC_CALIBRATION_V2_DATA_SIZE>>2) - 1;
 
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"Calibration Ext Data: ");
 			for (i = 0; i < ELLIPTIC_CALIBRATION_MAX_DISPLAY_COUNT; ++i)
-				length += snprintf(buf + length, PAGE_SIZE - length,
+				length += scnprintf(buf + length, buf_size - length,
 								"0x%02x ", caldata[i]);
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"\nTruncated at %d",
 								ELLIPTIC_CALIBRATION_MAX_DISPLAY_COUNT);
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 						"\nmisc: %u %u %u %u %u %u %u %u\n",
 						caldata[j-7], caldata[j-6], caldata[j-5],
 						caldata[j-4], caldata[j-3], caldata[j-2],
@@ -220,10 +220,10 @@ static ssize_t calibration_v2_show_core(struct device *dev,
 		}
 	} else {
 		for (i = 0; i < calibration_obj->size; ++i)
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"0x%02x ", caldata[i]);
 	}
-	length += snprintf(buf + length, PAGE_SIZE - length, "\n\n");
+	length += scnprintf(buf + length, buf_size - length, "\n\n");
 	result = (ssize_t)length;
 	return result;
 }
@@ -231,11 +231,11 @@ static ssize_t calibration_v2_show_core(struct device *dev,
 static ssize_t calibration_v2_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	return calibration_v2_show_core(dev, attr, buf, 0);
+	return calibration_v2_show_core(dev, attr, buf, 0, PAGE_SIZE);
 }
 
 static ssize_t diagnostics_show_core(struct device *dev,
-	struct device_attribute *attr, char *buf, int pretty)
+	struct device_attribute *attr, char *buf, int pretty, size_t buf_size)
 {
 	ssize_t result;
 	int length;
@@ -265,16 +265,16 @@ static ssize_t diagnostics_show_core(struct device *dev,
 	data32 = (uint32_t *)diagnostics_obj->buffer;
 
 	if (pretty) {
-		length += snprintf(buf + length, PAGE_SIZE - length,"Diagnostics:\n  counters:\n");
+		length += scnprintf(buf + length, buf_size - length,"Diagnostics:\n  counters:\n");
 		for (i = 0;i<ELLIPTIC_DIAGNOSTICS_DATA_SECTION_COUNT;i++)
-			length += snprintf(buf + length, PAGE_SIZE - length, "   %u %u %u %u\n",
+			length += scnprintf(buf + length, buf_size - length, "   %u %u %u %u\n",
 				data32[4*i], data32[4*i+1], data32[4*i+2], data32[4*i+3]);
 	} else {
 		for (i = 0; i < (diagnostics_obj->size >> 4); ++i)
-			length += snprintf(buf + length, PAGE_SIZE - length, "   %u %u %u %u\n",
+			length += scnprintf(buf + length, buf_size - length, "   %u %u %u %u\n",
 				data32[4*i], data32[4*i+1], data32[4*i+2], data32[4*i+3]);
 	}
-	length += snprintf(buf + length, PAGE_SIZE - length, "\n\n");
+	length += scnprintf(buf + length, buf_size - length, "\n\n");
 	result = (ssize_t)length;
 	return result;
 }
@@ -282,11 +282,11 @@ static ssize_t diagnostics_show_core(struct device *dev,
 static ssize_t diagnostics_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	return diagnostics_show_core(dev, attr, buf, 0);
+	return diagnostics_show_core(dev, attr, buf, 0, PAGE_SIZE);
 }
 
 static ssize_t ml_show_core(struct device *dev,
-	struct device_attribute *attr, char *buf, int pretty)
+	struct device_attribute *attr, char *buf, int pretty, size_t buf_size)
 {
 	ssize_t result;
 	int length;
@@ -317,25 +317,25 @@ static ssize_t ml_show_core(struct device *dev,
 	if (pretty) {
 		if (mldata[0] == 0x0 &&
 			mldata[1] == 0x0) {
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"ML Data: not loaded");
 		} else {
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"ML Data: ");
 			for (i = 0; i < ELLIPTIC_ML_DISPLAY_COUNT; ++i)
-				length += snprintf(buf + length, PAGE_SIZE - length,
+				length += scnprintf(buf + length, buf_size - length,
 								"0x%08x ", mldata[i]);
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"\nTruncated at %d",
 								ELLIPTIC_ML_DISPLAY_COUNT);
 		}
 	} else {
 		int values =  ml_obj->size >> 2;
 		for (i = 0; i < values; ++i)
-			length += snprintf(buf + length, PAGE_SIZE - length,
+			length += scnprintf(buf + length, buf_size - length,
 								"0x%08x ", mldata[i]);
 	}
-	length += snprintf(buf + length, PAGE_SIZE - length, "\n\n");
+	length += scnprintf(buf + length, buf_size - length, "\n\n");
 	result = (ssize_t)length;
 	return result;
 }
@@ -343,12 +343,12 @@ static ssize_t ml_show_core(struct device *dev,
 static ssize_t ml_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	return ml_show_core(dev, attr, buf, 0);
+	return ml_show_core(dev, attr, buf, 0, PAGE_SIZE);
 }
 
 
 static ssize_t version_show_core(struct device *dev,
-	struct device_attribute *attr, char *buf, int pretty)
+	struct device_attribute *attr, char *buf, int pretty, size_t buf_size)
 {
 	ssize_t result;
 	struct elliptic_engine_version_info *version_info;
@@ -379,14 +379,14 @@ static ssize_t version_show_core(struct device *dev,
 	if (pretty) {
 		if (version_info->major == 0xDE &&
 			version_info->minor == 0xAD) {
-			length = snprintf(buf, PAGE_SIZE, "Version: unknown\n");
+			length = snprintf(buf, buf_size, "Version: unknown\n");
 		} else {
-			length = snprintf(buf, PAGE_SIZE, "Version: %d.%d.%d.%d\n",
+			length = snprintf(buf, buf_size, "Version: %d.%d.%d.%d\n",
 				version_info->major, version_info->minor, version_info->build,
 				version_info->revision);
 		}
 	} else {
-		length = snprintf(buf, PAGE_SIZE, "%d.%d.%d.%d\n",
+		length = snprintf(buf, buf_size, "%d.%d.%d.%d\n",
 			version_info->major, version_info->minor, version_info->build,
 			version_info->revision);
 	}
@@ -397,12 +397,12 @@ static ssize_t version_show_core(struct device *dev,
 static ssize_t version_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	return version_show_core(dev, attr, buf, 0);
+	return version_show_core(dev, attr, buf, 0, PAGE_SIZE);
 }
 
 
 static ssize_t branch_show_core(struct device *dev,
-	struct device_attribute *attr, char *buf, int pretty)
+	struct device_attribute *attr, char *buf, int pretty, size_t buf_size)
 {
 	int length;
 
@@ -411,7 +411,7 @@ static ssize_t branch_show_core(struct device *dev,
 
 	if (branch_obj == NULL) {
 		EL_PRINT_E("branch_obj not found");
-		return 0;
+		return -EINVAL;
 	}
 
 	if (branch_obj->size > PAGE_SIZE) {
@@ -419,11 +419,11 @@ static ssize_t branch_show_core(struct device *dev,
 		return -EINVAL;
 	}
 	if (pretty){
-		length = snprintf(buf, PAGE_SIZE - 1, "Branch: %s\n",
-			(const char *)(branch_obj->buffer));
+		length = snprintf(buf, buf_size - 1, "Branch: %.*s\n",
+			(int)branch_obj->size, (const char *)(branch_obj->buffer));
 	} else {
-		length = snprintf(buf, PAGE_SIZE - 1, "%s\n",
-			(const char *)(branch_obj->buffer));
+		length = snprintf(buf, buf_size - 1, "%.*s\n",
+			(int)branch_obj->size, (const char *)(branch_obj->buffer));
 	}
 
 	return (ssize_t)length;
@@ -432,11 +432,11 @@ static ssize_t branch_show_core(struct device *dev,
 static ssize_t branch_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	return branch_show_core(dev, attr, buf, 0);
+	return branch_show_core(dev, attr, buf, 0, PAGE_SIZE);
 }
 
 static ssize_t tag_show_core(struct device *dev,
-	struct device_attribute *attr, char *buf, int pretty)
+	struct device_attribute *attr, char *buf, int pretty, size_t buf_size)
 {
 	int length;
 
@@ -445,7 +445,7 @@ static ssize_t tag_show_core(struct device *dev,
 
 	if (tag_obj == NULL) {
 		EL_PRINT_E("tag_obj not found");
-		return 0;
+		return -EINVAL;
 	}
 
 	if (tag_obj->size > PAGE_SIZE) {
@@ -453,11 +453,11 @@ static ssize_t tag_show_core(struct device *dev,
 		return -EINVAL;
 	}
 	if (pretty){
-		length = snprintf(buf, PAGE_SIZE - 1, "Tag: %s\n",
-			(const char *)(tag_obj->buffer));
+		length = snprintf(buf, buf_size - 1, "Tag: %.*s\n",
+			(int)tag_obj->size, (const char *)(tag_obj->buffer));
 	} else {
-		length = snprintf(buf, PAGE_SIZE - 1, "%s\n",
-			(const char *)(tag_obj->buffer));
+		length = snprintf(buf, buf_size - 1, "%.*s\n",
+			(int)tag_obj->size, (const char *)(tag_obj->buffer));
 	}
 
 	return (ssize_t)length;
@@ -466,25 +466,25 @@ static ssize_t tag_show_core(struct device *dev,
 static ssize_t tag_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
-	return tag_show_core(dev, attr, buf, 0);
+	return tag_show_core(dev, attr, buf, 0, PAGE_SIZE);
 }
 
-static ssize_t cache_show(char *buf, int pretty)
+static ssize_t cache_show(char *buf, int pretty, size_t buf_size)
 {
 	struct elliptic_system_configuration_parameters_cache *cache =
 				&elliptic_system_configuration_cache;
 
 	int length;
 
-	length = snprintf(buf, PAGE_SIZE - 1, "Cache:\n");
-	length += snprintf(buf + length, PAGE_SIZE - 1, "    mi:%d\n", cache->microphone_index);
-	length += snprintf(buf + length, PAGE_SIZE - 1, "    om:%d\n", cache->operation_mode);
-	length += snprintf(buf + length, PAGE_SIZE - 1, "   omf:%d\n", cache->operation_mode_flags);
-	length += snprintf(buf + length, PAGE_SIZE - 1, "    cs:%d\n", cache->calibration_state);
-	length += snprintf(buf + length, PAGE_SIZE - 1, "    cp:%d\n", cache->calibration_profile);
-	length += snprintf(buf + length, PAGE_SIZE - 1, "    ug:%d\n", cache->ultrasound_gain);
-	length += snprintf(buf + length, PAGE_SIZE - 1, "    ll:%d\n", cache->log_level);
-	length += snprintf(buf + length, PAGE_SIZE - 1, "    es:%d\n", cache->engine_suspend);
+	length = snprintf(buf, buf_size - 1, "Cache:\n");
+	length += scnprintf(buf + length, buf_size - length, "    mi:%d\n", cache->microphone_index);
+	length += scnprintf(buf + length, buf_size - length, "    om:%d\n", cache->operation_mode);
+	length += scnprintf(buf + length, buf_size - length, "   omf:%d\n", cache->operation_mode_flags);
+	length += scnprintf(buf + length, buf_size - length, "    cs:%d\n", cache->calibration_state);
+	length += scnprintf(buf + length, buf_size - length, "    cp:%d\n", cache->calibration_profile);
+	length += scnprintf(buf + length, buf_size - length, "    ug:%d\n", cache->ultrasound_gain);
+	length += scnprintf(buf + length, buf_size - length, "    ll:%d\n", cache->log_level);
+	length += scnprintf(buf + length, buf_size - length, "    es:%d\n", cache->engine_suspend);
 
 	return (ssize_t)length;
 }
@@ -493,28 +493,44 @@ static ssize_t state_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	int length = 0;
-	length += version_show_core(dev, attr, buf + length, 1);
+	length += version_show_core(dev, attr, buf + length, 1, PAGE_SIZE - length);
+	if (length < 0)
+		return (ssize_t)length;
 	if (length > PAGE_SIZE)
 		return (ssize_t)0;
-	length += branch_show_core(dev, attr, buf + length, 1);
+	length += branch_show_core(dev, attr, buf + length, 1, PAGE_SIZE - length);
+	if (length < 0)
+		return (ssize_t)length;
 	if (length > PAGE_SIZE)
 		return (ssize_t)0;
-	length += tag_show_core(dev, attr, buf + length, 1);
+	length += tag_show_core(dev, attr, buf + length, 1, PAGE_SIZE - length);
+	if (length < 0)
+		return (ssize_t)length;
 	if (length > PAGE_SIZE)
 		return (ssize_t)0;
-	length += calibration_show_core(dev, attr, buf + length, 1);
+	length += calibration_show_core(dev, attr, buf + length, 1, PAGE_SIZE - length);
+	if (length < 0)
+		return (ssize_t)length;
 	if (length > PAGE_SIZE)
 		return (ssize_t)0;
-	length += calibration_v2_show_core(dev, attr, buf + length, 1);
+	length += calibration_v2_show_core(dev, attr, buf + length, 1, PAGE_SIZE - length);
+	if (length < 0)
+		return (ssize_t)length;
 	if (length > PAGE_SIZE)
 		return (ssize_t)0;
-	length += diagnostics_show_core(dev, attr, buf + length, 1);
+	length += diagnostics_show_core(dev, attr, buf + length, 1, PAGE_SIZE - length);
+	if (length < 0)
+		return (ssize_t)length;
 	if (length > PAGE_SIZE)
 		return (ssize_t)0;
-	length += ml_show_core(dev, attr, buf + length, 1);
+	length += ml_show_core(dev, attr, buf + length, 1, PAGE_SIZE - length);
+	if (length < 0)
+		return (ssize_t)length;
 	if (length > PAGE_SIZE)
 		return (ssize_t)0;
-	length += cache_show(buf + length, 1);
+	length += cache_show(buf + length, 1, PAGE_SIZE - length);
+	if (length < 0)
+		return (ssize_t)length;
 	if (length > PAGE_SIZE)
 		return (ssize_t)0;
 	return (ssize_t)length;

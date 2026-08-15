@@ -1306,7 +1306,7 @@ int slim_dealloc_mgrports(struct slim_device *sb, u32 *hdl, int nports)
 		pn = SLIM_HDL_TO_PORT(hdl[i]);
 
 		if (pn >= ctrl->nports || ctrl->ports[pn].state == SLIM_P_CFG) {
-			int j, ret;
+			int ret;
 
 			if (pn >= ctrl->nports) {
 				dev_err(&ctrl->dev, "invalid port number");
@@ -1315,10 +1315,6 @@ int slim_dealloc_mgrports(struct slim_device *sb, u32 *hdl, int nports)
 				dev_err(&ctrl->dev,
 					"Can't dealloc connected port:%d", i);
 				ret = -EISCONN;
-			}
-			for (j = i - 1; j >= 0; j--) {
-				pn = SLIM_HDL_TO_PORT(hdl[j]);
-				ctrl->ports[pn].state = SLIM_P_UNCFG;
 			}
 			mutex_unlock(&ctrl->m_ctrl);
 			return ret;

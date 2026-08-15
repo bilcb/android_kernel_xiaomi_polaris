@@ -1709,9 +1709,8 @@ static void _sde_encoder_update_vsync_source(struct sde_encoder_virt *sde_enc,
 
 		vsync_cfg.pp_count = sde_enc->num_phys_encs;
 		vsync_cfg.frame_rate = mode_info.frame_rate;
-		if (sde_enc->cur_master)
-			vsync_cfg.vsync_source =
-				sde_enc->cur_master->hw_pp->caps->te_source;
+		vsync_cfg.vsync_source =
+			sde_enc->cur_master->hw_pp->caps->te_source;
 		if (is_dummy)
 			vsync_cfg.vsync_source = SDE_VSYNC_SOURCE_WD_TIMER_1;
 		else if (disp_info->is_te_using_watchdog_timer)
@@ -4351,8 +4350,9 @@ void sde_encoder_kickoff(struct drm_encoder *drm_enc, bool is_error)
 
 	if (drm_enc->bridge && drm_enc->bridge->is_dsi_drm_bridge) {
 		struct dsi_bridge *c_bridge = container_of((drm_enc->bridge), struct dsi_bridge, base);
-		if (c_bridge && c_bridge->display && c_bridge->display->panel)
-			c_bridge->display->panel->kickoff_count++;
+		if (c_bridge->display && c_bridge->display->panel)
+			WRITE_ONCE(c_bridge->display->panel->kickoff_count,
+				c_bridge->display->panel->kickoff_count + 1);
 	}
 
 	SDE_ATRACE_END("encoder_kickoff");

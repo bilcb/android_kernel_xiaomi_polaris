@@ -80,6 +80,7 @@ static void cam_node_recycle_ctxt_from_acquired_list(
 	struct cam_node *node)
 {
 	struct cam_context *ctx = NULL;
+	enum cam_context_state ctx_state;
 	int rc;
 
 	mutex_lock(&node->list_mutex);
@@ -87,7 +88,16 @@ static void cam_node_recycle_ctxt_from_acquired_list(
 		ctx = list_first_entry(&node->acquired_ctx_list,
 			struct cam_context, list);
 
-		list_del_init(&ctx->list);
+		spin_lock(&ctx->lock);
+		ctx_state = ctx->state;
+		spin_unlock(&ctx->lock);
+
+		if (ctx_state != CAM_CTX_ACQUIRED)
+			ctx = NULL;
+		else if (atomic_read(&ctx->refcount.refcount) > 1)
+			ctx = NULL;
+		else
+			list_del_init(&ctx->list);
 	}
 	mutex_unlock(&node->list_mutex);
 
@@ -104,23 +114,44 @@ static void cam_node_recycle_ctxt_from_acquired_list(
 		release.session_handle = ctx->session_hdl;
 
 		rc = cam_context_handle_release_dev(ctx, &release);
-		if (rc)
+		if (rc) {
 			CAM_ERR(CAM_CORE, "context release failed node %s",
 				node->name);
+			spin_lock(&ctx->lock);
+			ctx->state = CAM_CTX_ACQUIRED;
+			spin_unlock(&ctx->lock);
+			mutex_lock(&node->list_mutex);
+			list_del_init(&ctx->list);
+			list_add_tail(&ctx->list, &node->acquired_ctx_list);
+			mutex_unlock(&node->list_mutex);
+			return;
+		}
 
 		rc = cam_destroy_device_hdl(release.dev_handle);
-		if (rc)
+		if (rc) {
 			CAM_ERR(CAM_CORE, "destroy device handle is failed node %s",
 				node->name);
+			spin_lock(&ctx->lock);
+			ctx->state = CAM_CTX_ACQUIRED;
+			spin_unlock(&ctx->lock);
+			mutex_lock(&node->list_mutex);
+			list_del_init(&ctx->list);
+			list_add_tail(&ctx->list, &node->acquired_ctx_list);
+			mutex_unlock(&node->list_mutex);
+			return;
+		}
 	}
 
 	ctx->dev_hdl = -1;
 	ctx->link_hdl = -1;
 	ctx->session_hdl = -1;
+	spin_lock(&ctx->lock);
 	ctx->state = CAM_CTX_AVAILABLE;
+	spin_unlock(&ctx->lock);
 	ctx->ctx_released = true;
 
 	mutex_lock(&node->list_mutex);
+	list_del_init(&ctx->list);
 	list_add_tail(&ctx->list, &node->free_ctx_list);
 	mutex_unlock(&node->list_mutex);
 }
@@ -385,6 +416,7 @@ static int __cam_node_handle_release_dev(struct cam_node *node,
 		goto destroy_dev_hdl;
 	}
 
+	ctx->ctx_released = true;
 	cam_context_putref(ctx);
 
 destroy_dev_hdl:
@@ -396,8 +428,6 @@ destroy_dev_hdl:
 	CAM_DBG(CAM_CORE, "[%s] Release ctx_id=%d, refcount=%d",
 		node->name, ctx->ctx_id,
 		atomic_read(&(ctx->refcount.refcount)));
-
-	ctx->ctx_released = true;
 
 	return rc;
 }

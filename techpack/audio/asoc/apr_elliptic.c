@@ -45,7 +45,7 @@ static int afe_set_parameter(int port,
 {
 	int ret = -EINVAL;
 	int index = 0;
-	struct afe_ultrasound_config_command configV;
+	struct afe_ultrasound_config_command configV = {0};
 	struct afe_ultrasound_config_command *config;
 
 	config = &configV;
@@ -53,12 +53,14 @@ static int afe_set_parameter(int port,
 	if (prot_config == NULL)
 		goto fail_cmd;
 
-	pr_debug("[ELUS]: inside %s\n", __func__);
-	memset(config, 0, sizeof(struct afe_ultrasound_config_command));
-	if (!prot_config) {
-		pr_err("%s Invalid params\n", __func__);
+	if (length > sizeof(config->prot_config.payload)) {
+		pr_err("%s: length %u exceeds payload size %zu\n",
+			__func__, length, sizeof(config->prot_config.payload));
 		goto fail_cmd;
 	}
+
+	pr_debug("[ELUS]: inside %s\n", __func__);
+	memset(config, 0, sizeof(struct afe_ultrasound_config_command));
 	if ((q6audio_validate_port(port) < 0)) {
 		pr_err("%s invalid port %d\n", __func__, port);
 		goto fail_cmd;
@@ -81,6 +83,7 @@ static int afe_set_parameter(int port,
 	config->pdata.param_size = length;
 	pr_debug("[ELUS]: param_size %d\n", length);
 	memcpy(config->prot_config.payload, prot_config, length);
+	atomic_set(elus_afe.ptr_status, 0);
 	atomic_set(elus_afe.ptr_state, 1);
 	ret = apr_send_pkt(*elus_afe.ptr_apr, (uint32_t *) config);
 	if (ret < 0) {
@@ -141,6 +144,10 @@ static int32_t process_version_msg(uint32_t *payload, uint32_t payload_size)
 		data_block =
 		elliptic_get_shared_obj(
 			ELLIPTIC_OBJ_ID_VERSION_INFO);
+		if (!data_block || !data_block->buffer) {
+			pr_err("[ELUS]: %s() shared obj is NULL\n", __func__);
+			return -ENOMEM;
+		}
 		copy_size = min_t(size_t, data_block->size,
 			(size_t)ELLIPTIC_VERSION_INFO_SIZE);
 
@@ -164,8 +171,13 @@ static int32_t process_branch_msg(uint32_t *payload, uint32_t payload_size)
 		data_block =
 		elliptic_get_shared_obj(
 			ELLIPTIC_OBJ_ID_BRANCH_INFO);
+		if (!data_block || !data_block->buffer) {
+			pr_err("[ELUS]: %s() shared obj is NULL\n", __func__);
+			return -ENOMEM;
+		}
 		copy_size = min_t(size_t, data_block->size,
-			(size_t)ELLIPTIC_BRANCH_INFO_MAX_SIZE);
+			min_t(size_t, payload_size - 12,
+			(size_t)ELLIPTIC_BRANCH_INFO_MAX_SIZE));
 
 		memcpy((u8 *)data_block->buffer,
 			&payload[3], copy_size);
@@ -187,6 +199,10 @@ static int32_t process_tag_msg(uint32_t *payload, uint32_t payload_size)
 		data_block =
 		elliptic_get_shared_obj(
 			ELLIPTIC_OBJ_ID_TAG_INFO);
+		if (!data_block || !data_block->buffer) {
+			pr_err("[ELUS]: %s() shared obj is NULL\n", __func__);
+			return -ENOMEM;
+		}
 		copy_size = min_t(size_t, data_block->size,
 			(size_t)ELLIPTIC_TAG_INFO_SIZE);
 
@@ -210,6 +226,10 @@ static int32_t process_calibration_msg(uint32_t *payload, uint32_t payload_size)
 
 		data_block = elliptic_get_shared_obj(
 			ELLIPTIC_OBJ_ID_CALIBRATION_DATA);
+		if (!data_block || !data_block->buffer) {
+			pr_err("[ELUS]: %s() shared obj is NULL\n", __func__);
+			return -ENOMEM;
+		}
 		copy_size = min_t(size_t, data_block->size,
 			(size_t)ELLIPTIC_CALIBRATION_DATA_SIZE);
 
@@ -234,6 +254,10 @@ static int32_t process_calibration_v2_msg(uint32_t *payload, uint32_t payload_si
 
 		data_block = elliptic_get_shared_obj(
 			ELLIPTIC_OBJ_ID_CALIBRATION_V2_DATA);
+		if (!data_block || !data_block->buffer) {
+			pr_err("[ELUS]: %s() shared obj is NULL\n", __func__);
+			return -ENOMEM;
+		}
 		copy_size = min_t(size_t, data_block->size,
 			(size_t)ELLIPTIC_CALIBRATION_V2_DATA_SIZE);
 
@@ -258,6 +282,10 @@ static int32_t process_ml_msg(uint32_t *payload, uint32_t payload_size)
 
 		data_block = elliptic_get_shared_obj(
 			ELLIPTIC_OBJ_ID_ML_DATA);
+		if (!data_block || !data_block->buffer) {
+			pr_err("[ELUS]: %s() shared obj is NULL\n", __func__);
+			return -ENOMEM;
+		}
 		copy_size = min_t(size_t, data_block->size,
 			(size_t)ELLIPTIC_ML_DATA_SIZE);
 
@@ -281,6 +309,10 @@ static int32_t process_diagnostics_msg(uint32_t *payload, uint32_t payload_size)
 
 		data_block = elliptic_get_shared_obj(
 			ELLIPTIC_OBJ_ID_DIAGNOSTICS_DATA);
+		if (!data_block || !data_block->buffer) {
+			pr_err("[ELUS]: %s() shared obj is NULL\n", __func__);
+			return -ENOMEM;
+		}
 		copy_size = min_t(size_t, data_block->size,
 			(size_t)ELLIPTIC_DIAGNOSTICS_DATA_SIZE);
 
@@ -301,7 +333,7 @@ static int32_t process_sensorhub_msg(uint32_t *payload, uint32_t payload_size)
 	return ret;
 }
 
-int32_t elliptic_process_apr_payload(uint32_t *payload)
+int32_t elliptic_process_apr_payload(uint32_t *payload, uint32_t actual_size)
 {
 	uint32_t payload_size = 0;
 	int32_t  ret = -1;
@@ -315,6 +347,13 @@ int32_t elliptic_process_apr_payload(uint32_t *payload)
 		*   payload[3] = US data payload starts from here
 		*/
 		payload_size = payload[2] & 0xFFFF;
+
+		if (actual_size < 3 * sizeof(uint32_t) ||
+		    payload_size > actual_size - 3 * sizeof(uint32_t)) {
+			pr_err("[ELUS]: claimed payload size %u exceeds "
+				"actual size %u\n", payload_size, actual_size);
+			return -EINVAL;
+		}
 
 		switch (payload[1]) {
 		case ELLIPTIC_ULTRASOUND_PARAM_ID_ENGINE_VERSION:

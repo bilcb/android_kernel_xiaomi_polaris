@@ -304,7 +304,9 @@ int32_t sl_eeprom_power_up_wrapper(struct sl_eeprom_ctrl_t *e_ctrl, void *arg)
 	return rc;
 error:
 	kfree(power_info->power_setting);
+	power_info->power_setting = NULL;
 	kfree(power_info->power_down_setting);
+	power_info->power_down_setting = NULL;
 	e_ctrl->sl_eeprom_state = CAM_SL_EEPROM_INIT;
 	return rc;
 }
@@ -359,9 +361,10 @@ int32_t sl_eeprom_read_eeprom_wrapper(struct sl_eeprom_ctrl_t *e_ctrl, void *arg
 			goto free_map;
 		}
 	} else {
-		sl_eeprom_parse_memory_map(e_ctrl->soc_info.dev->of_node, &e_ctrl->cal_data, arg, &user_addr);
+		rc = sl_eeprom_parse_memory_map(e_ctrl->soc_info.dev->of_node, &e_ctrl->cal_data, arg, &user_addr);
 		if (rc) {
 			CAM_ERR(CAM_SL_EEPROM, "failed: sl_eeprom_parse_memory_map rc %d", rc);
+			e_ctrl->userspace_probe = false;
 			return rc;
 		}
 		rc = sl_eeprom_read_memory(e_ctrl, &e_ctrl->cal_data);
@@ -377,8 +380,10 @@ int32_t sl_eeprom_read_eeprom_wrapper(struct sl_eeprom_ctrl_t *e_ctrl, void *arg
 		rc = copy_to_user((void __user *)user_addr,
 			e_ctrl->cal_data.mapdata, e_ctrl->cal_data.num_data);
 
-		 if (rc < 0){
+		 if (rc){
 			CAM_ERR(CAM_SL_EEPROM, "sl_eeprom_parse_memory_map copy to user failed\n");
+			rc = -EFAULT;
+			goto free_map;
 		}
 
 	}
@@ -441,17 +446,24 @@ int32_t sl_eeprom_write_eeprom_wrapper(struct sl_eeprom_ctrl_t *e_ctrl, void *ar
 		return -EINVAL;
 	}
 	rc = copy_from_user(&reg_data_map, (void __user *)arg, sizeof(struct cam_sensor_i2c_reg_setting));
-	if (rc < 0) {
+	if (rc) {
 		CAM_ERR(CAM_SL_EEPROM, "sl_eeprom_write_eeprom_wrapper copy from user failed\n");
-		return rc;
+		return -EFAULT;
+	}
+	if (!reg_data_map.size || reg_data_map.size > 4096) {
+		CAM_ERR(CAM_SL_EEPROM, "invalid reg setting size %u",
+			reg_data_map.size);
+		return -EINVAL;
 	}
 	reg_settings = kzalloc(sizeof(struct cam_sensor_i2c_reg_array) * reg_data_map.size, GFP_KERNEL);
 	if (!reg_settings) {
 		CAM_ERR(CAM_SL_EEPROM, "reg_settings alloc error");
+		return -ENOMEM;
 	}
 	rc =  copy_from_user(reg_settings, (void __user*)reg_data_map.reg_setting, sizeof(struct cam_sensor_i2c_reg_array) * reg_data_map.size);
-	if (rc < 0) {
+	if (rc) {
 		CAM_ERR(CAM_SL_EEPROM, "sl_eeprom_write_eeprom_wrapper copy from user setting failed\n");
+		rc = -EFAULT;
 		goto	free_setting;
 	}
 	reg_data_map.reg_setting = reg_settings;
@@ -499,13 +511,20 @@ int32_t sl_eeprom_write_eeprom_wrapper(struct sl_eeprom_ctrl_t *e_ctrl, void *ar
 #if 1
 	usleep_range(10000, 11000);
 	map_data = kzalloc(sizeof(uint8_t)*reg_data_map.size, GFP_KERNEL);
+	if (!map_data) {
+		CAM_ERR(CAM_SL_EEPROM, "map_data alloc error");
+		rc = -ENOMEM;
+		goto free_setting;
+	}
 	memset(map_data, 0,  reg_data_map.size);
-	rc = camera_io_dev_read_seq(&e_ctrl->io_master_info,
-		reg_data_map.reg_setting[1].reg_addr, map_data + 1,
-		reg_data_map.addr_type, reg_data_map.data_type, reg_data_map.size - 1);
-	if (rc < 0) {
-		CAM_ERR(CAM_SL_EEPROM, "read eeprom error rc %d", rc);
-			goto	free_data;
+	if (reg_data_map.size >= 2) {
+		rc = camera_io_dev_read_seq(&e_ctrl->io_master_info,
+			reg_data_map.reg_setting[1].reg_addr, map_data + 1,
+			reg_data_map.addr_type, reg_data_map.data_type, reg_data_map.size - 1);
+		if (rc < 0) {
+			CAM_ERR(CAM_SL_EEPROM, "read eeprom error rc %d", rc);
+				goto	free_data;
+		}
 	}
 	rc =  camera_io_dev_read(&e_ctrl->io_master_info,
 		reg_data_map.reg_setting[0].reg_addr,
@@ -513,7 +532,7 @@ int32_t sl_eeprom_write_eeprom_wrapper(struct sl_eeprom_ctrl_t *e_ctrl, void *ar
 		CAMERA_SENSOR_I2C_TYPE_WORD);
 	if (rc < 0) {
 		CAM_ERR(CAM_SL_EEPROM, "read eeprom error, rc %d", rc);
-		goto	free_setting;
+		goto	free_data;
 	}
 	*map_data = data_r;
 	for (i = 0 ; i <  reg_data_map.size - 1; i++) {
@@ -561,7 +580,9 @@ int32_t sl_eeprom_power_down_wrapper(struct sl_eeprom_ctrl_t *e_ctrl, void *arg)
 	return rc;
 error:
 	kfree(power_info->power_setting);
+	power_info->power_setting = NULL;
 	kfree(power_info->power_down_setting);
+	power_info->power_down_setting = NULL;
 	e_ctrl->sl_eeprom_state = CAM_SL_EEPROM_INIT;
 	return rc;
 }

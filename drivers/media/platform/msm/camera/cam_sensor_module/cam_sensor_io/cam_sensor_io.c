@@ -72,6 +72,11 @@ int32_t camera_io_dev_read_seq(struct camera_io_master *io_master_info,
 	enum camera_sensor_i2c_type addr_type,
 	enum camera_sensor_i2c_type data_type, int32_t num_bytes)
 {
+	if (!io_master_info) {
+		CAM_ERR(CAM_SENSOR, "failed: invalid params io_master_info");
+		return -EINVAL;
+	}
+
 	if (io_master_info->master_type == CCI_MASTER) {
 		return cam_camera_cci_i2c_read_seq(io_master_info->cci_client,
 			addr, data, addr_type, data_type, num_bytes);
@@ -113,10 +118,10 @@ int32_t camera_io_dev_write(struct camera_io_master *io_master_info,
 
 	if (io_master_info->master_type == CCI_MASTER) {
 		int32_t ret;
-		atomic_set(&g_camera_io_write, 1);
+		atomic_inc(&g_camera_io_write);
 		ret = cam_cci_i2c_write_table(io_master_info,
 			write_setting);
-		atomic_set(&g_camera_io_write, 0);
+		atomic_dec(&g_camera_io_write);
 		return ret;
 	} else if (io_master_info->master_type == I2C_MASTER) {
 		return cam_qup_i2c_write_table(io_master_info,

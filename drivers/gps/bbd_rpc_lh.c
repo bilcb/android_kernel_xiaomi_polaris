@@ -33,7 +33,7 @@
 #include "bbd.h"
 
 // function to inject sensor data into SHMD
-ssize_t bbd_sensor_write(const char *buf, unsigned int size);
+ssize_t bbd_sensor_write(const char *buf, size_t size);
 void bcm_on_packet_received(void *_priv, unsigned char *data, size_t size);
 #else
 
@@ -46,7 +46,7 @@ void bcm_on_packet_received(void *_priv, unsigned char *data, size_t size);
 #define pr_info 	printf
 #define pr_warn 	printf
 #define pr_err		printf
-#define WARN_ON(x) (if (x) printf("error in %s:%d\n", __func__, __LINE__))
+#define WARN_ON(x) do { if (x) printf("error in %s:%d\n", __func__, __LINE__); } while (0)
 
 ssize_t bbd_sensor_write(const unsigned char *buf, size_t size)
 {
@@ -366,12 +366,24 @@ static int BbdBridge_OnRpcReceived(unsigned short usRpcId,
 	if (usRpcId == RPC_DEFINITION(IRpcSensorResponse, Data)) {
 		/* Read 2 byte size */
 		ssize_t result;
-		unsigned short size = *pRpcPayload++;
+		unsigned short size;
+
+		if (usRpcLen < 2)
+			return 1;
+
+		size = *pRpcPayload++;
 		size |= *pRpcPayload++ << 8;
 
+		if (size > usRpcLen - 2) {
+			pr_warn_ratelimited("%s: size field mismatch %u > %u\n",
+				__func__, size, usRpcLen - 2);
+			size = usRpcLen - 2;
+		}
+
 		result = bbd_sensor_write(pRpcPayload, size);
-		WARN_ON(size != usRpcLen-2);
-		WARN_ON((short) result != size);
+		if ((ssize_t)result != (ssize_t)size)
+			pr_warn_ratelimited("%s: short write %d != %u\n",
+				__func__, (int)result, size);
 
 		return 1;
 	}
@@ -393,13 +405,19 @@ static bool BbdBridge_CheckPacketSanity(unsigned char *pucData,
 		lSize--;
 
 		if (usRpcId&0x80) {
+			if (lSize <= 0)
+				return false;
 			usRpcId &= ~0x80;
 			usRpcId <<= 8;
 			usRpcId |= *pucData++; lSize--;
 		}
 
+		if (lSize <= 0)
+			return false;
 		usRpcLen = *pucData++; lSize--;
 		if (usRpcLen&0x80) {
+			if (lSize <= 0)
+				return false;
 			usRpcLen &= ~0x80;
 			usRpcLen <<= 8;
 			usRpcLen |= *pucData++; lSize--;
@@ -448,10 +466,11 @@ static int BbdBridge_OnPacketReceived(unsigned char *pucData,
 			lSize -= usRpcLen;
 		}
 	} else {
-		WARN_ON(1);
+		pr_warn_ratelimited("[SSPBBD]: %s packet sanity check failed\n",
+			__func__);
 	}
 	//pr_info("[SSPBBD]: %s sensor:%d, gnss:%d\n", __func__, sensor, gnss);
-	return (sensor > 0);
+	return (sensor > 0 && gnss == 0);
 }
 
 

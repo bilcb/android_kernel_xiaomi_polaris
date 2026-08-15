@@ -141,6 +141,24 @@ static int cam_eeprom_read_memory(struct cam_eeprom_ctrl_t *e_ctrl,
 
 			memptr += emap[j].mem.valid_size;
 		}
+
+		if (emap[j].pageen.valid_size) {
+			i2c_reg_settings.addr_type = emap[j].pageen.addr_type;
+			i2c_reg_settings.data_type = emap[j].pageen.data_type;
+			i2c_reg_settings.size = 1;
+			i2c_reg_array.reg_addr = emap[j].pageen.addr;
+			i2c_reg_array.reg_data = 0;
+			i2c_reg_array.delay = emap[j].pageen.delay;
+			i2c_reg_settings.reg_setting = &i2c_reg_array;
+			rc = camera_io_dev_write(&e_ctrl->io_master_info,
+				&i2c_reg_settings);
+			if (rc) {
+				CAM_ERR(CAM_EEPROM,
+					"page disable failed rc %d",
+					rc);
+				return rc;
+			}
+		}
 	}
 	return rc;
 }
@@ -535,6 +553,12 @@ static int32_t cam_eeprom_parse_memory_map(
 			map[*num_map - 1].pageen.delay = i2c_uncond_wait->delay;
 		} else if (generic_op_code ==
 			CAMERA_SENSOR_WAIT_OP_COND) {
+			if (remain_buf_len <
+				sizeof(struct cam_cmd_conditional_wait)) {
+				CAM_ERR(CAM_EEPROM,
+					"not enough buffer for cond wait");
+				return -EINVAL;
+			}
 			i2c_poll = (struct cam_cmd_conditional_wait *)cmd_buf;
 			cmd_length_in_bytes =
 				sizeof(struct cam_cmd_conditional_wait);
@@ -690,7 +714,8 @@ static int32_t cam_eeprom_init_pkt_parser(struct cam_eeprom_ctrl_t *e_ctrl,
 				cmd_buf += cmd_length_in_bytes/sizeof(uint32_t);
 				break;
 			default:
-				break;
+				CAM_ERR(CAM_EEPROM, "invalid cmd type");
+				return -EINVAL;
 			}
 		}
 		e_ctrl->cal_data.num_map = num_map + 1;

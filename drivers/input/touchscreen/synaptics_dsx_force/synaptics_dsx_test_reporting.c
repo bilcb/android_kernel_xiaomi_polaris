@@ -1637,6 +1637,7 @@ static struct bin_attribute test_report_data = {
 */
 static struct synaptics_rmi4_f54_handle *f54;
 static struct synaptics_rmi4_f55_handle *f55;
+static bool proc_already;
 
 /* td43xx start */
 static unsigned char *td43xx_full_raw_data;
@@ -1646,6 +1647,7 @@ static unsigned char *td43xx_amp_open_data;
 /* td43xx end */
 static int *g_abs_0d_open_data_output;
 static char g_flag_read_report_fail;
+static DEFINE_MUTEX(td43xx_test_mutex);
 
 DECLARE_COMPLETION(test_remove_complete_force);
 
@@ -2032,7 +2034,7 @@ static int test_do_preparation(void)
 				return retval;
 			}
 
-			if (!(value && 0x01)) {
+			if (!(value & 0x01)) {
 				value = (value | 0x01);
 
 				retval = synaptics_rmi4_reg_write(rmi4_data,
@@ -2444,7 +2446,7 @@ static ssize_t test_sysfs_tx_mapping_show(struct device *dev,
 	unsigned char tx_num;
 	unsigned char tx_electrodes;
 
-	if (!f55)
+	if (!f55 || !f55->tx_assignment || !f55->rx_assignment)
 		return -EINVAL;
 
 	tx_electrodes = f55->query.num_of_tx_electrodes;
@@ -2474,7 +2476,7 @@ static ssize_t test_sysfs_rx_mapping_show(struct device *dev,
 	unsigned char rx_num;
 	unsigned char rx_electrodes;
 
-	if (!f55)
+	if (!f55 || !f55->tx_assignment || !f55->rx_assignment)
 		return -EINVAL;
 
 	rx_electrodes = f55->query.num_of_rx_electrodes;
@@ -2504,7 +2506,8 @@ static ssize_t test_sysfs_force_tx_mapping_show(struct device *dev,
 	unsigned char tx_num;
 	unsigned char tx_electrodes;
 
-	if (!f55 || !f55->has_force)
+	if (!f55 || !f55->has_force ||
+			!f55->force_tx_assignment || !f55->force_rx_assignment)
 		return -EINVAL;
 
 	tx_electrodes = f55->query.num_of_tx_electrodes;
@@ -2534,7 +2537,8 @@ static ssize_t test_sysfs_force_rx_mapping_show(struct device *dev,
 	unsigned char rx_num;
 	unsigned char rx_electrodes;
 
-	if (!f55 || !f55->has_force)
+	if (!f55 || !f55->has_force ||
+			!f55->force_tx_assignment || !f55->force_rx_assignment)
 		return -EINVAL;
 
 	rx_electrodes = f55->query.num_of_rx_electrodes;
@@ -3055,7 +3059,8 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 	switch (f54->report_type) {
 	case F54_8BIT_IMAGE:
 		report_data_8 = (char *)f54->report_data;
-		for (ii = 0; ii < f54->report_size; ii++) {
+		for (ii = 0; ii < f54->report_size &&
+				count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "%03d: %d\n",
 					ii, *report_data_8);
 			report_data_8++;
@@ -3070,8 +3075,9 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		buf += cnt;
 		count += cnt;
 
-		for (ii = 0; ii < tx_num; ii++) {
-			for (jj = 0; jj < (rx_num - 1); jj++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
+			for (jj = 0; jj < (rx_num - 1) &&
+					count < (PAGE_SIZE - 64); jj++) {
 				cnt = snprintf(buf, PAGE_SIZE - count, "%-4d ",
 						*report_data_u16);
 				report_data_u16++;
@@ -3101,8 +3107,9 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		buf += cnt;
 		count += cnt;
 
-		for (ii = 0; ii < tx_num; ii++) {
-			for (jj = 0; jj < (rx_num - 1); jj++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
+			for (jj = 0; jj < (rx_num - 1) &&
+					count < (PAGE_SIZE - 64); jj++) {
 				cnt = snprintf(buf, PAGE_SIZE - count, "%-4d ",
 						*report_data_16);
 				report_data_16++;
@@ -3124,8 +3131,9 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		buf += cnt;
 		count += cnt;
 
-		for (ii = 0; ii < tx_num; ii++) {
-			for (jj = 0; jj < (rx_num - 1); jj++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
+			for (jj = 0; jj < (rx_num - 1) &&
+					count < (PAGE_SIZE - 64); jj++) {
 				cnt = snprintf(buf, PAGE_SIZE - count, "%-5d ",
 						*report_data_u16);
 				report_data_u16++;
@@ -3146,8 +3154,9 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		buf += cnt;
 		count += cnt;
 
-		for (ii = 0; ii < tx_num; ii++) {
-			for (jj = 0; jj < (rx_num - 1); jj++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
+			for (jj = 0; jj < (rx_num - 1) &&
+					count < (PAGE_SIZE - 64); jj++) {
 				cnt = snprintf(buf, PAGE_SIZE - count, "%-4d ",
 						*report_data_u16);
 				report_data_u16++;
@@ -3163,8 +3172,9 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "\n");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < tx_num; ii++) {
-			for (jj = 0; jj < (rx_num - 1); jj++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
+			for (jj = 0; jj < (rx_num - 1) &&
+					count < (PAGE_SIZE - 64); jj++) {
 				cnt = snprintf(buf, PAGE_SIZE - count, "%-4d ",
 						*report_data_u16);
 				report_data_u16++;
@@ -3182,7 +3192,8 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 	case F54_HIGH_RESISTANCE:
 	case F54_FULL_RAW_CAP_MIN_MAX:
 		report_data_16 = (short *)f54->report_data;
-		for (ii = 0; ii < f54->report_size; ii += 2) {
+		for (ii = 0; ii < f54->report_size &&
+				count < (PAGE_SIZE - 64); ii += 2) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "%03d: %d\n",
 					ii / 2, *report_data_16);
 			report_data_16++;
@@ -3195,7 +3206,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "rx ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < rx_num; ii++) {
+		for (ii = 0; ii < rx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "     %2d", ii);
 			buf += cnt;
 			count += cnt;
@@ -3207,7 +3218,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "   ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < rx_num; ii++) {
+		for (ii = 0; ii < rx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "  %5u",
 					*report_data_u32);
 			report_data_u32++;
@@ -3221,7 +3232,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "tx ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < tx_num; ii++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "     %2d", ii);
 			buf += cnt;
 			count += cnt;
@@ -3233,7 +3244,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "   ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < tx_num; ii++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "  %5u",
 					*report_data_u32);
 			report_data_u32++;
@@ -3251,7 +3262,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "rx ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < rx_num; ii++) {
+		for (ii = 0; ii < rx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "     %2d", ii);
 			buf += cnt;
 			count += cnt;
@@ -3263,7 +3274,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "   ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < rx_num; ii++) {
+		for (ii = 0; ii < rx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "  %5d",
 					*report_data_32);
 			report_data_32++;
@@ -3277,7 +3288,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "tx ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < tx_num; ii++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "     %2d", ii);
 			buf += cnt;
 			count += cnt;
@@ -3289,7 +3300,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "   ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < tx_num; ii++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "  %5d",
 					*report_data_32);
 			report_data_32++;
@@ -3310,7 +3321,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "rx ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < rx_num; ii++) {
+		for (ii = 0; ii < rx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "     %2d", ii);
 			buf += cnt;
 			count += cnt;
@@ -3322,7 +3333,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "   ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < rx_num; ii++) {
+		for (ii = 0; ii < rx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "  %5u",
 					*report_data_u32);
 			report_data_u32++;
@@ -3336,7 +3347,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "tx ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < tx_num; ii++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "     %2d", ii);
 			buf += cnt;
 			count += cnt;
@@ -3348,7 +3359,7 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		cnt = snprintf(buf, PAGE_SIZE - count, "   ");
 		buf += cnt;
 		count += cnt;
-		for (ii = 0; ii < tx_num; ii++) {
+		for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "  %5u",
 					*report_data_u32);
 			report_data_u32++;
@@ -3360,7 +3371,8 @@ static ssize_t test_sysfs_read_report_show(struct device *dev,
 		count += cnt;
 		break;
 	default:
-		for (ii = 0; ii < f54->report_size; ii++) {
+		for (ii = 0; ii < f54->report_size &&
+				count < (PAGE_SIZE - 64); ii++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "%03d: 0x%02x\n",
 					ii, f54->report_data[ii]);
 			buf += cnt;
@@ -3516,7 +3528,12 @@ static short FindMedian(short *pdata, int num)
 	short *value;
 	short median;
 
+	if (num <= 0)
+		return 0;
+
 	value = (short *)kzalloc(num * sizeof(short), GFP_KERNEL);
+	if (!value)
+		return 0;
 
 	for (i = 0; i < num; i++)
 		*(value + i) = *(pdata + i);
@@ -3642,22 +3659,22 @@ static int tddi_ratio_calculation(signed short *p_image)
 				// first row is left side
 				if (i < left_size) {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_left_median[j];
+					temp = p_left_median[j] ? temp * 100 / p_left_median[j] : 0;
 				}
 				else {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_right_median[j];
+					temp = p_right_median[j] ? temp * 100 / p_right_median[j] : 0;
 				}
 			}
 			else {
 				// first row is right side
 				if (i < right_size) {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_right_median[j];
+					temp = p_right_median[j] ? temp * 100 / p_right_median[j] : 0;
 				}
 				else {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_left_median[j];
+					temp = p_left_median[j] ? temp * 100 / p_left_median[j] : 0;
 				}
 			}
 
@@ -3673,7 +3690,7 @@ exit:
 	kfree(p_left_column_buf);
 	return retval;
 }
-static ssize_t test_sysfs_tddi_extend_ee_short_store(struct device *dev,
+static ssize_t test_sysfs_tddi_extend_ee_short_store_unlocked(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int retval;
@@ -3731,6 +3748,14 @@ static ssize_t test_sysfs_tddi_extend_ee_short_store(struct device *dev,
 	}
 
 	g_flag_read_report_fail = 0;
+
+	if (!control.reg_99 || !control.reg_182) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Panel has no f54 control 99/182\n",
+				__func__);
+		retval = -EINVAL;
+		goto exit;
+	}
 
 	/* step 1 */
 	/* keep the original integration and reset duration */
@@ -3935,8 +3960,19 @@ exit:
 
 	return retval;
 }
+static ssize_t test_sysfs_tddi_extend_ee_short_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	ssize_t retval;
 
-static ssize_t test_sysfs_tddi_extend_ee_short_show(struct device *dev,
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_tddi_extend_ee_short_store_unlocked(dev, attr, buf, count);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
+}
+
+static ssize_t test_sysfs_tddi_extend_ee_short_show_unlocked(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	int i, j;
@@ -3969,8 +4005,19 @@ static ssize_t test_sysfs_tddi_extend_ee_short_show(struct device *dev,
 
 	return snprintf(buf, PAGE_SIZE, "%s\n", (fail_count == 0) ? "PASS" : "FAIL");
 }
+static ssize_t test_sysfs_tddi_extend_ee_short_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t retval;
 
-static ssize_t test_sysfs_td43xx_ee_short_store(struct device *dev,
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_tddi_extend_ee_short_show_unlocked(dev, attr, buf);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
+}
+
+static ssize_t test_sysfs_td43xx_ee_short_store_unlocked(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int retval = 0;
@@ -4066,12 +4113,23 @@ exit:
 
 	return retval;
 }
+static ssize_t test_sysfs_td43xx_ee_short_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	ssize_t retval;
 
-static ssize_t test_sysfs_td43xx_ee_short_show(struct device *dev,
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td43xx_ee_short_store_unlocked(dev, attr, buf, count);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
+}
+
+static ssize_t test_sysfs_td43xx_ee_short_show_unlocked(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	int i, j;
-	int tx_num = f54->tx_assigned - 1;
+	int tx_num = f54->tx_assigned;
 	int rx_num = f54->rx_assigned;
 	bool result = 1;
 
@@ -4099,8 +4157,19 @@ static ssize_t test_sysfs_td43xx_ee_short_show(struct device *dev,
 
 	return snprintf(buf, PAGE_SIZE, "%s\n", (result == 1) ? "PASS" : "FAIL");
 }
+static ssize_t test_sysfs_td43xx_ee_short_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t retval;
 
-static ssize_t test_sysfs_td43xx_noise_store(struct device *dev,
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td43xx_ee_short_show_unlocked(dev, attr, buf);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
+}
+
+static ssize_t test_sysfs_td43xx_noise_store_unlocked(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int retval = 0;
@@ -4131,8 +4200,6 @@ static ssize_t test_sysfs_td43xx_noise_store(struct device *dev,
 		return -ENOMEM;
 	}
 
-	if (td43xx_noise_max)
-		kfree(td43xx_noise_data);
 	td43xx_noise_max = (unsigned short *)kzalloc(noise_report_size, GFP_KERNEL);
 	if (!td43xx_noise_max) {
 		dev_err(rmi4_data->pdev->dev.parent,
@@ -4141,9 +4208,9 @@ static ssize_t test_sysfs_td43xx_noise_store(struct device *dev,
 		retval = -ENOMEM;
 		goto exit;
 	}
+	for (i = 0; i < tx_num * rx_num; i++)
+		td43xx_noise_max[i] = SHRT_MIN;
 
-	if (td43xx_noise_min)
-		kfree(td43xx_noise_min);
 	td43xx_noise_min = (unsigned short *) kzalloc(noise_report_size, GFP_KERNEL);
 	if (!td43xx_noise_min) {
 		dev_err(rmi4_data->pdev->dev.parent,
@@ -4152,6 +4219,8 @@ static ssize_t test_sysfs_td43xx_noise_store(struct device *dev,
 		retval = -ENOMEM;
 		goto exit;
 	}
+	for (i = 0; i < tx_num * rx_num; i++)
+		td43xx_noise_min[i] = SHRT_MAX;
 
 	if (td43xx_noise_delta)
 		kfree(td43xx_noise_delta);
@@ -4203,6 +4272,7 @@ static ssize_t test_sysfs_td43xx_noise_store(struct device *dev,
 			td43xx_noise_delta[i*rx_num + j] =
 			td43xx_noise_max[i*rx_num + j] -
 			td43xx_noise_min[i*rx_num + j];
+	retval = count;
 exit:
 	kfree(td43xx_noise_max);
 	kfree(td43xx_noise_min);
@@ -4214,8 +4284,19 @@ exit:
 
 	return retval;
 }
+static ssize_t test_sysfs_td43xx_noise_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	ssize_t retval;
 
-static ssize_t test_sysfs_td43xx_noise_show(struct device *dev,
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td43xx_noise_store_unlocked(dev, attr, buf, count);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
+}
+
+static ssize_t test_sysfs_td43xx_noise_show_unlocked(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	int i, j;
@@ -4246,8 +4327,19 @@ static ssize_t test_sysfs_td43xx_noise_show(struct device *dev,
 	td43xx_noise_delta = NULL;
 	return snprintf(buf, PAGE_SIZE, "%s\n", (result == 1) ? "PASS" : "FAIL");
 }
+static ssize_t test_sysfs_td43xx_noise_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t retval;
 
-static ssize_t test_sysfs_td43xx_full_raw_store(struct device *dev,
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td43xx_noise_show_unlocked(dev, attr, buf);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
+}
+
+static ssize_t test_sysfs_td43xx_full_raw_store_unlocked(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int retval = 0;
@@ -4281,7 +4373,8 @@ static ssize_t test_sysfs_td43xx_full_raw_store(struct device *dev,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read report 92. exit\n",
 				__func__);
-		return -EIO;
+		retval = -EIO;
+		goto exit;
 	}
 
 	secure_memcpy(td43xx_full_raw_data, full_raw_report_size,
@@ -4289,10 +4382,25 @@ static ssize_t test_sysfs_td43xx_full_raw_store(struct device *dev,
 
 	retval = count;
 
+exit:
+	pr_err("%s: resetting device\n", __func__);
+	rmi4_data->reset_device(rmi4_data, false);
+
+	return retval;
+}
+static ssize_t test_sysfs_td43xx_full_raw_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td43xx_full_raw_store_unlocked(dev, attr, buf, count);
+	mutex_unlock(&td43xx_test_mutex);
+
 	return retval;
 }
 
-static ssize_t test_sysfs_td43xx_full_raw_show(struct device *dev,
+static ssize_t test_sysfs_td43xx_full_raw_show_unlocked(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	unsigned int ii;
@@ -4312,8 +4420,9 @@ static ssize_t test_sysfs_td43xx_full_raw_show(struct device *dev,
 	buf += cnt;
 	count += cnt;
 
-	for (ii = 0; ii < tx_num; ii++) {
-		for (jj = 0; jj < (rx_num - 1); jj++) {
+	for (ii = 0; ii < tx_num && count < (PAGE_SIZE - 64); ii++) {
+		for (jj = 0; jj < (rx_num - 1) &&
+				count < (PAGE_SIZE - 64); jj++) {
 			cnt = snprintf(buf, PAGE_SIZE - count, "%-4d ",
 					*report_data_16);
 			report_data_16++;
@@ -4335,6 +4444,17 @@ static ssize_t test_sysfs_td43xx_full_raw_show(struct device *dev,
 	count++;
 
 	return count;
+}
+static ssize_t test_sysfs_td43xx_full_raw_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td43xx_full_raw_show_unlocked(dev, attr, buf);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
 }
 
 
@@ -4465,20 +4585,20 @@ static int tddi_amp_open_data_testing_b7(signed short *p_image,
 				// first row is left side
 				if (i < left_size) {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_left_median[j];
+					temp = p_left_median[j] ? temp * 100 / p_left_median[j] : 0;
 				} else {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_right_median[j];
+					temp = p_right_median[j] ? temp * 100 / p_right_median[j] : 0;
 				}
 			}
 			else {
 				// first row is right side
 				if (i < right_size) {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_right_median[j];
+					temp = p_right_median[j] ? temp * 100 / p_right_median[j] : 0;
 				} else {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_left_median[j];
+					temp = p_left_median[j] ? temp * 100 / p_left_median[j] : 0;
 				}
 			}
 
@@ -4515,7 +4635,7 @@ exit:
 	return retval;
 }
 
-static ssize_t test_sysfs_td4722_b7_amp_open_store(struct device *dev,
+static ssize_t test_sysfs_td4722_b7_amp_open_store_unlocked(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int retval = 0;
@@ -4588,7 +4708,8 @@ static ssize_t test_sysfs_td4722_b7_amp_open_store(struct device *dev,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to alloc mem for p_result_1\n",
 				__func__);
-		return -ENOMEM;
+		retval = -ENOMEM;
+		goto exit;
 	}
 
 	p_result_2 = kzalloc(tx_num * rx_num, GFP_KERNEL);
@@ -4596,7 +4717,8 @@ static ssize_t test_sysfs_td4722_b7_amp_open_store(struct device *dev,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to alloc mem for p_result_2\n",
 				__func__);
-		return -ENOMEM;
+		retval = -ENOMEM;
+		goto exit;
 	}
 
 
@@ -4789,10 +4911,21 @@ exit:
 	rmi4_data->reset_device(rmi4_data, false);
 	pr_err("%s: done resetting device\n", __func__);
 
-	return count;
+	return retval;
+}
+static ssize_t test_sysfs_td4722_b7_amp_open_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td4722_b7_amp_open_store_unlocked(dev, attr, buf, count);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
 }
 
-static ssize_t test_sysfs_td4722_b7_amp_open_show(struct device *dev,
+static ssize_t test_sysfs_td4722_b7_amp_open_show_unlocked(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	int i = 0, j = 0;
@@ -4830,6 +4963,17 @@ static ssize_t test_sysfs_td4722_b7_amp_open_show(struct device *dev,
 	td43xx_amp_open_data = NULL;
 
 	return snprintf(buf, PAGE_SIZE, "%s\n", (result == 1) ? "PASS" : "FAIL");
+}
+static ssize_t test_sysfs_td4722_b7_amp_open_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td4722_b7_amp_open_show_unlocked(dev, attr, buf);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
 }
 static int tddi_amp_open_data_testing(signed short *p_image)
 {
@@ -4920,10 +5064,10 @@ static int tddi_amp_open_data_testing(signed short *p_image)
 			for (j = 0; j < rx_num; j++) {
 				if (i < left_size) {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_left_median[j];
+					temp = p_left_median[j] ? temp * 100 / p_left_median[j] : 0;
 				} else {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_right_median[j];
+					temp = p_right_median[j] ? temp * 100 / p_right_median[j] : 0;
 				}
 
 				if ((temp > 0) && temp < factory_param->tddi_open_test_limit_phase2_lower) {
@@ -4959,10 +5103,10 @@ static int tddi_amp_open_data_testing(signed short *p_image)
 			for (j = 0; j < rx_num; j++) {
 				if (i < right_size) {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_right_median[j];
+					temp = p_right_median[j] ? temp * 100 / p_right_median[j] : 0;
 				} else {
 					temp = (signed int) p_image[i * rx_num + j];
-					temp = temp * 100 / p_left_median[j];
+					temp = p_left_median[j] ? temp * 100 / p_left_median[j] : 0;
 				}
 
 				if ((temp > 0) && (temp < factory_param->tddi_open_test_limit_phase2_lower)) {
@@ -4985,7 +5129,7 @@ exit:
 	return retval;
 }
 
-static ssize_t test_sysfs_td43xx_amp_open_store(struct device *dev,
+static ssize_t test_sysfs_td43xx_amp_open_store_unlocked(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int retval = 0;
@@ -5010,10 +5154,11 @@ static ssize_t test_sysfs_td43xx_amp_open_store(struct device *dev,
 	if (setting != 1 || !factory_param)
 		return -EINVAL;
 
-	if (f55->extended_amp_btn) {
-		tx_num -= 1;
-	}
-
+	/* NB: do not shrink tx_num here — tddi_amp_open_data_testing()
+	 * and test_sysfs_tddi_amp_open_show iterate the full tx_num range,
+	 * so a (tx_num - 1) * rx_num allocation is written/read one row
+	 * out of bounds (unlike the b7 store/show pair, which both use
+	 * the reduced count consistently). */
 	if (td43xx_amp_open_data)
 		kfree(td43xx_amp_open_data);
 	td43xx_amp_open_data = kzalloc(tx_num * rx_num, GFP_KERNEL);
@@ -5220,10 +5365,21 @@ exit:
 	rmi4_data->reset_device(rmi4_data, false);
 	pr_err("%s: done resetting device\n", __func__);
 
-	return count;
+	return retval;
+}
+static ssize_t test_sysfs_td43xx_amp_open_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td43xx_amp_open_store_unlocked(dev, attr, buf, count);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
 }
 
-static ssize_t test_sysfs_td43xx_amp_open_show(struct device *dev,
+static ssize_t test_sysfs_td43xx_amp_open_show_unlocked(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	int i, j;
@@ -5254,9 +5410,20 @@ static ssize_t test_sysfs_td43xx_amp_open_show(struct device *dev,
 
 	return snprintf(buf, PAGE_SIZE, "%s\n", (result == 1) ? "PASS" : "FAIL");
 }
+static ssize_t test_sysfs_td43xx_amp_open_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_td43xx_amp_open_show_unlocked(dev, attr, buf);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
+}
 
 
-static ssize_t test_sysfs_tddi_amp_electrode_open_store(struct device *dev,
+static ssize_t test_sysfs_tddi_amp_electrode_open_store_unlocked(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int retval = 0;
@@ -5333,6 +5500,15 @@ static ssize_t test_sysfs_tddi_amp_electrode_open_store(struct device *dev,
 		goto exit;
 	}
 
+
+	/* control registers only exist when the panel reports them */
+	if (!control.reg_91 || !control.reg_99 || !control.reg_182) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Panel has no f54 control 91/99/182\n",
+				__func__);
+		retval = -EINVAL;
+		goto exit;
+	}
 
 	/* keep the original reference high/low capacitance */
 	retval = synaptics_rmi4_reg_read(rmi4_data,
@@ -5664,6 +5840,8 @@ static ssize_t test_sysfs_tddi_amp_electrode_open_store(struct device *dev,
 		}
 	}
 
+	retval = count;
+
 exit:
 	// release resource
 	kfree(p_report_data_8);
@@ -5675,9 +5853,20 @@ exit:
 	rmi4_data->reset_device(rmi4_data, false);
 	pr_err("%s: done resetting device\n", __func__);
 
-	return count;
+	return retval;
 }
-static ssize_t test_sysfs_tddi_amp_electrode_open_show(struct device *dev,
+static ssize_t test_sysfs_tddi_amp_electrode_open_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_tddi_amp_electrode_open_store_unlocked(dev, attr, buf, count);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
+}
+static ssize_t test_sysfs_tddi_amp_electrode_open_show_unlocked(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	int i, j;
@@ -5704,9 +5893,20 @@ static ssize_t test_sysfs_tddi_amp_electrode_open_show(struct device *dev,
 
 	return snprintf(buf, PAGE_SIZE, "%s\n", (fail_count == 0) ? "PASS" : "FAIL");
 }
+static ssize_t test_sysfs_tddi_amp_electrode_open_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_tddi_amp_electrode_open_show_unlocked(dev, attr, buf);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
+}
 
 
-static ssize_t test_sysfs_abs_0d_open_w_autoservo_store(struct device *dev,
+static ssize_t test_sysfs_abs_0d_open_w_autoservo_store_unlocked(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int retval = 0;
@@ -5743,6 +5943,15 @@ static ssize_t test_sysfs_abs_0d_open_w_autoservo_store(struct device *dev,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to get rmi button (count = %d)\n",
 				__func__, rmi4_data->valid_button_count);
+		retval = -EINVAL;
+		goto exit;
+	}
+
+	/* reg_223 only exists when the panel reports has_ctrl223 */
+	if (!control.reg_223) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Panel has no f54 control 223\n",
+				__func__);
 		retval = -EINVAL;
 		goto exit;
 	}
@@ -5833,9 +6042,12 @@ static ssize_t test_sysfs_abs_0d_open_w_autoservo_store(struct device *dev,
 
 	/* step 3 */
 	/* modify 0d voltages and force update */
-	data = original_data_f54_ctr223 - factory_param->abs_0d_open_factor;
-	if (data < 0)
+	/* data is unsigned char: compare the operands instead of
+	 * "data < 0", which is always false and lets the value wrap */
+	if (original_data_f54_ctr223 < factory_param->abs_0d_open_factor)
 		data = 0;
+	else
+		data = original_data_f54_ctr223 - factory_param->abs_0d_open_factor;
 	retval = synaptics_rmi4_reg_write(rmi4_data,
 			control.reg_223->address,
 			&data,
@@ -5910,13 +6122,16 @@ static ssize_t test_sysfs_abs_0d_open_w_autoservo_store(struct device *dev,
 	/* calculation */
 	for (i = 0; i < button_count; i++) {
 		g_abs_0d_open_data_output[i] = abs(p_rt92_image_1[(tx_num-1)*rx_num + i] - p_rt92_image_2[(tx_num-1)*rx_num + i]);
-		g_abs_0d_open_data_output[i] = (g_abs_0d_open_data_output[i] * 100)/p_rt92_image_1[(tx_num-1)*rx_num + i];
+		g_abs_0d_open_data_output[i] = p_rt92_image_1[(tx_num-1)*rx_num + i] ?
+			(g_abs_0d_open_data_output[i] * 100)/p_rt92_image_1[(tx_num-1)*rx_num + i] : 0;
 		printk(KERN_ERR "ref value is %d value1 is %d	value2 is %d\n", g_abs_0d_open_data_output[i], p_rt92_image_1[(tx_num-1)*rx_num + i], p_rt92_image_2[(tx_num-1)*rx_num + i]);
 		if (g_abs_0d_open_data_output[i] < factory_param->abs_0d_open_test_limit)
 			g_abs_0d_open_data_output[i] =  1; /* fail */
 		else
 			g_abs_0d_open_data_output[i] =  0; /* pass */
 	}
+
+	retval = count;
 
 exit:
 	/* release resource */
@@ -5928,11 +6143,22 @@ exit:
 	rmi4_data->reset_device(rmi4_data, false);
 	pr_err("%s: done resetting device\n", __func__);
 
-	return count;
+	return retval;
+}
+static ssize_t test_sysfs_abs_0d_open_w_autoservo_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_abs_0d_open_w_autoservo_store_unlocked(dev, attr, buf, count);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
 }
 
 
-static ssize_t test_sysfs_abs_0d_open_w_autoservo_show(struct device *dev,
+static ssize_t test_sysfs_abs_0d_open_w_autoservo_show_unlocked(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	bool result = 0;
@@ -5972,6 +6198,17 @@ static ssize_t test_sysfs_abs_0d_open_w_autoservo_show(struct device *dev,
 	kfree(g_abs_0d_open_data_output);
 	g_abs_0d_open_data_output = NULL;
 	return snprintf(buf, PAGE_SIZE, "%s\n", (result == 1) ? "PASS" : "FAIL");
+}
+static ssize_t test_sysfs_abs_0d_open_w_autoservo_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	ssize_t retval;
+
+	mutex_lock(&td43xx_test_mutex);
+	retval = test_sysfs_abs_0d_open_w_autoservo_show_unlocked(dev, attr, buf);
+	mutex_unlock(&td43xx_test_mutex);
+
+	return retval;
 }
 
 static void test_report_work(struct work_struct *work)
@@ -6032,7 +6269,14 @@ static void test_report_work(struct work_struct *work)
 		goto exit;
 	}
 
+	mutex_unlock(&f54->status_mutex);
 	msleep(2000);
+	mutex_lock(&f54->status_mutex);
+
+	if (f54->status != STATUS_BUSY) {
+		retval = f54->status;
+		goto exit;
+	}
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
 			f54->data_base_addr + REPORT_DATA_OFFSET,
@@ -7872,7 +8116,22 @@ static void test_f55_init(struct synaptics_rmi4_data *rmi4_data)
 	rx_electrodes = f55->query.num_of_rx_electrodes;
 
 	f55->tx_assignment = kzalloc(tx_electrodes, GFP_KERNEL);
+	if (!f55->tx_assignment) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for f55 tx assignment\n",
+				__func__);
+		return;
+	}
+
 	f55->rx_assignment = kzalloc(rx_electrodes, GFP_KERNEL);
+	if (!f55->rx_assignment) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to alloc mem for f55 rx assignment\n",
+				__func__);
+		kfree(f55->tx_assignment);
+		f55->tx_assignment = NULL;
+		return;
+	}
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
 			f55->control_base_addr + SENSOR_TX_MAPPING_OFFSET,
@@ -7939,7 +8198,22 @@ static void test_f55_init(struct synaptics_rmi4_data *rmi4_data)
 	/* force mapping */
 	if (f55->has_force) {
 		f55->force_tx_assignment = kzalloc(tx_electrodes, GFP_KERNEL);
+		if (!f55->force_tx_assignment) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Failed to alloc mem for f55 force tx assignment\n",
+					__func__);
+			return;
+		}
+
 		f55->force_rx_assignment = kzalloc(rx_electrodes, GFP_KERNEL);
+		if (!f55->force_rx_assignment) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Failed to alloc mem for f55 force rx assignment\n",
+					__func__);
+			kfree(f55->force_tx_assignment);
+			f55->force_tx_assignment = NULL;
+			return;
+		}
 
 		retval = synaptics_rmi4_reg_read(rmi4_data,
 				f55->control_base_addr + f55->force_tx_offset,
@@ -8312,16 +8586,21 @@ static int syna_selftest_open(struct inode *inode, struct file *file)
 static ssize_t syna_selftest_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
 	int retval = 0;
+	int cnt = 0;
 	char tmp[5];
 
 	if (*pos != 0)
 		return 0;
 
-	snprintf(tmp, sizeof(f54->result_type), "%d\n", f54->result_type);
-	if (copy_to_user(buf, tmp, strlen(tmp))) {
+	snprintf(tmp, sizeof(tmp), "%d\n", f54->result_type);
+	if (strlen(tmp) > count)
+		cnt = count;
+	else
+		cnt = strlen(tmp);
+	if (copy_to_user(buf, tmp, cnt)) {
 		return -EFAULT;
 	}
-	retval = strlen(tmp);
+	retval = cnt;
 
 	*pos += retval;
 
@@ -8411,11 +8690,14 @@ static ssize_t syna_factory_param_read(struct file *file, char __user *buf, size
 	}
 
 	pbuf[0] = '\0';
-	if (copy_to_user(buf, buffer, strlen(buffer) + 1)) {
+	cnt = strlen(buffer);
+	if (cnt > count)
+		cnt = count;
+	if (copy_to_user(buf, buffer, cnt)) {
+		vfree(buffer);
 		return -EFAULT;
 	}
 
-	cnt = strlen(buffer);
 	*pos += cnt;
 
 	vfree(buffer);
@@ -8436,12 +8718,16 @@ static ssize_t syna_factory_param_write(struct file *file, const char __user *bu
 	if (!factory_param)
 		return -EINVAL;
 
+	if (count >= sizeof(tmp))
+		count = sizeof(tmp) - 1;
+
 	if (copy_from_user(tmp, buf, count)) {
 		retval = -EFAULT;
 		goto out;
 	}
+	tmp[count] = '\0';
 
-	sscanf(tmp, "%s %d", str, &value);
+	sscanf(tmp, "%99s %d", str, &value);
 
 	i = 0;
 	for (p = factory_string; *p != NULL; p++) {
@@ -8456,7 +8742,7 @@ out:
 	if (retval >= 0)
 		retval = count;
 
-	return count;
+	return retval;
 }
 
 static const struct file_operations syna_factory_ops = {
@@ -8513,13 +8799,14 @@ static ssize_t syna_datadump_read(struct file *file, char __user *buf, size_t co
 		goto out;
 	}
 
-	if (copy_to_user(buf, data, strlen(data))) {
+	retval = strlen(data);
+	if (retval > count)
+		retval = count;
+	if (copy_to_user(buf, data, retval)) {
 		vfree(data);
 		complete(&f54->rmi4_data->dump_completion);
 		return -EFAULT;
 	}
-
-	retval = strlen(data);
 
 out:
 	vfree(data);
@@ -8546,7 +8833,6 @@ static const struct file_operations syna_datadump_ops = {
 static int synaptics_rmi4_test_init(struct synaptics_rmi4_data *rmi4_data)
 {
 	int retval;
-	static bool proc_already;
 
 	if (f54) {
 		dev_dbg(rmi4_data->pdev->dev.parent,
@@ -8663,9 +8949,15 @@ static void synaptics_rmi4_test_remove(struct synaptics_rmi4_data *rmi4_data)
 	flush_workqueue(f54->test_report_workqueue);
 	destroy_workqueue(f54->test_report_workqueue);
 
+	cancel_work_sync(&f54->timeout_work);
 	cancel_work_sync(&f54->resume_touch_work);
 
 	test_remove_sysfs();
+
+	remove_proc_entry("tp_selftest", NULL);
+	remove_proc_entry("tp_data_dump", NULL);
+	remove_proc_entry("tp_factory_param", NULL);
+	proc_already = false;
 
 	if (f55) {
 		kfree(f55->tx_assignment);
@@ -8758,6 +9050,11 @@ exit_free_mem:
 	destroy_workqueue(f54->test_report_workqueue);
 
 	test_remove_sysfs();
+
+	remove_proc_entry("tp_selftest", NULL);
+	remove_proc_entry("tp_data_dump", NULL);
+	remove_proc_entry("tp_factory_param", NULL);
+	proc_already = false;
 
 	if (f54->data_buffer_size)
 		kfree(f54->report_data);

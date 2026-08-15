@@ -941,12 +941,17 @@ void *__subsystem_get(const char *name, const char *fw_name)
 	pr_debug("debugging: __subsystem_get: %s\n", name);
 	if (strcmp(name, "cdsp") == 0) {
 		jtag_id_vir = ioremap(JTAG_ID, 4);
-		jtag_id = readl_relaxed(jtag_id_vir);
-		iounmap(jtag_id_vir);
-		pr_debug("debugging: JTAG ID is %x\n", jtag_id);
-		if (0x0 == (jtag_id >> HW_VERSION_OFFSET)) {
-			pr_info("CDSP for 845 v1.0 is not supported!\n");
-			return NULL;
+		if (!jtag_id_vir) {
+			pr_err("Couldn't ioremap JTAG_ID, skip cdsp version check\n");
+		} else {
+			jtag_id = readl_relaxed(jtag_id_vir);
+			iounmap(jtag_id_vir);
+			pr_debug("debugging: JTAG ID is %x\n", jtag_id);
+			if ((jtag_id == 0) ||
+				(0x0 == (jtag_id >> HW_VERSION_OFFSET))) {
+				pr_info("CDSP for 845 v1.0 is not supported!\n");
+				return NULL;
+			}
 		}
 	}
 
@@ -1512,10 +1517,10 @@ static struct subsys_soc_restart_order *ssr_parse_restart_orders(struct
 						"qcom,restart-group", i);
 		if (!ssr_node)
 			return ERR_PTR(-ENXIO);
-		of_node_put(ssr_node);
 		pr_info("%s device has been added to %s's restart group\n",
 						ssr_node->name, desc->name);
 		order->device_ptrs[i] = ssr_node;
+		of_node_put(ssr_node);
 	}
 
 	/*

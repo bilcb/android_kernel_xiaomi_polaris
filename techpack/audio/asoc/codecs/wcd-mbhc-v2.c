@@ -806,7 +806,8 @@ void wcd_mbhc_find_plug_and_report(struct wcd_mbhc *mbhc,
 			/* Disable HW FSM and current source */
 			WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_FSM_EN, 0);
 			WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_BTN_ISRC_CTL, 0);
-			mbhc->mbhc_cb->mbhc_micbias_control(mbhc->codec,
+			if (mbhc->mbhc_cb->mbhc_micbias_control)
+				mbhc->mbhc_cb->mbhc_micbias_control(mbhc->codec,
 							MIC_BIAS_2, MICB_PULLUP_DISABLE);
 			/* Setup for insertion detection */
 			WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_ELECT_DETECTION_TYPE,
@@ -901,7 +902,8 @@ static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 		/* Disable HW FSM */
 		WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_FSM_EN, 0);
 		WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_BTN_ISRC_CTL, 0);
-		mbhc->mbhc_cb->mbhc_micbias_control(mbhc->codec,
+		if (mbhc->mbhc_cb->mbhc_micbias_control)
+			mbhc->mbhc_cb->mbhc_micbias_control(mbhc->codec,
 						MIC_BIAS_2, MICB_PULLUP_DISABLE);
 		if (mbhc->mbhc_cb->mbhc_common_micb_ctrl)
 			mbhc->mbhc_cb->mbhc_common_micb_ctrl(codec,
@@ -1483,7 +1485,8 @@ static int wcd_mbhc_usb_c_analog_setup_gpios(struct wcd_mbhc *mbhc,
 			mbhc->usbc_force_pr_mode = true;
 
 		WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_MIC_CLAMP_CTL, 2);
-		mbhc->mbhc_cfg->enable_dual_adc_gpio(mbhc->mbhc_cfg->dual_adc_gpio_node, 0);
+		if (mbhc->mbhc_cfg->enable_dual_adc_gpio)
+			mbhc->mbhc_cfg->enable_dual_adc_gpio(mbhc->mbhc_cfg->dual_adc_gpio_node, 0);
 
 #ifdef CONFIG_AUDIO_UART_DEBUG
 		if (get_hw_version_platform() == HARDWARE_PLATFORM_POLARIS) {
@@ -1529,7 +1532,8 @@ static int wcd_mbhc_usb_c_analog_setup_gpios(struct wcd_mbhc *mbhc,
 		}
 #endif
 
-		mbhc->mbhc_cfg->enable_dual_adc_gpio(mbhc->mbhc_cfg->dual_adc_gpio_node, 1);
+		if (mbhc->mbhc_cfg->enable_dual_adc_gpio)
+			mbhc->mbhc_cfg->enable_dual_adc_gpio(mbhc->mbhc_cfg->dual_adc_gpio_node, 1);
 
 		if (mbhc->usbc_force_pr_mode) {
 			pval.intval = POWER_SUPPLY_TYPEC_PR_DUAL;
@@ -1810,10 +1814,22 @@ err:
 		gpio_free(config->usbc_force_gpio);
 		config->usbc_force_gpio = 0;
 	}
-	if (config->usbc_en1_gpio_p)
+	if (config->usbc_en1_gpio_p) {
 		of_node_put(config->usbc_en1_gpio_p);
-	if (config->usbc_force_gpio_p)
+		config->usbc_en1_gpio_p = NULL;
+	}
+	if (config->usbc_force_gpio_p) {
 		of_node_put(config->usbc_force_gpio_p);
+		config->usbc_force_gpio_p = NULL;
+	}
+	if (config->euro_us_hw_switch_gpio_p) {
+		of_node_put(config->euro_us_hw_switch_gpio_p);
+		config->euro_us_hw_switch_gpio_p = NULL;
+	}
+	if (config->uart_audio_switch_gpio_p) {
+		of_node_put(config->uart_audio_switch_gpio_p);
+		config->uart_audio_switch_gpio_p = NULL;
+	}
 	dev_dbg(mbhc->codec->dev, "%s: leave %d\n", __func__, rc);
 	return rc;
 }
@@ -1855,10 +1871,22 @@ void wcd_mbhc_stop(struct wcd_mbhc *mbhc)
 		if (config->usbc_force_gpio)
 			gpio_free(config->usbc_force_gpio);
 
-		if (config->usbc_en1_gpio_p)
+		if (config->usbc_en1_gpio_p) {
 			of_node_put(config->usbc_en1_gpio_p);
-		if (config->usbc_force_gpio_p)
+			config->usbc_en1_gpio_p = NULL;
+		}
+		if (config->usbc_force_gpio_p) {
 			of_node_put(config->usbc_force_gpio_p);
+			config->usbc_force_gpio_p = NULL;
+		}
+		if (config->euro_us_hw_switch_gpio_p) {
+			of_node_put(config->euro_us_hw_switch_gpio_p);
+			config->euro_us_hw_switch_gpio_p = NULL;
+		}
+		if (config->uart_audio_switch_gpio_p) {
+			of_node_put(config->uart_audio_switch_gpio_p);
+			config->uart_audio_switch_gpio_p = NULL;
+		}
 	}
 
 	pr_debug("%s: leave\n", __func__);

@@ -3026,7 +3026,26 @@ int cam_smmu_destroy_handle(int handle)
 		return -EINVAL;
 	}
 
-	if (!list_empty_careful(&iommu_cb_set.cb_info[idx].smmu_buf_list)) {
+	if (iommu_cb_set.cb_info[idx].is_secure) {
+		if (!list_empty_careful(
+			&iommu_cb_set.cb_info[idx].smmu_buf_list)) {
+			struct cam_sec_buff_info *mapping_info, *temp;
+
+			CAM_ERR(CAM_SMMU, "UMD %s secure list is not clean",
+				iommu_cb_set.cb_info[idx].name);
+			list_for_each_entry_safe(mapping_info, temp,
+				&iommu_cb_set.cb_info[idx].smmu_buf_list,
+				list) {
+				if (mapping_info->i_client &&
+					mapping_info->i_hdl)
+					ion_free(mapping_info->i_client,
+						mapping_info->i_hdl);
+				list_del_init(&mapping_info->list);
+				kfree(mapping_info);
+			}
+		}
+	} else if (!list_empty_careful(
+		&iommu_cb_set.cb_info[idx].smmu_buf_list)) {
 		CAM_ERR(CAM_SMMU, "UMD %s buffer list is not clean",
 			iommu_cb_set.cb_info[idx].name);
 		cam_smmu_print_user_list(idx);

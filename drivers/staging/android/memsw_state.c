@@ -12,8 +12,8 @@
 
 #include "memsw_state.h"
 
-#define memsw_freeram      (global_page_state(NR_FREE_PAGES) - totalreserve_pages)
-#define memsw_filepage     (global_page_state(NR_FILE_PAGES) - total_swapcache_pages())
+#define memsw_freeram      max_t(long, (long)global_page_state(NR_FREE_PAGES) - (long)totalreserve_pages, 0)
+#define memsw_filepage     max_t(long, (long)global_node_page_state(NR_FILE_PAGES) - (long)total_swapcache_pages(), 0)
 
 #define MEMSW_FREEMEM_KB   ((memsw_freeram + memsw_filepage) << (PAGE_SHIFT - 10))
 #define MEMSW_FREESWAP_KB  (get_nr_swap_pages() << (PAGE_SHIFT - 10))
@@ -34,7 +34,7 @@ static int memsw_dev_open(struct inode *inode, struct file *file)
 
 	//this is a read only device file
 	if (!(file->f_mode & FMODE_READ))
-		ret = -EBADF;
+		return -EBADF;
 
 	ret = nonseekable_open(inode, file);
 	if (ret)
@@ -101,7 +101,12 @@ static ssize_t memsw_dev_read(struct file *file, char __user *buf,
 	if (!memsw_dev_event_pending(memsw_dev) && (file->f_flags & O_NONBLOCK))
 		return -EAGAIN;
 
-	wait_event_interruptible(memsw_dev->wq, memsw_dev_event_pending(memsw_dev));
+	ret = wait_event_interruptible(memsw_dev->wq, memsw_dev_event_pending(memsw_dev));
+	if (ret)
+		return ret;
+
+	if (count < sizeof(struct memsw_state_data))
+		return -EINVAL;
 
 	memsw_dev_update_data(memsw_dev);
 	if (copy_to_user(buf, &memsw_dev->memsw_data, sizeof(struct memsw_state_data)))
@@ -135,34 +140,50 @@ static long memsw_dev_ioctl(struct file *file, unsigned int cmd, unsigned long a
 
 	switch (cmd) {
 		case GET_MEM_THRESHOLD:
-			ret = copy_to_user(argp, &(memsw_dev->memsw_data.mem_threshold), sizeof(unsigned long));
+			if (copy_to_user(argp, &(memsw_dev->memsw_data.mem_threshold), sizeof(unsigned long)))
+				ret = -EFAULT;
+			else
+				ret = 0;
 			break;
 		case SET_MEM_THRESHOLD:
-			ret = copy_from_user(&(memsw_dev->memsw_data.mem_threshold), argp, sizeof(unsigned long));
-			if (ret == 0) {
-				if ((memsw_dev->memsw_data).mem_threshold <= MEMSW_FREEMEM_KB) {
+			if (copy_from_user(&(memsw_dev->memsw_data.mem_threshold), argp, sizeof(unsigned long))) {
+				ret = -EFAULT;
+			} else {
+				ret = 0;
+				if ((memsw_dev->memsw_data).mem_threshold >= MEMSW_FREEMEM_KB) {
 					(memsw_dev->memsw_data).low_mem_triggered = 1;
 					wake_up_interruptible(&memsw_dev->wq);
 				}
 			}
 			break;
 		case GET_SWAP_THRESHOLD:
-			ret = copy_to_user(argp, &(memsw_dev->memsw_data.swap_threshold), sizeof(unsigned long));
+			if (copy_to_user(argp, &(memsw_dev->memsw_data.swap_threshold), sizeof(unsigned long)))
+				ret = -EFAULT;
+			else
+				ret = 0;
 			break;
 		case SET_SWAP_THRESHOLD:
-			ret = copy_from_user(&(memsw_dev->memsw_data.swap_threshold), argp, sizeof(unsigned long));
-			if (ret == 0) {
-				if ((memsw_dev->memsw_data).swap_threshold <= MEMSW_FREESWAP_KB) {
+			if (copy_from_user(&(memsw_dev->memsw_data.swap_threshold), argp, sizeof(unsigned long))) {
+				ret = -EFAULT;
+			} else {
+				ret = 0;
+				if ((memsw_dev->memsw_data).swap_threshold >= MEMSW_FREESWAP_KB) {
 					(memsw_dev->memsw_data).low_swap_triggered = 1;
 					wake_up_interruptible(&memsw_dev->wq);
 				}
 			}
 			break;
 		case GET_MEMSW_DEV_VERSION:
-			ret = copy_to_user(argp, &(reader->version), sizeof(uint8_t));
+			if (copy_to_user(argp, &(reader->version), sizeof(uint8_t)))
+				ret = -EFAULT;
+			else
+				ret = 0;
 			break;
 		case SET_MEMSW_DEV_VERSION:
-			ret = copy_from_user(&(reader->version), argp, sizeof(uint8_t));
+			if (copy_from_user(&(reader->version), argp, sizeof(uint8_t)))
+				ret = -EFAULT;
+			else
+				ret = 0;
 			break;
 	}
 
@@ -249,7 +270,7 @@ static int kmemsw_chkd(void *data)
 		memsw_dev_check_pending();
 		kmemsw_chkd_try_to_sleep();
 	}
-	return -EPERM;
+	return 0;
 }
 
 void wakeup_kmemsw_chkd(void)
@@ -277,16 +298,20 @@ static int __init kmemswchkd_init(void)
 	//create kernel thread for memory swap check
 	kmemswchkd_ktp = kthread_run(kmemsw_chkd, NULL, "kmemsw_chkd");
 	if (IS_ERR(kmemswchkd_ktp)) {
-		printk(KERN_WARNING"Failed to start kmemswchkd thread.\n");
+		ret = PTR_ERR(kmemswchkd_ktp);
 		kmemswchkd_ktp = NULL;
-		ret = -1;
+		goto err_deregister;
 	}
 
+	return 0;
+
+err_deregister:
+	misc_deregister(&memsw_dev->misc_dev);
 err_out:
 	return ret;
 }
 
-static void __init kmemswchkd_exit(void)
+static void __exit kmemswchkd_exit(void)
 {
 	struct memsw_dev *memsw_dev = memsw_dev_get_wo_check();
 	misc_deregister(&memsw_dev->misc_dev);

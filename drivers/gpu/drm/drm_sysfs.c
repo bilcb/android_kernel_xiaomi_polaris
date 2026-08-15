@@ -221,26 +221,35 @@ static ssize_t panel_info_show(struct device *device,
 			   char *buf)
 {
 	int written = 0;
-	char pname[128] = {0};
+	char *pname;
 	struct drm_connector *connector = NULL;
 	struct drm_encoder *encoder = NULL;
 	struct drm_bridge *bridge = NULL;
 
+	pname = kzalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!pname)
+		return written;
+
 	connector = to_drm_connector(device);
 	if (!connector)
-		return written;
+		goto out;
 
 	encoder = connector->encoder;
 	if (!encoder)
-		return written;
+		goto out;
 
 	bridge = encoder->bridge;
 	if (!bridge)
-		return written;
+		goto out;
 
 	written = drm_get_panel_info(bridge, pname);
-	if (written)
-		return snprintf(buf, PAGE_SIZE, "panel_name=%s\n", pname);
+	if (written) {
+		written = snprintf(buf, PAGE_SIZE, "panel_name=%s\n", pname);
+		goto out;
+	}
+
+out:
+	kfree(pname);
 
 	return written;
 }
@@ -250,7 +259,14 @@ static ssize_t doze_brightness_show(struct device *device,
 			   char *buf)
 {
 	struct drm_connector *connector = to_drm_connector(device);
-	struct drm_device *dev = connector->dev;
+	struct drm_device *dev;
+
+	if (!connector)
+		return 0;
+
+	dev = connector->dev;
+	if (!dev)
+		return 0;
 
 	return snprintf(buf, PAGE_SIZE, "%d\n",
 			dev->doze_brightness);
@@ -279,7 +295,8 @@ static ssize_t disp_param_store(struct device *device,
 	if (!bridge)
 		return count;
 
-	sscanf(buf, "0x%x", &param);
+	if (sscanf(buf, "0x%x", &param) != 1)
+		return -EINVAL;
 
 	drm_bridge_disp_param_set(bridge, param);
 
@@ -366,7 +383,7 @@ static ssize_t disp_count_show(struct device *device,
 	return ret;
 }
 
-extern ssize_t mipi_reg_write(char *buf, size_t count);
+extern ssize_t mipi_reg_write(const char *buf, size_t count);
 extern ssize_t mipi_reg_read(char *buf);
 
 static ssize_t mipi_reg_show(struct device *device,
@@ -382,7 +399,7 @@ static ssize_t mipi_reg_store(struct device *device,
 {
 	int rc = 0;
 
-	rc = mipi_reg_write((char *)buf, count);
+	rc = mipi_reg_write(buf, count);
 	return rc;
 }
 

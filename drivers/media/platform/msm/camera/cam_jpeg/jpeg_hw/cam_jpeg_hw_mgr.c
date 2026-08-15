@@ -145,6 +145,12 @@ static int cam_jpeg_mgr_process_irq(void *priv, void *data)
 		return rc;
 	}
 
+	if (p_cfg_req->hw_cfg_args.num_hw_update_entries <= CAM_JPEG_PARAM) {
+		CAM_ERR(CAM_JPEG, "invalid hw update entries %d",
+			p_cfg_req->hw_cfg_args.num_hw_update_entries);
+		return -EINVAL;
+	}
+
 	rc = cam_mem_get_cpu_buf(
 		p_cfg_req->hw_cfg_args.hw_update_entries[CAM_JPEG_PARAM].handle,
 		&kaddr, &cmd_buf_len);
@@ -505,6 +511,7 @@ end_unusedev:
 	mutex_lock(&hw_mgr->hw_mgr_mutex);
 	hw_mgr->device_in_use[p_cfg_req->dev_type][0] = false;
 	hw_mgr->dev_hw_cfg_args[p_cfg_req->dev_type][0] = NULL;
+	list_add_tail(&p_cfg_req->list, &hw_mgr->free_req_list);
 
 end:
 	mutex_unlock(&hw_mgr->hw_mgr_mutex);
@@ -759,7 +766,7 @@ static int cam_jpeg_mgr_prepare_hw_update(void *hw_mgr_priv,
 				io_cfg_ptr[i].fence;
 			prepare_args->num_in_map_entries++;
 		} else {
-			prepare_args->in_map_entries[k].resource_handle =
+			prepare_args->out_map_entries[k].resource_handle =
 				io_cfg_ptr[i].resource_type;
 			prepare_args->out_map_entries[k++].sync_id =
 				io_cfg_ptr[i].fence;
@@ -915,10 +922,10 @@ static int cam_jpeg_mgr_flush_req(void *hw_mgr_priv,
 	if (flush_args->num_req_pending)
 		return 0;
 
-	request_id = (uintptr_t)flush_args->flush_req_active[0];
-
 	if (!flush_args->num_req_active)
 		return 0;
+
+	request_id = (uintptr_t)flush_args->flush_req_active[0];
 
 	if (request_id <= 0) {
 		CAM_ERR(CAM_JPEG, "Invalid red id %ld", request_id);
@@ -1061,7 +1068,6 @@ static int cam_jpeg_mgr_release_hw(void *hw_mgr_priv, void *release_hw_args)
 	ctx_data = (struct cam_jpeg_hw_ctx_data *)release_hw->ctxt_to_hw_map;
 	if (!ctx_data->in_use) {
 		CAM_ERR(CAM_JPEG, "ctx is not in use");
-		mutex_unlock(&hw_mgr->hw_mgr_mutex);
 		return -EINVAL;
 	}
 	dev_type = ctx_data->jpeg_dev_acquire_info.dev_type;
@@ -1370,7 +1376,7 @@ static int cam_jpeg_init_devices(struct device_node *of_node,
 		goto num_dev_failed;
 	}
 	count = of_property_count_strings(of_node, "compat-hw-name");
-	if (!count) {
+	if (count <= 0) {
 		CAM_ERR(CAM_JPEG,
 			"no compat hw found in dev tree, count = %d",
 			count);
@@ -1447,6 +1453,7 @@ static int cam_jpeg_init_devices(struct device_node *of_node,
 			(child_dev_intf->hw_type == CAM_JPEG_DEV_DMA &&
 			child_dev_intf->hw_idx >= num_dma_dev)) {
 			CAM_ERR(CAM_JPEG, "index out of range");
+			of_node_put(child_node);
 			rc = -ENODEV;
 			goto compat_hw_name_failed;
 		}

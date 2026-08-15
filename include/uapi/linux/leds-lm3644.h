@@ -12,6 +12,8 @@
 #ifndef __LINUX_LM3644_H
 #define __LINUX_LM3644_H
 
+#include <linux/ioctl.h>
+
 #define LM3644_NAME "leds-lm3644"
 
 #define LM3644_IOC_MAGIC 'M'
@@ -64,7 +66,7 @@ typedef struct {
 #define FLOOD_IR_IOC_READ \
 	_IOWR(LM3644_IOC_MAGIC, LM3644_PRIVATE_NUM + 4, lm3644_data)
 #define FLOOD_IR_IOC_READ_INFO \
-	_IOWR(LM3644_IOC_MAGIC, LM3644_PRIVATE_NUM + 5, void*)
+	_IOWR(LM3644_IOC_MAGIC, LM3644_PRIVATE_NUM + 5, lm3644_info)
 
 
 #endif /* __LINUX_LM3644_H */

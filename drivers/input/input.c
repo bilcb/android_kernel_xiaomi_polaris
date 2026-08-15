@@ -77,55 +77,59 @@ static inline void touch_press_release_events_collect(struct input_dev *dev,
 {
 	struct touch_event *touch_event_buf;
 	struct touch_event_info *touch_events;
+	unsigned long flags;
 
-	if (!dev->touch_events)
-		return;
-
+	spin_lock_irqsave(&dev->event_lock, flags);
 	touch_events = dev->touch_events;
+	if (!touch_events) {
+		spin_unlock_irqrestore(&dev->event_lock, flags);
+		return;
+	}
 
-	pr_debug("type %d, code %d, value %d\n", type, code, value);
-
-	switch(code) {
+	if (type == EV_ABS) {
+		switch (code) {
 		case ABS_MT_SLOT:
-			if (value > TOUCH_MAX_FINGER)
+			if (value < 0 || value >= TOUCH_MAX_FINGER)
 				value = 0;
 			touch_events->touch_slot = value;
 			break;
 
 		case ABS_MT_TRACKING_ID:
+			if (touch_events->touch_slot < 0 ||
+			    touch_events->touch_slot >= TOUCH_MAX_FINGER)
+				break;
+
+			if (touch_events->touch_event_num >= TOUCH_EVENT_MAX)
+				touch_events->touch_event_num = 0;
+
 			touch_event_buf = &touch_events->touch_event_buf[touch_events->touch_event_num];
-			touch_event_buf->finger_num = touch_events->touch_slot;
 
 			if (value != -1 && !(touch_events->finger_bitmap & BIT(touch_events->touch_slot))) {
+				touch_event_buf->finger_num = touch_events->touch_slot;
 				touch_events->finger_bitmap |= BIT(touch_events->touch_slot);
 				touch_event_buf->touch_state = TOUCH_IS_PRESSED;
 				getnstimeofday(&touch_event_buf->touch_time_stamp);
 				touch_events->touch_event_num++;
 				touch_events->touch_is_pressed = true;
 			} else if (value == -1 && (touch_events->finger_bitmap & BIT(touch_events->touch_slot))) {
+				touch_event_buf->finger_num = touch_events->touch_slot;
 				touch_events->finger_bitmap &= ~BIT(touch_events->touch_slot);
 				touch_event_buf->touch_state = TOUCH_IS_RELEASED;
 				getnstimeofday(&touch_event_buf->touch_time_stamp);
 				touch_events->touch_event_num++;
 			}
 
-			if (touch_events->touch_event_num >= TOUCH_EVENT_MAX)
-				touch_events->touch_event_num = 0;
-
 			break;
-
-		case BTN_TOUCH:
-			if (value == 0) {
-				if (touch_events->touch_is_pressed) {
-					touch_events->touch_is_pressed = false;
-				}
-				touch_events->finger_bitmap = 0;
+		}
+	} else if (type == EV_KEY && code == BTN_TOUCH) {
+		if (value == 0) {
+			if (touch_events->touch_is_pressed) {
+				touch_events->touch_is_pressed = false;
 			}
-			break;
-
+			touch_events->finger_bitmap = 0;
+		}
 	}
-
-	return;
+	spin_unlock_irqrestore(&dev->event_lock, flags);
 }
 #endif
 
@@ -1351,9 +1355,14 @@ static const struct file_operations input_handlers_fileops = {
 #ifdef CONFIG_LAST_TOUCH_EVENTS
 static int last_touch_events_show(struct seq_file *seq, void *v)
 {
-	struct input_dev *dev = container_of(v, struct input_dev, node);
+	struct input_dev *dev;
 	int i = 0;
 	struct rtc_time tm;
+
+	if (v == SEQ_START_TOKEN)
+		return 0;
+
+	dev = container_of(v, struct input_dev, node);
 
 	if (!input_device_is_touch(dev) || !dev->touch_events)
 		return 0;
@@ -1414,7 +1423,7 @@ static int __init input_proc_init(void)
 	if (!entry)
 		goto fail2;
 #ifdef CONFIG_LAST_TOUCH_EVENTS
-	entry = proc_create("last_touch_events", 0, proc_bus_input_dir,
+	entry = proc_create("last_touch_events", 0444, proc_bus_input_dir,
 				&input_last_touch_events_fileops);
 	if (!entry)
 		goto fail3;
@@ -2353,10 +2362,7 @@ EXPORT_SYMBOL(input_register_device);
 void input_unregister_device(struct input_dev *dev)
 {
 #ifdef CONFIG_LAST_TOUCH_EVENTS
-	if (dev->touch_events) {
-		kfree(dev->touch_events);
-		dev->touch_events = NULL;
-	}
+	unsigned long flags;
 #endif
 
 	if (dev->devres_managed) {
@@ -2365,12 +2371,24 @@ void input_unregister_device(struct input_dev *dev)
 					devm_input_device_match,
 					dev));
 		__input_unregister_device(dev);
+#ifdef CONFIG_LAST_TOUCH_EVENTS
+		spin_lock_irqsave(&dev->event_lock, flags);
+		kfree(dev->touch_events);
+		dev->touch_events = NULL;
+		spin_unlock_irqrestore(&dev->event_lock, flags);
+#endif
 		/*
 		 * We do not do input_put_device() here because it will be done
 		 * when 2nd devres fires up.
 		 */
 	} else {
 		__input_unregister_device(dev);
+#ifdef CONFIG_LAST_TOUCH_EVENTS
+		spin_lock_irqsave(&dev->event_lock, flags);
+		kfree(dev->touch_events);
+		dev->touch_events = NULL;
+		spin_unlock_irqrestore(&dev->event_lock, flags);
+#endif
 		input_put_device(dev);
 	}
 }

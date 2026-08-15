@@ -3819,11 +3819,13 @@ struct clk *devm_clk_register(struct device *dev, struct clk_hw *hw)
 	if (!IS_ERR(clk)) {
 		*clkp = clk;
 		devres_add(dev, clkp);
+		clk_prepare_lock();
+		clk_populate_clock_opp_table(dev->of_node, hw);
+		clk_prepare_unlock();
 	} else {
 		devres_free(clkp);
 	}
 
-	clk_populate_clock_opp_table(dev->of_node, hw);
 	return clk;
 }
 EXPORT_SYMBOL_GPL(devm_clk_register);
@@ -3850,11 +3852,13 @@ int devm_clk_hw_register(struct device *dev, struct clk_hw *hw)
 	if (!ret) {
 		*hwp = hw;
 		devres_add(dev, hwp);
+		clk_prepare_lock();
+		clk_populate_clock_opp_table(dev->of_node, hw);
+		clk_prepare_unlock();
 	} else {
 		devres_free(hwp);
 	}
 
-	clk_populate_clock_opp_table(dev->of_node, hw);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(devm_clk_hw_register);

@@ -60,6 +60,7 @@
 #include <linux/clk.h>
 #endif
 #include <linux/uaccess.h>
+#include <linux/file.h>
 #include <linux/fdtable.h>
 #include <linux/eventfd.h>
 #ifdef CONFIG_COMPAT
@@ -144,8 +145,8 @@ struct vfsspi_devData {
  * @len:transmitted/retrieved data size
  */
 struct vfsspi_compat_ioctl_transfer {
-	compat_uptr_t *rxBuffer;
-	compat_uptr_t *txBuffer;
+	compat_uptr_t rxBuffer;
+	compat_uptr_t txBuffer;
 	unsigned int len;
 };
 #endif /* CONFIG_COMPAT */
@@ -177,12 +178,18 @@ static irqreturn_t vfsspi_irq(int irq, void *context);
 static irqreturn_t vfsspi_irqHbmReq(int irq, void *context);
 #endif
 static void vfsspi_enableIrq(struct vfsspi_devData *vfsSpiDev);
+#if REMOVE_GPIO_00_01
 static void vfsspi_enableIrqHbmReq(struct vfsspi_devData *vfsSpiDev, unsigned int type);
+#endif
 static void vfsspi_disableIrq(struct vfsspi_devData *vfsSpiDev);
+#if REMOVE_GPIO_00_01
 static void vfsspi_disableIrqHbmReq(struct vfsspi_devData *vfsSpiDev);
+#endif
 
 static int vfsspi_sendDrdyNotify(struct vfsspi_devData *vfsSpiDev);
+#if REMOVE_GPIO_00_01
 static int vfsspi_sendHbmReqNotify(struct vfsspi_devData *vfsSpiDev);
+#endif
 
 #ifndef CONFIG_FINGERPRINT_IN_QSEE
 static ssize_t vfsspi_read(struct file *filp, char __user *buf,
@@ -273,6 +280,7 @@ static ssize_t hbm_pin_set_enable(struct device *dev,
 
 	struct vfsspi_devData *vfsSpiDev = dev_get_drvdata(dev);
 	if (vfsSpiDev != NULL) {
+#if REMOVE_GPIO_00_01
 	if ( *buf == '1') {
 		gpio_direction_output(vfsSpiDev->hbmReadyPin, 1);
 		msleep(10);
@@ -286,6 +294,7 @@ static ssize_t hbm_pin_set_enable(struct device *dev,
 		printk("%s: HBN READY  GPIO 01  SET FALSE\n", __func__);
 		return -EINVAL;
 	}
+#endif
 	}
 	return  count;
 }
@@ -310,16 +319,11 @@ inline void shortToLittleEndian(char *buf, size_t len)
 	int j = 0;
 	char LSB, MSB;
 
-	for (i = 0; i < len; i++, j++) {
+	for (i = 0; i + 1 < len; i += 2, j += 2) {
 		LSB = buf[i];
-		i++;
-
-		MSB = buf[i];
+		MSB = buf[i + 1];
 		buf[j] = MSB;
-
-		j++;
-		buf[j] = LSB;
-
+		buf[j + 1] = LSB;
 	}
 #endif /* PLATFORM_BIG_ENDIAN */
 }
@@ -688,16 +692,21 @@ static void vfsspi_gpioUnInit(struct vfsspi_devData *vfsSpiDev)
 		free_irq(vfsSpiDev->gpio_irq, vfsSpiDev);
 		vfsSpiDev->isDrdyIrqEnabled = DRDY_IRQ_DISABLE;
 
+#if REMOVE_GPIO_00_01
 		free_irq(vfsSpiDev->gpio_irqHbmReq, vfsSpiDev);
 		vfsSpiDev->isHbmReqIrqEnabled = HBM_REQ_IRQ_DISABLE;
+#endif
 
 		gpio_free(vfsSpiDev->resetPin);
 		gpio_free(vfsSpiDev->drdyPin);
+#if REMOVE_GPIO_00_01
 		gpio_free(vfsSpiDev->hbmReqPin);
 		gpio_free(vfsSpiDev->hbmReadyPin);
+#endif
 	}
 }
 
+#if REMOVE_GPIO_00_01
 static void vfsspi_enableIrqHbmReq(
 	struct vfsspi_devData *vfsSpiDev,
 	unsigned int type)
@@ -718,6 +727,7 @@ static void vfsspi_enableIrqHbmReq(
 	}
 	spin_unlock_irq(&vfsSpiDev->vfsSpiLock);
 }
+#endif
 
 static void vfsspi_enableIrq(struct vfsspi_devData *vfsSpiDev)
 {
@@ -731,6 +741,7 @@ static void vfsspi_enableIrq(struct vfsspi_devData *vfsSpiDev)
 	}
 }
 
+#if REMOVE_GPIO_00_01
 static void vfsspi_disableIrqHbmReq(struct vfsspi_devData *vfsSpiDev)
 {
 	PR_INFO("vfsspi_disableIrqHbmReq\n");
@@ -742,6 +753,7 @@ static void vfsspi_disableIrqHbmReq(struct vfsspi_devData *vfsSpiDev)
 		vfsSpiDev->isHbmReqIrqEnabled = HBM_REQ_IRQ_DISABLE;
 	}
 }
+#endif
 
 static void vfsspi_disableIrq(struct vfsspi_devData *vfsSpiDev)
 {
@@ -821,6 +833,8 @@ static int vfsspi_sendDrdyNotify(struct vfsspi_devData *vfsSpiDev)
 		}
 
 		efd_file = fcheck_files(t->files, vfsSpiDev->drdySignalID);
+		if (efd_file)
+			get_file(efd_file);
 		rcu_read_unlock();
 
 		if (efd_file == NULL) {
@@ -830,7 +844,8 @@ static int vfsspi_sendDrdyNotify(struct vfsspi_devData *vfsSpiDev)
 		}
 
 		efd_ctx = eventfd_ctx_fileget(efd_file);
-		if (efd_ctx == NULL) {
+		fput(efd_file);
+		if (IS_ERR(efd_ctx)) {
 			PR_ERR("eventfd_ctx_fileget is failed\n");
 			status = -ENODEV;
 			goto cleanup;
@@ -847,6 +862,7 @@ cleanup:
 	return status;
 }
 
+#if REMOVE_GPIO_00_01
 static int vfsspi_sendHbmReqNotify(struct vfsspi_devData *vfsSpiDev)
 {
 	struct task_struct *t;
@@ -880,7 +896,7 @@ static int vfsspi_sendHbmReqNotify(struct vfsspi_devData *vfsSpiDev)
 		}
 
 		efd_ctx = eventfd_ctx_fileget(efd_file);
-		if (efd_ctx == NULL) {
+		if (IS_ERR(efd_ctx)) {
 			PR_ERR("eventfd_ctx_fileget is failed\n");
 			status = -ENODEV;
 			goto cleanup;
@@ -896,6 +912,7 @@ static int vfsspi_sendHbmReqNotify(struct vfsspi_devData *vfsSpiDev)
 cleanup:
 	return status;
 }
+#endif /* REMOVE_GPIO_00_01 */
 #ifndef CONFIG_FINGERPRINT_IN_QSEE
 /* Return no.of bytes written to device. Negative number for errors */
 static inline ssize_t vfsspi_writeSync(struct vfsspi_devData *vfsSpiDev,
@@ -1237,7 +1254,7 @@ long vfsspi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg,
 	default:
 	{
 		PR_DEBUG("Unknown cmd=0x%X\n", cmd);
-		status = -EFAULT;
+		status = -ENOTTY;
 		break;
 	}
 
@@ -1278,7 +1295,9 @@ static int vfsspi_setHbmReady(struct vfsspi_devData *vfsSpiDev, unsigned long ar
 	}
 	else {
 		spin_lock(&vfsSpiDev->vfsSpiLock);
+#if REMOVE_GPIO_00_01
 		gpio_set_value(vfsSpiDev->hbmReadyPin, hbmReadyFlag);
+#endif
 		spin_unlock(&vfsSpiDev->vfsSpiLock);
 		PR_INFO("vfsspi_setHbmReady set to %d\n", hbmReadyFlag);
 	}
@@ -1494,6 +1513,7 @@ static int vfsspi_setHbmReqInt(struct vfsspi_devData *vfsSpiDev,
 		status = -EFAULT;
 	}
 	else {
+#if REMOVE_GPIO_00_01
 		if (hbmReqIntData.enable == 0)
 			vfsspi_disableIrqHbmReq(vfsSpiDev);
 		else {
@@ -1509,6 +1529,7 @@ static int vfsspi_setHbmReqInt(struct vfsspi_devData *vfsSpiDev,
 				vfsspi_enableIrqHbmReq(vfsSpiDev, hbmReqIntData.type);
 			}
 		}
+#endif
 	}
 
 	return status;
@@ -1721,6 +1742,10 @@ int vfsspi_open(struct inode *inode, struct file *filp)
 				if (vfsSpiDev->rxBuffer == NULL ||
 					vfsSpiDev->txBuffer == NULL) {
 					PR_ERR("Failed to allocate buffer\n");
+					kfree(vfsSpiDev->txBuffer);
+					vfsSpiDev->txBuffer = NULL;
+					kfree(vfsSpiDev->rxBuffer);
+					vfsSpiDev->rxBuffer = NULL;
 					status = -ENOMEM;
 				} else {
 					vfsSpiDev->isOpened = 1;
@@ -1735,18 +1760,22 @@ int vfsspi_open(struct inode *inode, struct file *filp)
 #endif
 
 #ifdef CONFIG_FINGERPRINT_XIAOMI_NEW_FEATURE
-	status = vfsspi_gpioInit(vfsSpiDev);
-	if (0 != status) {
-		PR_ERR("vfsspi_gpioInit is failed! status= %d\n", status);
-		/*because there is vfsspi_devUnInit() call in the vfsspi_remove(),
-		we don't have called vfsspi_devUnInit() in this place. that is to say,
-		if vfsspi_gpioInit() is failed and vfsspi_open() failed , we don't need
-		to call vfsspi_devUnInit() to release resources.*/
-		return status;
-	}
-	vfsspi_hardReset(vfsSpiDev);
+	if (status == 0 && vfsSpiDev->isOpened == 1) {
+		status = vfsspi_gpioInit(vfsSpiDev);
+		if (0 != status) {
+			PR_ERR("vfsspi_gpioInit is failed! status= %d\n", status);
+			kfree(vfsSpiDev->txBuffer);
+			vfsSpiDev->txBuffer = NULL;
+			kfree(vfsSpiDev->rxBuffer);
+			vfsSpiDev->rxBuffer = NULL;
+			vfsSpiDev->isOpened = 0;
+			filp->private_data = NULL;
+			return status;
+		}
+		vfsspi_hardReset(vfsSpiDev);
 
-	printk("%s: Set voltage on vcc_spi for sync fingerprint\n", __func__);
+		printk("%s: Set voltage on vcc_spi for sync fingerprint\n", __func__);
+	}
 #endif
 
 	return status;
@@ -1805,7 +1834,7 @@ static int vfsspi_probe(struct platform_device *spi)
 	if (status) {
 		printk("%s: Failed to parse device tree\n", __func__);
 		status = -EINVAL;
-		goto cleanup;
+		goto dev_cleanup;
 	}
 
 #ifndef CONFIG_FINGERPRINT_XIAOMI_NEW_FEATURE
@@ -1829,11 +1858,15 @@ static int vfsspi_probe(struct platform_device *spi)
 	status = sysfs_create_group(&dev->kobj, &vfsspi_attribute_group);
 	if (status) {
 		printk("%s:could not create sysfs\n", __func__);
-		goto cleanup;
+		goto dev_cleanup;
 	}
 
 	PR_INFO("vfsspi_probe succeeded\n");
 
+	return status;
+
+dev_cleanup:
+	vfsspi_devUnInit(vfsSpiDev);
 cleanup:
 	return status;
 }
@@ -1892,9 +1925,9 @@ static void __exit vfsspi_exit(void)
 	PR_INFO("vfsspi_exit\n");
 
 #ifndef CONFIG_FINGERPRINT_IN_QSEE
-spi_unregister_driver(&vfsspi_spi);
+	spi_unregister_driver(&vfsspi_spi);
 #else
-platform_driver_unregister(&vfsspi_spi);
+	platform_driver_unregister(&vfsspi_spi);
 #endif
 }
 

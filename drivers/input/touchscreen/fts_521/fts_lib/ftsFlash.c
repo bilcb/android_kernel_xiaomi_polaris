@@ -487,9 +487,9 @@ int parseBinFile(u8 *fw_data, int fw_size, Firmware *fwData, int keep_cx)
 			goto END;
 		}
 
-		index += FW_BYTES_ALLIGN;
-		memcpy(fwData->data, &fw_data[index], dimension);
-		if (fwData->sec2_size != 0) {
+			index += FW_BYTES_ALLIGN;
+			memcpy(fwData->data, &fw_data[index], dimension);
+			if (fwData->sec2_size != 0) {
 			u8ToU16(&fwData->data
 				[fwData->sec0_size + fwData->sec1_size +
 				 FW_CX_VERSION], &fwData->cx_ver);
@@ -632,7 +632,7 @@ int flash_erase_page_by_page(ErasePage keep_cx)
 		fromIDtoMask(i, mask, 4);
 	}
 
-	logError(0, "%s Setting the page mask = ", tag, i);
+	logError(0, "%s Setting the page mask = \n", tag);
 	for (i = 0; i < 4; i++) {
 		cmd2[5 + i] = cmd2[5 + i] & (~mask[i]);
 		logError(0, "%02X ", cmd2[5 + i]);
@@ -848,12 +848,16 @@ int flash_burn(Firmware fw, int force_burn, int keep_cx)
 		return (ERROR_FW_NO_UPDATE | ERROR_FLASH_BURN_FAILED);
 	} else {
 		if (force_burn == CRC_CX && fw.sec2_size == 0) {
+			if (systemInfo.u16_fwVer != fw.fw_ver)
+				goto start;
 			for (res = EXTERNAL_RELEASE_INFO_SIZE - 1; res >= 0;
 			     res--) {
 				if (fw.externalRelease[res] >
 				    systemInfo.u8_releaseInfo[res])
-					force_burn = 0;
-				goto start;
+					goto start;
+				if (fw.externalRelease[res] <
+				    systemInfo.u8_releaseInfo[res])
+					break;
 			}
 			logError(1,
 				 "%s flash_burn: CRC in CX but fw does not contain CX data! NO UPDATE ERROR %08X \n",

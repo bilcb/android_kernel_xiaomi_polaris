@@ -110,7 +110,7 @@ static int fts_ft5452_upgrade(struct i2c_client *client, u8 *buf, u32 len)
 	ret = fts_i2c_write(client, wbuf, 1);
 	if (ret < 0) {
 		FTS_ERROR("ecc init cmd write fail");
-		return ret;
+		goto fw_reset;
 	}
 
 	/* send commond to start checksum */
@@ -127,7 +127,7 @@ static int fts_ft5452_upgrade(struct i2c_client *client, u8 *buf, u32 len)
 	ret = fts_i2c_write(client, wbuf, 7);
 	if (ret < 0) {
 		FTS_ERROR("ecc calc cmd write fail");
-		return ret;
+		goto fw_reset;
 	}
 
 	msleep(len / 256);
@@ -136,12 +136,18 @@ static int fts_ft5452_upgrade(struct i2c_client *client, u8 *buf, u32 len)
 	for (i = 0; i < FTS_RETRIES_ECC_CAL; i++) {
 		wbuf[0] = FTS_CMD_FLASH_STATUS;
 		reg_val[0] = reg_val[1] = 0x00;
-		fts_i2c_read(client, wbuf, 1, reg_val, 2);
-		FTS_DEBUG("[UPGRADE]: reg_val[0]=%02x reg_val[0]=%02x!!", reg_val[0], reg_val[1]);
+		ret = fts_i2c_read(client, wbuf, 1, reg_val, 2);
+		if (ret < 0)
+			FTS_ERROR("read flash status fail, ret=%d", ret);
+		FTS_DEBUG("[UPGRADE]: reg_val[0]=%02x reg_val[1]=%02x!!", reg_val[0], reg_val[1]);
 		if ((0xF0 == reg_val[0]) && (0x55 == reg_val[1])) {
 			break;
 		}
 		msleep(FTS_RETRIES_DELAY_ECC_CAL);
+	}
+	if (i >= FTS_RETRIES_ECC_CAL) {
+		FTS_ERROR("ecc flash status check timeout");
+		goto fw_reset;
 	}
 
 	/* read out check sum */
@@ -149,7 +155,7 @@ static int fts_ft5452_upgrade(struct i2c_client *client, u8 *buf, u32 len)
 	ret = fts_i2c_read(client, wbuf, 1, reg_val, 1);
 	if (ret < 0) {
 		FTS_ERROR("ecc read cmd write fail");
-		return ret;
+		goto fw_reset;
 	}
 	ecc_in_tp = reg_val[0];
 

@@ -51,6 +51,10 @@ spinlock_t fts_int;						/*spinlock to controll the access to the disable_irq_co
 int initCore(struct fts_ts_info *info)
 {
 	int ret = OK;
+
+	if (!info)
+		return -EINVAL;
+
 	logError(0, "%s %s: Initialization of the Core... \n", tag, __func__);
 	ret |= openChannel(info->client);
 	ret |= resetErrorList();
@@ -367,9 +371,13 @@ int setScanMode(u8 mode, u8 settings)
 */
 int setFeatures(u8 feat, u8 *settings, int size)
 {
-	u8 cmd[2 + size];
+	u8 cmd[2 + MEMORY_CHUNK];
 	int i = 0;
 	int ret;
+
+	if (size < 0 || size > MEMORY_CHUNK)
+		return ERROR_OP_NOT_ALLOW;
+
 	logError(0, "%s %s: Setting feature: feat = %02X !\n", tag, __func__,
 		 feat);
 	cmd[0] = FTS_CMD_FEATURE;
@@ -404,8 +412,11 @@ int setFeatures(u8 feat, u8 *settings, int size)
 */
 int writeSysCmd(u8 sys_cmd, u8 *sett, int size)
 {
-	u8 cmd[2 + size];
+	u8 cmd[2 + MEMORY_CHUNK];
 	int ret;
+
+	if (size < 0 || size > MEMORY_CHUNK)
+		return ERROR_OP_NOT_ALLOW;
 
 	cmd[0] = FTS_CMD_SYSTEM;
 	cmd[1] = sys_cmd;
@@ -526,7 +537,7 @@ int readSysInfo(int request)
 	if (data[1] != LOAD_SYS_INFO) {
 		logError(1,
 			 "%s %s: The Data ID is wrong!  ids: %02X != %02X ERROR %08X \n",
-			 tag, __func__, data[3], LOAD_SYS_INFO,
+			 tag, __func__, data[1], LOAD_SYS_INFO,
 			 ERROR_DIFF_DATA_TYPE);
 		ret = ERROR_DIFF_DATA_TYPE;
 		goto FAIL;
@@ -920,6 +931,7 @@ int requestSyncFrame(u8 type)
 	while (retry2 < RETRY_MAX_REQU_DATA) {
 		logError(0, "%s %s: Reading count...\n", tag, __func__);
 
+		retry = 0;
 		ret =
 		    fts_writeReadU8UX(FTS_CMD_FRAMEBUFFER_R, BITS_16,
 				      ADDR_FRAMEBUFFER, readData, DATA_HEADER,
@@ -1235,6 +1247,9 @@ int readLockDownInfo(u8 *lockData, u8 lock_id, int size)
 			memcpy(lockData, &temp[LOCKDOWN_DATA_OFFSET], size);
 			break;
 		}
+		else {
+			ret = ERROR_LOCKDOWN_CODE;
+		}
 
 	}
 
@@ -1337,6 +1352,9 @@ int fts_get_lockdown_info(u8 *lockData, struct fts_ts_info *info)
 			ret = OK;
 			memcpy(lockData, &temp[LOCKDOWN_DATA_OFFSET], size);
 			break;
+		}
+		else {
+			ret = ERROR_LOCKDOWN_CODE;
 		}
 
 	}

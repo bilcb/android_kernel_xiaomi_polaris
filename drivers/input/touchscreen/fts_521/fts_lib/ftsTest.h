@@ -270,7 +270,7 @@ int computeTotal(u8 *data, u8 main, int row, int column, int m, int n,
  * @{
  */
 int parseProductionTestLimits(char *path, LimitFile *file, char *label, int **data, int *row, int *column);
-int readLine(char *data, char *line, int size, int *n);
+int readLine(char *data, char *line, int size, int *n, int line_size);
 int getLimitsFile(char *path, LimitFile *file);
 int freeLimitsFile(LimitFile *file);
 int freeCurrentLimitsFile(void);

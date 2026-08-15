@@ -32,6 +32,7 @@ static void palmsensor_ops_work(struct work_struct *work)
 
 	pr_err("%s palmsensor_switch error\n", __func__);
 	palm_sensor->palmsensor_onoff = false;
+	wake_up_interruptible(&palm_sensor->wait_queue);
 }
 
 static int palmsensor_dev_open(struct inode *inode, struct file *file)
@@ -75,21 +76,42 @@ static ssize_t palmsensor_dev_read(struct file *file, char __user *buf,
 			   size_t count, loff_t *pos)
 {
 	ssize_t ret = 0;
+	int report_value;
 	struct palm_sensor_device *palm_sensor = file->private_data;
 
-	if (palm_sensor->palmsensor_onoff)
-		wait_event_interruptible(palm_sensor->wait_queue,
-			palmsensor_get_status(palm_sensor));
-	else {
+	if (count == 0)
+		return 0;
+
+	if (palm_sensor->palmsensor_onoff) {
+		ret = wait_event_interruptible(palm_sensor->wait_queue,
+			palmsensor_get_status(palm_sensor) ||
+			!palm_sensor->open_status ||
+			!palm_sensor->palmsensor_onoff);
+		if (ret)
+			return ret;
+		if (!palm_sensor->open_status) {
+			pr_info("%s has been closed\n", __func__);
+			return -EINVAL;
+		}
+		if (!palm_sensor->palmsensor_onoff) {
+			pr_info("%s has been off, skip report\n", __func__);
+			return 0;
+		}
+	} else {
 		pr_info("%s has been off, skip report\n", __func__);
 		return 0;
 	}
 	pr_info("%s, report value:%d\n", __func__, palm_sensor->report_value);
-	if (copy_to_user(buf, &palm_sensor->report_value,
-			sizeof(palm_sensor->report_value)))
-		return -EFAULT;
+	if (count < sizeof(palm_sensor->report_value))
+		return -EINVAL;
 
-	palmsensor_set_status(palm_sensor, false);
+	mutex_lock(&palm_sensor->mutex);
+	report_value = palm_sensor->report_value;
+	palm_sensor->status_changed = false;
+	mutex_unlock(&palm_sensor->mutex);
+
+	if (copy_to_user(buf, &report_value, sizeof(report_value)))
+		return -EFAULT;
 
 	ret = sizeof(palm_sensor->report_value);
 
@@ -109,10 +131,12 @@ static ssize_t palmsensor_dev_write(struct file *file,
 		return -EFAULT;
 	}
 
-	if (buff[0] == '1')
+	if (buff[0] == '1') {
 		palm_sensor->palmsensor_onoff = true;
-	else
+	} else {
 		palm_sensor->palmsensor_onoff = false;
+		wake_up_interruptible(&palm_sensor->wait_queue);
+	}
 
 	flush_work(&palm_sensor->palm_work);
 	schedule_work(&palm_sensor->palm_work);
@@ -145,7 +169,8 @@ static long palmsensor_dev_ioctl(struct file *file, unsigned int cmd,
 	struct palm_sensor_device *palm_sensor = file->private_data;
 	void __user *argp = (void __user *) arg;
 
-	ret = copy_from_user(&buf, (int __user *)argp, sizeof(int));
+	if (copy_from_user(&buf, (int __user *)argp, sizeof(int)))
+		return -EFAULT;
 
 	switch (cmd) {
 	case PALM_SENSOR_SWITCH:
@@ -154,8 +179,10 @@ static long palmsensor_dev_ioctl(struct file *file, unsigned int cmd,
 		flush_work(&palm_sensor->palm_work);
 		schedule_work(&palm_sensor->palm_work);
 		wake_up_interruptible(&palm_sensor->wait_queue);
+		ret = 0;
 		break;
 	default:
+		ret = -EINVAL;
 		break;
 	}
 
@@ -266,11 +293,11 @@ static int palm_sensor_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto out;
 
+	INIT_WORK(&palm_sensor_dev.palm_work, palmsensor_ops_work);
+
 	ret = misc_register(&palm_sensor_dev.misc_dev);
 	if (ret)
 		goto out;
-
-	INIT_WORK(&palm_sensor_dev.palm_work, palmsensor_ops_work);
 
 out:
 	return ret;
@@ -279,6 +306,7 @@ out:
 
 static int palm_sensor_remove(struct platform_device *pdev)
 {
+	cancel_work_sync(&palm_sensor_dev.palm_work);
 	misc_deregister(&palm_sensor_dev.misc_dev);
 
 	return 0;

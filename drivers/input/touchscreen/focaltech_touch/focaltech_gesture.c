@@ -146,7 +146,7 @@ static ssize_t fts_gesture_show(struct device *dev, struct device_attribute *att
 	mutex_lock(&input_dev->mutex);
 	fts_i2c_read_reg(client, FTS_REG_GESTURE_EN, &val);
 	count = snprintf(buf, PAGE_SIZE, "Gesture Mode: %s\n", fts_gesture_data.mode ? "On" : "Off");
-	count += snprintf(buf + count, PAGE_SIZE, "Reg(0xD0) = %d\n", val);
+	count += snprintf(buf + count, PAGE_SIZE - count, "Reg(0xD0) = %d\n", val);
 	mutex_unlock(&input_dev->mutex);
 
 	return count;
@@ -207,16 +207,16 @@ static ssize_t fts_gesture_buf_show(struct device *dev, struct device_attribute 
 
 	mutex_lock(&input_dev->mutex);
 	count = snprintf(buf, PAGE_SIZE, "Gesture ID: 0x%x\n", fts_gesture_data.header[0]);
-	count += snprintf(buf + count, PAGE_SIZE, "Gesture PointNum: %d\n", fts_gesture_data.header[1]);
-	count += snprintf(buf + count, PAGE_SIZE, "Gesture Point Buf:\n");
+	count += snprintf(buf + count, PAGE_SIZE - count, "Gesture PointNum: %d\n", fts_gesture_data.header[1]);
+	count += snprintf(buf + count, PAGE_SIZE - count, "Gesture Point Buf:\n");
 	for (i = 0; i < fts_gesture_data.header[1]; i++) {
 		count +=
-		    snprintf(buf + count, PAGE_SIZE, "%3d(%4d,%4d) ", i, fts_gesture_data.coordinate_x[i],
+		    snprintf(buf + count, PAGE_SIZE - count, "%3d(%4d,%4d) ", i, fts_gesture_data.coordinate_x[i],
 			     fts_gesture_data.coordinate_y[i]);
 		if ((i + 1) % 4 == 0)
-			count += snprintf(buf + count, PAGE_SIZE, "\n");
+			count += snprintf(buf + count, PAGE_SIZE - count, "\n");
 	}
-	count += snprintf(buf + count, PAGE_SIZE, "\n");
+	count += snprintf(buf + count, PAGE_SIZE - count, "\n");
 	mutex_unlock(&input_dev->mutex);
 
 	return count;
@@ -249,7 +249,6 @@ int fts_create_gesture_sysfs(struct i2c_client *client)
 	ret = sysfs_create_group(&client->dev.kobj, &fts_gesture_group);
 	if (ret != 0) {
 		FTS_ERROR("[GESTURE]fts_gesture_mode_group(sysfs) create failed!");
-		sysfs_remove_group(&client->dev.kobj, &fts_gesture_group);
 		return ret;
 	}
 	return 0;
@@ -345,7 +344,7 @@ static int fts_gesture_read_buffer(struct i2c_client *client, u8 *buf, int read_
 	} else {
 		ret = fts_i2c_read(client, buf, 1, buf, I2C_BUFFER_LENGTH_MAXINUM);
 		remain_bytes = read_bytes - I2C_BUFFER_LENGTH_MAXINUM;
-		for (i = 1; remain_bytes > 0; i++) {
+		for (i = 1; (remain_bytes > 0) && (ret >= 0); i++) {
 			if (remain_bytes <= I2C_BUFFER_LENGTH_MAXINUM)
 				ret = fts_i2c_read(client, buf, 0, buf + I2C_BUFFER_LENGTH_MAXINUM * i, remain_bytes);
 			else
@@ -401,9 +400,14 @@ int fts_gesture_readdata(struct fts_ts_data *ts_data)
 		return ret;
 	}
 
+	pointnum = buf[1];
+	if (pointnum >= FTS_GESTRUE_POINTS) {
+		FTS_ERROR("[GESTURE]Invalid pointnum=%d", pointnum);
+		return -EINVAL;
+	}
+
 	memcpy(fts_gesture_data.header, buf, FTS_GESTRUE_POINTS_HEADER);
 	gestrue_id = buf[0];
-	pointnum = buf[1];
 	read_bytes = ((int)pointnum) * 4 + 2;
 	buf[0] = FTS_REG_GESTURE_OUTPUT_ADDRESS;
 	FTS_DEBUG("[GESTURE]PointNum=%d", pointnum);

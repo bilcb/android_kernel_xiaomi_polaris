@@ -86,6 +86,12 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 
 	mutex_lock(&pTAS2559->file_lock);
 
+	if (count > 0x100000) {
+		dev_err(pTAS2559->dev, "read count too large: %zu\n", count);
+		mutex_unlock(&pTAS2559->file_lock);
+		return -EINVAL;
+	}
+
 	switch (pTAS2559->mnDBGCmd) {
 	case TIAUDIO_CMD_REG_READ: {
 		if (g_logEnable)
@@ -113,6 +119,8 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 			if (ret != 0) {
 				/* Failed to copy all the data, exit */
 				dev_err(pTAS2559->dev, "copy to user fail %d\n", ret);
+
+				ret = -EFAULT;
 			}
 		} else if (count > 1) {
 			p_kBuf = kzalloc(count, GFP_KERNEL);
@@ -127,11 +135,14 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 					if (ret != 0) {
 						/* Failed to copy all the data, exit */
 						dev_err(pTAS2559->dev, "copy to user fail %d\n", ret);
+
+						ret = -EFAULT;
 					}
 				}
 
 				kfree(p_kBuf);
 			} else {
+				ret = -ENOMEM;
 				dev_err(pTAS2559->dev, "read no mem\n");
 			}
 		}
@@ -139,6 +150,13 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 	break;
 
 	case TIAUDIO_CMD_PROGRAM: {
+		if (pTAS2559->mpFirmware->mnPrograms == 0
+		    || pTAS2559->mnCurrentProgram >= pTAS2559->mpFirmware->mnPrograms) {
+			dev_err(pTAS2559->dev, "%s, firmware not loaded\n", __func__);
+			ret = -EINVAL;
+			break;
+		}
+
 		if (g_logEnable)
 			dev_info(pTAS2559->dev, "TIAUDIO_CMD_PROGRAM: count = %d\n", (int)count);
 
@@ -155,25 +173,32 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 				p_kBuf[3] = (pProgram->mnBoost & 0xff00) >> 8;
 				p_kBuf[4] = (pProgram->mnBoost & 0x00ff);
 				memcpy(&p_kBuf[5], pProgram->mpName, FW_NAME_SIZE);
-				strlcpy(&p_kBuf[5 + FW_NAME_SIZE], pProgram->mpDescription, strlen(pProgram->mpDescription) + 1);
+				strlcpy(&p_kBuf[5 + FW_NAME_SIZE], pProgram->mpDescription, count - 5 - FW_NAME_SIZE);
 				ret = copy_to_user(buf, p_kBuf, count);
 
 				if (ret != 0) {
 					/* Failed to copy all the data, exit */
 					dev_err(pTAS2559->dev, "copy to user fail %d\n", ret);
+
+					ret = -EFAULT;
 				}
 
 				kfree(p_kBuf);
-			} else
+			} else {
+				ret = -ENOMEM;
 				dev_err(pTAS2559->dev, "read no mem\n");
-		} else
+				}
+		} else {
+			ret = -EINVAL;
 			dev_err(pTAS2559->dev, "read buffer not sufficient\n");
+		}
 	}
 	break;
 
 	case TIAUDIO_CMD_CONFIGURATION:
 		if ((pTAS2559->mpFirmware->mnConfigurations > 0)
-		    && (pTAS2559->mpFirmware->mnPrograms > 0)) {
+		    && (pTAS2559->mpFirmware->mnPrograms > 0)
+		    && (pTAS2559->mnCurrentConfiguration < pTAS2559->mpFirmware->mnConfigurations)) {
 			if (g_logEnable)
 				dev_info(pTAS2559->dev, "TIAUDIO_CMD_CONFIGURATION: count = %d\n", (int)count);
 
@@ -192,19 +217,25 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 					p_kBuf[5 + FW_NAME_SIZE] = ((pConfiguration->mnSamplingRate & 0x0000ff00) >> 8);
 					p_kBuf[6 + FW_NAME_SIZE] = ((pConfiguration->mnSamplingRate & 0x00ff0000) >> 16);
 					p_kBuf[7 + FW_NAME_SIZE] = ((pConfiguration->mnSamplingRate & 0xff000000) >> 24);
-					strlcpy(&p_kBuf[8 + FW_NAME_SIZE], pConfiguration->mpDescription, strlen(pConfiguration->mpDescription) + 1);
+					strlcpy(&p_kBuf[8 + FW_NAME_SIZE], pConfiguration->mpDescription, count - 8 - FW_NAME_SIZE);
 					ret = copy_to_user(buf, p_kBuf, count);
 
 					if (ret != 0) {
 						/* Failed to copy all the data, exit */
 						dev_err(pTAS2559->dev, "copy to user fail %d\n", ret);
+
+						ret = -EFAULT;
 					}
 
 					kfree(p_kBuf);
-				} else
+				} else {
+					ret = -ENOMEM;
 					dev_err(pTAS2559->dev, "read no mem\n");
-			} else
+					}
+			} else {
+				ret = -EINVAL;
 				dev_err(pTAS2559->dev, "read buffer not sufficient\n");
+			}
 		}
 
 		break;
@@ -226,11 +257,18 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 				if (ret != 0) {
 					/* Failed to copy all the data, exit */
 					dev_err(pTAS2559->dev, "copy to user fail %d\n", ret);
+
+					ret = -EFAULT;
 				}
 
 				kfree(p_kBuf);
-			} else
+			} else {
+				ret = -ENOMEM;
 				dev_err(pTAS2559->dev, "read no mem\n");
+				}
+		} else {
+			ret = -EINVAL;
+			dev_err(pTAS2559->dev, "read buffer not sufficient\n");
 		}
 	}
 	break;
@@ -247,16 +285,28 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 			if (ret != 0) {
 				/* Failed to copy all the data, exit */
 				dev_err(pTAS2559->dev, "copy to user fail %d\n", ret);
+
+				ret = -EFAULT;
 			}
+		} else {
+			ret = -EINVAL;
+			dev_err(pTAS2559->dev, "read buffer not sufficient\n");
 		}
 	}
 	break;
 
 	case TIAUDIO_CMD_SAMPLERATE: {
+		if (pTAS2559->mpFirmware->mnConfigurations == 0) {
+			dev_err(pTAS2559->dev, "%s, firmware not loaded\n", __func__);
+			ret = -EINVAL;
+			break;
+		}
+
 		if (g_logEnable)
 			dev_info(pTAS2559->dev, "TIAUDIO_CMD_SAMPLERATE: count = %d\n", (int)count);
 
-		if (count == 4) {
+		if ((count == 4)
+		&& (pTAS2559->mnCurrentConfiguration < pTAS2559->mpFirmware->mnConfigurations)) {
 			p_kBuf = kzalloc(count, GFP_KERNEL);
 
 			if (p_kBuf != NULL) {
@@ -272,11 +322,18 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 				if (ret != 0) {
 					/* Failed to copy all the data, exit */
 					dev_err(pTAS2559->dev, "copy to user fail %d\n", ret);
+
+					ret = -EFAULT;
 				}
 
 				kfree(p_kBuf);
-			} else
+			} else {
+				ret = -ENOMEM;
 				dev_err(pTAS2559->dev, "read no mem\n");
+			}
+		} else {
+			ret = -EINVAL;
+			dev_err(pTAS2559->dev, "read buffer not sufficient\n");
 		}
 	}
 	break;
@@ -288,13 +345,20 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 		if (count == 1) {
 			unsigned char bitRate = 0;
 
-			tas2559_get_bit_rate(pTAS2559, &bitRate);
+			ret = tas2559_get_bit_rate(pTAS2559, &bitRate);
+			if (ret < 0)
+				break;
 			ret = copy_to_user(buf, &bitRate, 1);
 
 			if (ret != 0) {
 				/* Failed to copy all the data, exit */
 				dev_err(pTAS2559->dev, "copy to user fail %d\n", ret);
+
+				ret = -EFAULT;
 			}
+		} else {
+			ret = -EINVAL;
+			dev_err(pTAS2559->dev, "read buffer not sufficient\n");
 		}
 	}
 	break;
@@ -313,17 +377,26 @@ static ssize_t tas2559_file_read(struct file *file, char *buf, size_t count, lof
 				if (ret != 0) {
 					/* Failed to copy all the data, exit */
 					dev_err(pTAS2559->dev, "copy to user fail %d\n", ret);
+
+					ret = -EFAULT;
 				}
 			}
+		} else {
+			ret = -EINVAL;
+			dev_err(pTAS2559->dev, "read buffer not sufficient\n");
 		}
 	}
+	break;
+
+	default:
+		ret = -EINVAL;
 	break;
 	}
 
 	pTAS2559->mnDBGCmd = 0;
 
 	mutex_unlock(&pTAS2559->file_lock);
-	return count;
+	return ret < 0 ? ret : count;
 }
 
 static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t count, loff_t *ppos)
@@ -337,10 +410,17 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 
 	mutex_lock(&pTAS2559->file_lock);
 
+	if (count == 0 || count > 0x100000) {
+		dev_err(pTAS2559->dev, "write count invalid: %zu\n", count);
+		mutex_unlock(&pTAS2559->file_lock);
+		return -EINVAL;
+	}
+
 	p_kBuf = kzalloc(count, GFP_KERNEL);
 
 	if (p_kBuf == NULL) {
 		dev_err(pTAS2559->dev, "write no mem\n");
+		ret = -ENOMEM;
 		goto err;
 	}
 
@@ -348,6 +428,7 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 
 	if (ret != 0) {
 		dev_err(pTAS2559->dev, "copy_from_user failed.\n");
+		ret = -EFAULT;
 		goto err;
 	}
 
@@ -374,10 +455,11 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 			} else
 				ret = pTAS2559->bulk_write(pTAS2559,
 							chl, reg, &p_kBuf[6], len);
-		} else
+		} else {
+			ret = -EINVAL;
 			dev_err(pTAS2559->dev, "%s, write len fail, count=%d.\n",
 				__func__, (int)count);
-
+		}
 		pTAS2559->mnDBGCmd = 0;
 		break;
 
@@ -419,7 +501,7 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 				if (g_logEnable)
 					dev_info(pTAS2559->dev, "TIAUDIO_CMD_PROGRAM, set to %d, cfg=%d\n", p_kBuf[1], config);
 
-				tas2559_set_program(pTAS2559, p_kBuf[1], config);
+				ret = tas2559_set_program(pTAS2559, p_kBuf[1], config);
 				pTAS2559->mnDBGCmd = 0;
 			} else
 				dev_err(pTAS2559->dev, "%s, firmware not loaded\n", __func__);
@@ -434,7 +516,7 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 				if (g_logEnable)
 					dev_info(pTAS2559->dev, "TIAUDIO_CMD_CONFIGURATION, set to %d\n", p_kBuf[1]);
 
-				tas2559_set_config(pTAS2559, p_kBuf[1]);
+				ret = tas2559_set_config(pTAS2559, p_kBuf[1]);
 				pTAS2559->mnDBGCmd = 0;
 			} else
 				dev_err(pTAS2559->dev, "%s, firmware not loaded\n", __func__);
@@ -453,7 +535,7 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 				if (g_logEnable)
 					dev_info(pTAS2559->dev, "TIAUDIO_CMD_CALIBRATION, set to %d\n", p_kBuf[1]);
 
-				tas2559_set_calibration(pTAS2559, p_kBuf[1]);
+				ret = tas2559_set_calibration(pTAS2559, p_kBuf[1]);
 				pTAS2559->mnDBGCmd = 0;
 			}
 		}
@@ -470,7 +552,8 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 			if (g_logEnable)
 				dev_info(pTAS2559->dev, "TIAUDIO_CMD_SAMPLERATE, set to %d\n", nSampleRate);
 
-			tas2559_set_sampling_rate(pTAS2559, nSampleRate);
+			ret = tas2559_set_sampling_rate(pTAS2559, nSampleRate);
+			pTAS2559->mnDBGCmd = 0;
 		}
 	}
 	break;
@@ -480,12 +563,20 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 			if (g_logEnable)
 				dev_info(pTAS2559->dev, "TIAUDIO_CMD_BITRATE, set to %d\n", p_kBuf[1]);
 
-			tas2559_set_bit_rate(pTAS2559, p_kBuf[1]);
+			ret = tas2559_set_bit_rate(pTAS2559, p_kBuf[1]);
+			pTAS2559->mnDBGCmd = 0;
 		}
 	}
 	break;
 
 	case TIAUDIO_CMD_DACVOLUME: {
+		if (count < 3) {
+			dev_err(pTAS2559->dev, "%s, DACVOLUME count too small: %zu\n",
+				__func__, count);
+			pTAS2559->mnDBGCmd = 0;
+			ret = -EINVAL;
+			break;
+		}
 		pTAS2559->mnCurrentChannel = p_kBuf[1];
 
 		if (count == 3) {
@@ -496,7 +587,8 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 			if (g_logEnable)
 				dev_info(pTAS2559->dev, "TIAUDIO_CMD_DACVOLUME, set to %d\n", volume);
 
-			tas2559_set_DAC_gain(pTAS2559, pTAS2559->mnCurrentChannel, volume);
+			ret = tas2559_set_DAC_gain(pTAS2559, pTAS2559->mnCurrentChannel, volume);
+			pTAS2559->mnDBGCmd = 0;
 		}
 	}
 	break;
@@ -508,8 +600,9 @@ static ssize_t tas2559_file_write(struct file *file, const char *buf, size_t cou
 					 "TIAUDIO_CMD_SPEAKER, set to %d\n",
 					 p_kBuf[1]);
 
-			tas2559_enable(pTAS2559, (p_kBuf[1] > 0));
+			ret = tas2559_enable(pTAS2559, (p_kBuf[1] > 0));
 		}
+		pTAS2559->mnDBGCmd = 0;
 	}
 	break;
 
@@ -548,7 +641,9 @@ err:
 
 	mutex_unlock(&pTAS2559->file_lock);
 
-	return count;
+	if (ret >= 0)
+		ret = count;
+	return ret;
 }
 
 static long tas2559_file_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -602,6 +697,10 @@ static long tas2559_file_unlocked_ioctl(struct file *file, unsigned int cmd, uns
 	case SMARTPA_SPK_SET_BITRATE: {
 		tas2559_set_bit_rate(pTAS2559, arg);
 	}
+	break;
+
+	default:
+		ret = -EINVAL;
 	break;
 	}
 

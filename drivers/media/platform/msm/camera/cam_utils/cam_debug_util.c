@@ -98,6 +98,9 @@ const char *cam_get_module_name(unsigned int module_id)
 	case CAM_REQ:
 		name = "CAM-REQ";
 		break;
+	case CAM_RES:
+		name = "CAM-RES";
+		break;
 	case CAM_SL_EEPROM:
 		name = "CAM-SL-EEPROM";
 		break;
@@ -122,6 +125,6 @@ void cam_debug_log(unsigned int module_id, const char *func, const int line,
 		pr_info("CAM_DBG: %s: %s: %d: %s\n",
 			cam_get_module_name(module_id),
 			func, line, str_buffer);
-		va_end(args);
 	}
+	va_end(args);
 }

@@ -112,10 +112,10 @@ static struct dcs_command resume_sequence[] = {
 #endif
 
 static struct device_attribute attrs[] = {
-	__ATTR(dcs_write, S_IWUGO,
+	__ATTR(dcs_write, S_IWUSR | S_IWGRP,
 			synaptics_rmi4_show_error,
 			video_sysfs_dcs_write_store),
-	__ATTR(param, S_IWUGO,
+	__ATTR(param, S_IWUSR | S_IWGRP,
 			synaptics_rmi4_show_error,
 			video_sysfs_param_store),
 };
@@ -129,6 +129,9 @@ static ssize_t video_sysfs_dcs_write_store(struct device *dev,
 {
 	int retval;
 	unsigned int input;
+
+	if (!video)
+		return -ENODEV;
 
 	if (sscanf(buf, "%x", &input) != 1)
 		return -EINVAL;
@@ -144,6 +147,9 @@ static ssize_t video_sysfs_param_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	unsigned int input;
+
+	if (!video)
+		return -ENODEV;
 
 	if (sscanf(buf, "%x", &input) != 1)
 		return -EINVAL;
@@ -232,7 +238,7 @@ f38_found:
 static int synaptics_rmi4_video_init(struct synaptics_rmi4_data *rmi4_data)
 {
 	int retval;
-	unsigned char attr_count;
+	int attr_count;
 
 	if (video) {
 		dev_dbg(rmi4_data->pdev->dev.parent,

@@ -165,6 +165,7 @@ static int cam_eeprom_i2c_driver_probe(struct i2c_client *client,
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		CAM_ERR(CAM_EEPROM, "i2c_check_functionality failed");
+		rc = -EFAULT;
 		goto probe_failure;
 	}
 
@@ -234,17 +235,11 @@ probe_failure:
 static int cam_eeprom_i2c_driver_remove(struct i2c_client *client)
 {
 	int                             i;
-	struct v4l2_subdev             *sd = i2c_get_clientdata(client);
 	struct cam_eeprom_ctrl_t       *e_ctrl;
 	struct cam_eeprom_soc_private  *soc_private;
 	struct cam_hw_soc_info         *soc_info;
 
-	if (!sd) {
-		CAM_ERR(CAM_EEPROM, "Subdevice is NULL");
-		return -EINVAL;
-	}
-
-	e_ctrl = (struct cam_eeprom_ctrl_t *)v4l2_get_subdevdata(sd);
+	e_ctrl = i2c_get_clientdata(client);
 	if (!e_ctrl) {
 		CAM_ERR(CAM_EEPROM, "eeprom device is NULL");
 		return -EINVAL;
@@ -262,6 +257,7 @@ static int cam_eeprom_i2c_driver_remove(struct i2c_client *client)
 		devm_clk_put(soc_info->dev, soc_info->clk[i]);
 
 	mutex_destroy(&(e_ctrl->eeprom_mutex));
+	cam_unregister_subdev(&e_ctrl->v4l2_dev_str);
 	kfree(soc_private);
 	kfree(e_ctrl->io_master_info.cci_client);
 	v4l2_set_subdevdata(&e_ctrl->v4l2_dev_str.sd, NULL);
@@ -282,6 +278,8 @@ static int cam_eeprom_spi_setup(struct spi_device *spi)
 	e_ctrl = kzalloc(sizeof(*e_ctrl), GFP_KERNEL);
 	if (!e_ctrl)
 		return -ENOMEM;
+
+	spi_set_drvdata(spi, e_ctrl);
 
 	soc_info = &e_ctrl->soc_info;
 	soc_info->dev = &spi->dev;
@@ -368,17 +366,10 @@ static int cam_eeprom_spi_driver_probe(struct spi_device *spi)
 static int cam_eeprom_spi_driver_remove(struct spi_device *sdev)
 {
 	int                             i;
-	struct v4l2_subdev             *sd = spi_get_drvdata(sdev);
-	struct cam_eeprom_ctrl_t       *e_ctrl;
+	struct cam_eeprom_ctrl_t       *e_ctrl = spi_get_drvdata(sdev);
 	struct cam_eeprom_soc_private  *soc_private;
 	struct cam_hw_soc_info         *soc_info;
 
-	if (!sd) {
-		CAM_ERR(CAM_EEPROM, "Subdevice is NULL");
-		return -EINVAL;
-	}
-
-	e_ctrl = (struct cam_eeprom_ctrl_t *)v4l2_get_subdevdata(sd);
 	if (!e_ctrl) {
 		CAM_ERR(CAM_EEPROM, "eeprom device is NULL");
 		return -EINVAL;
@@ -396,6 +387,7 @@ static int cam_eeprom_spi_driver_remove(struct spi_device *sdev)
 		kfree(soc_private);
 	}
 	mutex_destroy(&(e_ctrl->eeprom_mutex));
+	cam_unregister_subdev(&e_ctrl->v4l2_dev_str);
 	v4l2_set_subdevdata(&e_ctrl->v4l2_dev_str.sd, NULL);
 	kfree(e_ctrl);
 
@@ -493,6 +485,7 @@ static int cam_eeprom_platform_driver_remove(struct platform_device *pdev)
 		devm_clk_put(soc_info->dev, soc_info->clk[i]);
 
 	mutex_destroy(&(e_ctrl->eeprom_mutex));
+	cam_unregister_subdev(&e_ctrl->v4l2_dev_str);
 	kfree(soc_info->soc_private);
 	kfree(e_ctrl->io_master_info.cci_client);
 	platform_set_drvdata(pdev, NULL);

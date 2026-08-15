@@ -207,12 +207,16 @@ struct cam_vfe_bus_ver2_priv {
 
 	uint32_t                            irq_handle;
 	uint32_t                            error_irq_handle;
+	uint32_t                            error_irq_users;
 	void                               *tasklet_info;
 };
 
 static int cam_vfe_bus_process_cmd(
 	struct cam_isp_resource_node *priv,
 	uint32_t cmd_type, void *cmd_args, uint32_t arg_size);
+
+static int cam_vfe_bus_error_irq_top_half(uint32_t evt_id,
+	struct cam_irq_th_payload *th_payload);
 
 static int cam_vfe_bus_get_evt_payload(
 	struct cam_vfe_bus_ver2_common_data  *common_data,
@@ -2024,6 +2028,29 @@ static int cam_vfe_bus_acquire_vfe_out(void *bus_priv, void *acquire_args,
 	mutex_unlock(&rsrc_data->common_data->bus_mutex);
 
 	ver2_bus_priv->tasklet_info = acq_args->tasklet;
+
+	if (ver2_bus_priv->error_irq_handle <= 0) {
+		ver2_bus_priv->error_irq_handle =
+			cam_irq_controller_subscribe_irq(
+				ver2_bus_priv->common_data.bus_irq_controller,
+				CAM_IRQ_PRIORITY_0,
+				bus_error_irq_mask,
+				ver2_bus_priv,
+				cam_vfe_bus_error_irq_top_half,
+				cam_vfe_bus_err_bottom_half,
+				ver2_bus_priv->tasklet_info,
+				&tasklet_bh_api);
+		if ((int)ver2_bus_priv->error_irq_handle <= 0) {
+			CAM_ERR(CAM_ISP,
+				"Failed to subscribe BUS error IRQ");
+			ver2_bus_priv->error_irq_handle = 0;
+		} else {
+			ver2_bus_priv->error_irq_users = 1;
+		}
+	} else {
+		ver2_bus_priv->error_irq_users++;
+	}
+
 	rsrc_data->num_wm = num_wm;
 	rsrc_node->res_id = out_acquire_args->out_port_info->res_type;
 	rsrc_node->tasklet_info = acq_args->tasklet;
@@ -2096,6 +2123,9 @@ release_wm:
 
 	cam_vfe_bus_release_comp_grp(ver2_bus_priv,
 		rsrc_data->comp_grp);
+
+	if (ver2_bus_priv->error_irq_users)
+		ver2_bus_priv->error_irq_users--;
 
 	return rc;
 }
@@ -2187,6 +2217,32 @@ static int cam_vfe_bus_start_vfe_out(
 		CAM_ERR(CAM_ISP, "Invalid resource state:%d",
 			vfe_out->res_state);
 		return -EACCES;
+	}
+
+	{
+		struct cam_vfe_bus_ver2_priv *ver2_bus_priv =
+			container_of(common_data,
+				struct cam_vfe_bus_ver2_priv, common_data);
+
+		if (!ver2_bus_priv->error_irq_handle) {
+			ver2_bus_priv->error_irq_handle =
+				cam_irq_controller_subscribe_irq(
+					ver2_bus_priv->common_data.bus_irq_controller,
+					CAM_IRQ_PRIORITY_0,
+					bus_error_irq_mask,
+					ver2_bus_priv,
+					cam_vfe_bus_error_irq_top_half,
+					cam_vfe_bus_err_bottom_half,
+					ver2_bus_priv->tasklet_info,
+					&tasklet_bh_api);
+			if ((int)ver2_bus_priv->error_irq_handle <= 0) {
+				CAM_ERR(CAM_ISP,
+					"Failed to subscribe BUS error IRQ");
+				ver2_bus_priv->error_irq_handle = 0;
+			} else {
+				ver2_bus_priv->error_irq_users = 1;
+			}
+		}
 	}
 
 	for (i = 0; i < rsrc_data->num_wm; i++)
@@ -2871,22 +2927,7 @@ static int cam_vfe_bus_init_hw(void *hw_priv,
 		NULL,
 		NULL);
 
-	if (bus_priv->irq_handle <= 0) {
-		CAM_ERR(CAM_ISP, "Failed to subscribe BUS IRQ");
-		return -EFAULT;
-	}
-
-	bus_priv->error_irq_handle = cam_irq_controller_subscribe_irq(
-		bus_priv->common_data.bus_irq_controller,
-		CAM_IRQ_PRIORITY_0,
-		bus_error_irq_mask,
-		bus_priv,
-		cam_vfe_bus_error_irq_top_half,
-		cam_vfe_bus_err_bottom_half,
-		bus_priv->tasklet_info,
-		&tasklet_bh_api);
-
-	if (bus_priv->irq_handle <= 0) {
+	if ((int)bus_priv->irq_handle <= 0) {
 		CAM_ERR(CAM_ISP, "Failed to subscribe BUS IRQ");
 		return -EFAULT;
 	}
@@ -2982,17 +3023,22 @@ static int cam_vfe_bus_process_cmd(
 		break;
 	case CAM_ISP_HW_CMD_STOP_BUS_ERR_IRQ:
 		bus_priv = (struct cam_vfe_bus_ver2_priv  *) priv;
-		if (bus_priv->error_irq_handle) {
-			CAM_DBG(CAM_ISP, "Mask off bus error irq handler");
-			rc = cam_irq_controller_unsubscribe_irq(
-				bus_priv->common_data.bus_irq_controller,
-				bus_priv->error_irq_handle);
-			if (rc)
-				CAM_ERR(CAM_ISP,
-					"Failed to unsubscribe error irq rc=%d",
-					rc);
+		if (bus_priv->error_irq_users) {
+			bus_priv->error_irq_users--;
+			if (!bus_priv->error_irq_users &&
+					bus_priv->error_irq_handle) {
+				CAM_DBG(CAM_ISP,
+					"Mask off bus error irq handler");
+				rc = cam_irq_controller_unsubscribe_irq(
+					bus_priv->common_data.bus_irq_controller,
+					bus_priv->error_irq_handle);
+				if (rc)
+					CAM_ERR(CAM_ISP,
+						"Failed to unsubscribe error irq rc=%d",
+						rc);
 
-			bus_priv->error_irq_handle = 0;
+				bus_priv->error_irq_handle = 0;
+			}
 		}
 		break;
 	default:

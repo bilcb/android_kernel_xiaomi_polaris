@@ -927,6 +927,7 @@ static int32_t cam_cci_burst_read(struct v4l2_subdev *sd,
 
 	if (c_ctrl->cci_info->retries > CCI_I2C_READ_MAX_RETRIES) {
 		CAM_ERR(CAM_CCI, "More than max retries");
+		rc = -EINVAL;
 		goto rel_mutex;
 	}
 
@@ -1160,6 +1161,7 @@ static int32_t cam_cci_read(struct v4l2_subdev *sd,
 
 	if (c_ctrl->cci_info->retries > CCI_I2C_READ_MAX_RETRIES) {
 		CAM_ERR(CAM_CCI, "More than max retries");
+		rc = -EINVAL;
 		goto rel_mutex;
 	}
 
@@ -1329,6 +1331,7 @@ static int32_t cam_cci_i2c_write(struct v4l2_subdev *sd,
 	}
 	if (c_ctrl->cci_info->retries > CCI_I2C_READ_MAX_RETRIES) {
 		CAM_ERR(CAM_CCI, "More than max retries");
+		rc = -EINVAL;
 		return rc;
 	}
 	rc = cam_cci_data_queue(cci_dev, c_ctrl, queue, sync_en);
@@ -1526,7 +1529,7 @@ static int32_t cam_cci_i2c_set_sync_prms(struct v4l2_subdev *sd,
 
 static int32_t cam_cci_release(struct v4l2_subdev *sd, struct cam_cci_ctrl *c_ctrl)
 {
-	uint8_t rc = 0;
+	int32_t rc = 0;
 	struct cci_device *cci_dev;
 
 	cci_dev = v4l2_get_subdevdata(sd);

@@ -1,5 +1,5 @@
 /************************************************************************
-* Copyright (C) 2010-2017, Focaltech Systems (R)£¬All Rights Reserved.
+* Copyright (C) 2010-2017, Focaltech Systems (R)ï¿½ï¿½All Rights Reserved.
 *
 * File Name: focaltech_flash.h
 *
@@ -120,7 +120,7 @@ struct upgrade_func {
 	u32 paramcfg2off;
 	bool hid_supported;
 	bool pramboot_supported;
-	u8 *pramboot;
+	const u8 *pramboot;
 	u32 pb_length;
 	int (*init) (void);
 	int (*upgrade) (struct i2c_client *, u8 *, u32);

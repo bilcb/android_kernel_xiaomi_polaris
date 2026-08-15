@@ -36,6 +36,7 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
+#include <linux/jiffies.h>
 #include <linux/input.h>
 #include <linux/platform_device.h>
 #include <linux/input/synaptics_dsx.h>
@@ -135,6 +136,7 @@ static void apen_lift(void)
 	input_report_key(apen->apen_dev, BTN_TOUCH, 0);
 	input_report_key(apen->apen_dev, BTN_TOOL_PEN, 0);
 	input_report_key(apen->apen_dev, BTN_TOOL_RUBBER, 0);
+	input_report_key(apen->apen_dev, BTN_STYLUS, 0);
 	input_sync(apen->apen_dev);
 	apen->apen_present = false;
 
@@ -151,10 +153,16 @@ static void apen_report(void)
 	struct apen_data_8b_pressure *apen_data_8b;
 	struct synaptics_rmi4_data *rmi4_data = apen->rmi4_data;
 
-	retval = synaptics_rmi4_reg_read(rmi4_data,
-			apen->apen_data_addr,
-			apen->apen_data->data,
-			sizeof(apen->apen_data->data));
+	if (apen->max_pressure == ACTIVE_PEN_MAX_PRESSURE_16BIT)
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				apen->apen_data_addr,
+				apen->apen_data->data,
+				sizeof(apen->apen_data->data));
+	else
+		retval = synaptics_rmi4_reg_read(rmi4_data,
+				apen->apen_data_addr,
+				apen->apen_data->data,
+				sizeof(struct apen_data_8b_pressure));
 	if (retval < 0) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read active pen data\n",
@@ -176,7 +184,7 @@ static void apen_report(void)
 	x = (apen->apen_data->x_msb << 8) | (apen->apen_data->x_lsb);
 	y = (apen->apen_data->y_msb << 8) | (apen->apen_data->y_lsb);
 
-	if ((x == -1) && (y == -1)) {
+	if ((x == 0xFFFF) || (y == 0xFFFF)) {
 		if (apen->apen_present)
 			apen_lift();
 
@@ -271,6 +279,10 @@ static int apen_pressure(struct synaptics_rmi4_f12_query_8 *query_8)
 
 	size_of_query_9 = query_8->size_of_query9;
 	query_9 = kmalloc(size_of_query_9, GFP_KERNEL);
+	if (!query_9) {
+		retval = -ENOMEM;
+		goto exit;
+	}
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
 			apen->query_base_addr + 9,
@@ -284,13 +296,29 @@ static int apen_pressure(struct synaptics_rmi4_f12_query_8 *query_8)
 	for (ii = 0; ii < 6; ii++) {
 		if (!(data_reg_presence & (1 << ii)))
 			continue; /* The data register is not present */
+		if (data_desc >= query_9 + size_of_query_9) {
+			retval = -EINVAL;
+			goto exit;
+		}
 		data_desc++; /* Jump over the size entry */
-		while (*data_desc & (1 << 7))
+		while (data_desc < query_9 + size_of_query_9 && (*data_desc & (1 << 7)))
 			data_desc++;
+		if (data_desc >= query_9 + size_of_query_9) {
+			retval = -EINVAL;
+			goto exit;
+		}
 		data_desc++; /* Go to the next descriptor */
 	}
 
+	if (data_desc >= query_9 + size_of_query_9) {
+		retval = -EINVAL;
+		goto exit;
+	}
 	data_desc++; /* Jump over the size entry */
+	if (data_desc >= query_9 + size_of_query_9) {
+		retval = -EINVAL;
+		goto exit;
+	}
 	/* Check for the presence of subpackets 1 and 2 */
 	if ((*data_desc & (3 << 1)) == (3 << 1))
 		apen->max_pressure = ACTIVE_PEN_MAX_PRESSURE_16BIT;
@@ -378,7 +406,6 @@ static int apen_scan_pdt(void)
 				switch (fd.fn_number) {
 				case SYNAPTICS_RMI4_F12:
 					goto f12_found;
-					break;
 				}
 			} else {
 				break;
@@ -413,6 +440,12 @@ f12_found:
 	for (ii = intr_off;
 			ii < (intr_src + intr_off);
 			ii++) {
+		if (ii >= 8) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Interrupt source %d exceeds 8-bit mask\n",
+					__func__, ii);
+			break;
+		}
 		apen->intr_mask |= 1 << ii;
 	}
 
@@ -551,6 +584,8 @@ exit:
 
 static void synaptics_rmi4_apen_reset(struct synaptics_rmi4_data *rmi4_data)
 {
+	int retval;
+
 	if (!apen) {
 		synaptics_rmi4_apen_init(rmi4_data);
 		return;
@@ -558,7 +593,11 @@ static void synaptics_rmi4_apen_reset(struct synaptics_rmi4_data *rmi4_data)
 
 	apen_lift();
 
-	apen_scan_pdt();
+	retval = apen_scan_pdt();
+	if (retval < 0)
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to rescan PDT after reset\n",
+				__func__);
 
 	return;
 }
@@ -617,7 +656,10 @@ static void __exit rmi4_active_pen_module_exit(void)
 {
 	synaptics_rmi4_new_function_force(&active_pen_module, false);
 
-	wait_for_completion(&apen_remove_complete);
+	if (!wait_for_completion_timeout(&apen_remove_complete,
+			msecs_to_jiffies(5000)))
+		pr_err("%s: Timed out waiting for active pen removal\n",
+				__func__);
 
 	return;
 }

@@ -260,6 +260,7 @@ struct smb1355 {
 	bool			exit_die_temp;
 	struct delayed_work	die_temp_work;
 	bool			disabled;
+	int			overheat;
 
 	struct votable		*irq_disable_votable;
 };
@@ -599,7 +600,6 @@ static int smb1355_get_prop_health(struct smb1355 *chip, int type)
 	int rc, shift;
 	u8 stat = 0;
 	int usb_present = 0;
-	static int overheat;
 
 	rc = smb1355_read(chip, POWER_PATH_STATUS_REG, &stat);
 	if (rc < 0) {
@@ -610,14 +610,14 @@ static int smb1355_get_prop_health(struct smb1355 *chip, int type)
 		(stat & VALID_INPUT_POWER_SOURCE_STS_BIT);
 
 	if (type == CONNECTOR_TEMP && !usb_present) {
-		overheat = 0;
+		chip->overheat = 0;
 		return POWER_SUPPLY_HEALTH_COOL;
 	}
 
 	/* Connector-temp uses skin-temp configuration */
 	shift = (type == CONNECTOR_TEMP) ? SKIN_TEMP_SHIFT : 0;
 
-	if (chip->dt.disable_ctm)
+	if (chip->dt.disable_ctm && type == CONNECTOR_TEMP)
 		return POWER_SUPPLY_HEALTH_COOL;
 
 	rc = smb1355_read(chip, TEMP_COMP_STATUS_REG, &temp);
@@ -628,12 +628,12 @@ static int smb1355_get_prop_health(struct smb1355 *chip, int type)
 
 	if (temp & (TEMP_RST_HOT_BIT << shift)) {
 		if (type == CONNECTOR_TEMP) {
-			if (overheat > 5) {
+			if (chip->overheat > 5) {
 				pr_info("%s: ntc is overheat:%x!\n", __func__, temp);
 				return POWER_SUPPLY_HEALTH_OVERHEAT;
 			} else {
-				pr_info("%s overheat count:%d\n", __func__, overheat);
-				overheat++;
+				pr_info("%s overheat count:%d\n", __func__, chip->overheat);
+				chip->overheat++;
 				return POWER_SUPPLY_HEALTH_HOT;
 			}
 		} else {
@@ -641,7 +641,7 @@ static int smb1355_get_prop_health(struct smb1355 *chip, int type)
 		}
 	}
 	if (type == CONNECTOR_TEMP)
-		overheat = 0;
+		chip->overheat = 0;
 
 	if (temp & (TEMP_UB_HOT_BIT << shift))
 		return POWER_SUPPLY_HEALTH_HOT;

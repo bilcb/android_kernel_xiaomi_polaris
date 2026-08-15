@@ -16,12 +16,12 @@
 #include <linux/input.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
-#include "ft5x46_ts.h"
+#include <linux/input/ft5x46_ts.h>
 
 #define FT5X0X_SPI_READ			0x8000
 
 static int ft5x46_spi_xfer(struct device *dev,
-			u16 addr, const u8 *tx_buf, u8 *rx_buf, u8 len)
+			u16 addr, const u8 *tx_buf, u8 *rx_buf, int len)
 {
 	struct spi_device  *spi = to_spi_device(dev);
 	struct spi_transfer xfers[2];
@@ -106,12 +106,22 @@ static const struct spi_device_id ft5x46_spi_id[] = {
 };
 MODULE_DEVICE_TABLE(spi, ft5x46_spi_id);
 
+#ifdef CONFIG_OF
+static struct of_device_id ft5x46_spi_match_table[] = {
+	{.compatible = "ft,ft5x46_spi",},
+	{},
+};
+#else
+#define ft5x46_spi_match_table NULL
+#endif
+
 static struct spi_driver ft5x46_spi_driver = {
 	.probe         = ft5x46_spi_probe,
 	.remove        = ft5x46_spi_remove,
 	.driver = {
 		.name  = "ft5x46_spi",
 		.owner = THIS_MODULE,
+		.of_match_table = ft5x46_spi_match_table,
 	},
 	.id_table      = ft5x46_spi_id,
 };
@@ -120,7 +130,7 @@ static int __init ft5x46_spi_init(void)
 {
 	return spi_register_driver(&ft5x46_spi_driver);
 }
-module_init(ft5x0x_spi_init);
+module_init(ft5x46_spi_init);
 
 static void __exit ft5x46_spi_exit(void)
 {

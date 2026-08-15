@@ -627,6 +627,14 @@ static void qusb_phy_host_init(struct usb_phy *phy)
 		writel_relaxed(qphy->bias_ctrl2,
 				qphy->base + qphy->phy_reg[BIAS_CTRL_2]);
 
+	if (qphy->imp_ctrl)
+		writel_relaxed(qphy->imp_ctrl, qphy->base + 0x220);
+
+	if (qphy->tune_pll_bias)
+		writel_relaxed(qphy->tune_pll_bias, qphy->base + 0x198);
+	if (qphy->pll_bias)
+		writel_relaxed(qphy->pll_bias, qphy->base + 0x198);
+
 	/* Ensure above write is completed before turning ON ref clk */
 	wmb();
 
@@ -639,6 +647,8 @@ static void qusb_phy_host_init(struct usb_phy *phy)
 		dev_err(phy->dev, "QUSB PHY PLL LOCK fails:%x\n", reg);
 		WARN_ON(1);
 	}
+
+	qphy->tune_val = 0;
 }
 
 static int qusb_phy_init(struct usb_phy *phy)
@@ -1152,18 +1162,18 @@ static int qusb_phy_create_debugfs(struct qusb_phy *qphy)
 						&qphy->imp_ctrl);
 		if (IS_ERR_OR_NULL(file)) {
 			dev_err(qphy->phy.dev,
-				"can't create debugfs entry for %s\n", name);
+				"can't create debugfs entry for imp_ctrl\n");
 			debugfs_remove_recursive(qphy->root);
-			ret = ENOMEM;
+			ret = -ENOMEM;
 			goto create_err;
 		}
 	file = debugfs_create_x8("pll_bias", 0644, qphy->root,
 						&qphy->pll_bias);
 		if (IS_ERR_OR_NULL(file)) {
 			dev_err(qphy->phy.dev,
-				"can't create debugfs entry for %s\n", name);
+				"can't create debugfs entry for pll_bias\n");
 			debugfs_remove_recursive(qphy->root);
-			ret = ENOMEM;
+			ret = -ENOMEM;
 			goto create_err;
 		}
 	file = debugfs_create_x8("bias_ctrl2", 0644, qphy->root,

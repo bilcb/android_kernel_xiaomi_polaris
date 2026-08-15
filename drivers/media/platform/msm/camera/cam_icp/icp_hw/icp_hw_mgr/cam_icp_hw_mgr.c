@@ -3338,6 +3338,12 @@ static int cam_icp_mgr_process_cmd_desc(struct cam_icp_hw_mgr *hw_mgr,
 					hw_mgr->iommu_hdl);
 				return rc;
 			}
+			if (cmd_desc[i].offset > len) {
+				CAM_ERR(CAM_ICP,
+					"cmd buf offset %d exceeds len %zu",
+					cmd_desc[i].offset, len);
+				return -EINVAL;
+			}
 			*fw_cmd_buf_iova_addr = addr;
 			*fw_cmd_buf_iova_addr =
 				(*fw_cmd_buf_iova_addr + cmd_desc[i].offset);
@@ -3422,6 +3428,12 @@ static int cam_icp_mgr_process_io_cfg(struct cam_icp_hw_mgr *hw_mgr,
 
 	for (i = 0, j = 0, k = 0; i < packet->num_io_configs; i++) {
 		if (io_cfg_ptr[i].direction == CAM_BUF_INPUT) {
+			if (j >= CAM_MAX_IN_RES) {
+				CAM_ERR(CAM_ICP,
+					"Too many input resources %d",
+					packet->num_io_configs);
+				return -EINVAL;
+			}
 			sync_in_obj[j++] = io_cfg_ptr[i].fence;
 			prepare_args->num_in_map_entries++;
 		} else {
@@ -3731,8 +3743,10 @@ static int cam_icp_mgr_prepare_hw_update(void *hw_mgr_priv,
 
 	packet = prepare_args->packet;
 
-	if (cam_packet_util_validate_packet(packet, prepare_args->remain_len))
+	if (cam_packet_util_validate_packet(packet, prepare_args->remain_len)) {
+		mutex_unlock(&ctx_data->ctx_mutex);
 		return -EINVAL;
+	}
 
 	rc = cam_icp_mgr_pkt_validation(packet);
 	if (rc) {
@@ -3848,9 +3862,10 @@ static int cam_icp_mgr_delete_sync(void *priv, void *data)
 	for (idx = 0; idx < CAM_FRAME_CMD_MAX; idx++) {
 		if (!hfi_frame_process->in_free_resource[idx])
 			continue;
-		//cam_sync_destroy(
-			//ctx_data->hfi_frame_process.in_free_resource[idx]);
-		ctx_data->hfi_frame_process.in_resource[idx] = 0;
+		cam_sync_destroy(
+			ctx_data->hfi_frame_process.in_free_resource[idx]);
+		hfi_frame_process->in_free_resource[idx] = 0;
+		hfi_frame_process->in_resource[idx] = 0;
 	}
 	mutex_unlock(&ctx_data->ctx_mutex);
 	return 0;

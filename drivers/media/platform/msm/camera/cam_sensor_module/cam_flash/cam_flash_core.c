@@ -1585,6 +1585,12 @@ int cam_flash_pmic_pkt_parser(struct cam_flash_ctrl *fctrl, void *arg)
 			flash_query_info =
 				(struct cam_flash_query_curr *)cmd_buf;
 
+			if (!fctrl->switch_trigger) {
+				CAM_ERR(CAM_FLASH,
+					"no switch trigger for query current");
+				return -EINVAL;
+			}
+
 			rc = qpnp_flash_led_prepare(fctrl->switch_trigger,
 				QUERY_MAX_CURRENT, &query_curr_ma);
 			CAM_DBG(CAM_FLASH, "query_curr_ma = %d",

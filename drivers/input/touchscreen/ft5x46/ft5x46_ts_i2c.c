@@ -18,7 +18,6 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/input/ft5x46_ts.h>
-#include "focaltech_test.h"
 struct i2c_client *fts_i2c_client;
 static int ft5x46_i2c_recv(struct device *dev,
 				void *buf, int len)
@@ -58,9 +57,14 @@ int fts_i2c_read(struct i2c_client *client, char *writebuf,
 				 },
 			};
 			ret = i2c_transfer(client->adapter, msgs, 2);
-			if (ret < 0)
+			if (ret != 2) {
+				if (ret >= 0)
+					ret = -EIO;
 				dev_err(&client->dev, "%s:i2c read error.\n",
 						__func__);
+			} else {
+				ret = 0;
+			}
 		} else {
 			struct i2c_msg msgs[] = {
 				{
@@ -71,9 +75,14 @@ int fts_i2c_read(struct i2c_client *client, char *writebuf,
 				 },
 			};
 			ret = i2c_transfer(client->adapter, msgs, 1);
-			if (ret < 0)
+			if (ret != 1) {
+				if (ret >= 0)
+					ret = -EIO;
 				dev_err(&client->dev, "%s:i2c read error.\n",
 						__func__);
+			} else {
+				ret = 0;
+			}
 		}
 	}
 	return ret;
@@ -94,9 +103,14 @@ int fts_i2c_write(struct i2c_client *client, char *writebuf, int writelen)
 
 	if (writelen > 0) {
 		ret = i2c_transfer(client->adapter, msgs, 1);
-		if (ret < 0)
+		if (ret != 1) {
+			if (ret >= 0)
+				ret = -EIO;
 			dev_err(&client->dev, "%s: i2c write error.\n",
 					__func__);
+		} else {
+			ret = 0;
+		}
 	}
 	return ret;
 }
@@ -109,6 +123,8 @@ static int ft5x46_i2c_read(struct device *dev,
 	for (i = 0; i < len; i += count) {
 		count = i2c_smbus_read_i2c_block_data(
 				client, addr + i, len - i, buf + i);
+		if (count == 0)
+			count = -EIO;
 		if (count < 0)
 			break;
 	}
@@ -159,7 +175,6 @@ static int ft5x46_i2c_probe(struct i2c_client *client,
 
 	i2c_set_clientdata(client, ft5x46);
 	fts_i2c_client = client;
-	fts_test_module_init(client);
 	device_init_wakeup(&client->dev, 1);
 
 	return 0;
@@ -168,16 +183,16 @@ static int ft5x46_i2c_probe(struct i2c_client *client,
 static int ft5x46_i2c_remove(struct i2c_client *client)
 {
 	struct ft5x46_data *ft5x0x = i2c_get_clientdata(client);
-	fts_test_module_exit(client);
 	ft5x46_remove(ft5x0x);
+	fts_i2c_client = NULL;
 	return 0;
 }
 
 static void ft5x46_i2c_shutdown(struct i2c_client *client)
 {
 	struct ft5x46_data *ft5x0x = i2c_get_clientdata(client);
-	fts_test_module_exit(client);
 	ft5x46_remove(ft5x0x);
+	fts_i2c_client = NULL;
 	return;
 }
 
@@ -185,7 +200,7 @@ static const struct i2c_device_id ft5x46_i2c_id[] = {
 	{"ft5x46_i2c", 0},
 	{/* end list */}
 };
-MODULE_DEVICE_TABLE(i2c, ft5x0x_i2c_id);
+MODULE_DEVICE_TABLE(i2c, ft5x46_i2c_id);
 
 #ifdef CONFIG_OF
 static struct of_device_id ft5x46_match_table[] = {

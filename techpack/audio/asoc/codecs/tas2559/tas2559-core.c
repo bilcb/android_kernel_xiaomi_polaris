@@ -171,7 +171,7 @@ static int tas2559_dev_load_data(struct tas2559_priv *pTAS2559,
 {
 	int nResult = 0;
 	unsigned int n = 0;
-	unsigned int nRegister;
+	unsigned int nRegister = 0;
 	unsigned int nData;
 	enum channel chl;
 
@@ -308,7 +308,9 @@ int tas2559_SA_DevChnSetup(struct tas2559_priv *pTAS2559, unsigned int mode)
 
 	dev_dbg(pTAS2559->dev, "%s, mode %d\n", __func__, mode);
 	if ((pTAS2559->mpFirmware->mnPrograms == 0)
-	    || (pTAS2559->mpFirmware->mnConfigurations == 0)) {
+	    || (pTAS2559->mpFirmware->mnConfigurations == 0)
+	    || (pTAS2559->mnCurrentProgram >= pTAS2559->mpFirmware->mnPrograms)
+	    || (pTAS2559->mnCurrentConfiguration >= pTAS2559->mpFirmware->mnConfigurations)) {
 		dev_err(pTAS2559->dev, "%s, firmware not loaded\n", __func__);
 		goto end;
 	}
@@ -859,7 +861,7 @@ int tas2559_set_VBoost(struct tas2559_priv *pTAS2559, int vboost, bool bPowerOn)
 
 end:
 
-	return 0;
+	return nResult;
 }
 
 int tas2559_load_platdata(struct tas2559_priv *pTAS2559)
@@ -999,6 +1001,12 @@ static int tas2559_load_coefficient(struct tas2559_priv *pTAS2559,
 		goto end;
 	}
 
+	if (pTAS2559->mnCurrentProgram >= pTAS2559->mpFirmware->mnPrograms) {
+		dev_err(pTAS2559->dev, "%s, current program %u doesn't exist\n",
+			__func__, pTAS2559->mnCurrentProgram);
+		goto end;
+	}
+
 	if (nPrevConfig < 0) {
 		pPrevConfiguration = NULL;
 		chl = DevBoth;
@@ -1040,6 +1048,12 @@ static int tas2559_load_coefficient(struct tas2559_priv *pTAS2559,
 	}
 
 	/* load PLL */
+	if (pNewConfiguration->mnPLL >= pTAS2559->mpFirmware->mnPLLs) {
+		dev_err(pTAS2559->dev, "PLL %d doesn't exist\n",
+			pNewConfiguration->mnPLL);
+		nResult = -EINVAL;
+		goto end;
+	}
 	pPLL = &(pTAS2559->mpFirmware->mpPLLs[pNewConfiguration->mnPLL]);
 	dev_dbg(pTAS2559->dev, "load PLL: %s block for Configuration %s\n",
 		pPLL->mpName, pNewConfiguration->mpName);
@@ -1164,12 +1178,14 @@ int tas2559_enable(struct tas2559_priv *pTAS2559, bool bEnable)
 	int nResult = 0;
 	struct TProgram *pProgram;
 	struct TConfiguration *pConfiguration;
-	unsigned int nValue;
+	unsigned int nValue = 0;
 
 	dev_dbg(pTAS2559->dev, "%s: %s\n", __func__, bEnable ? "On" : "Off");
 
 	if ((pTAS2559->mpFirmware->mnPrograms == 0)
-	    || (pTAS2559->mpFirmware->mnConfigurations == 0)) {
+	    || (pTAS2559->mpFirmware->mnConfigurations == 0)
+	    || (pTAS2559->mnCurrentProgram >= pTAS2559->mpFirmware->mnPrograms)
+	    || (pTAS2559->mnCurrentConfiguration >= pTAS2559->mpFirmware->mnConfigurations)) {
 		dev_err(pTAS2559->dev, "%s, firmware not loaded\n", __func__);
 		goto end;
 	}
@@ -1182,7 +1198,7 @@ int tas2559_enable(struct tas2559_priv *pTAS2559, bool bEnable)
 		dev_err(pTAS2559->dev, "ERROR DevA safe guard (0x%x) failure!\n", nValue);
 		nResult = -EPIPE;
 		pTAS2559->mnErrCode = ERROR_SAFE_GUARD;
-		pTAS2559->mbPowerUp = true;
+		pTAS2559->mbPowerUp = false;
 		goto end;
 	}
 
@@ -1190,7 +1206,11 @@ int tas2559_enable(struct tas2559_priv *pTAS2559, bool bEnable)
 	if (bEnable) {
 		if (!pTAS2559->mbPowerUp) {
 			if (!pTAS2559->mbCalibrationLoaded) {
-				tas2559_set_calibration(pTAS2559, 0xFF);
+				nResult = tas2559_set_calibration(pTAS2559, 0xFF);
+				if (nResult < 0) {
+					dev_err(pTAS2559->dev, "%s, load calibration failed\n", __func__);
+					goto end;
+				}
 				pTAS2559->mbCalibrationLoaded = true;
 			}
 
@@ -1324,6 +1344,13 @@ int tas2559_set_sampling_rate(struct tas2559_priv *pTAS2559, unsigned int nSampl
 		goto end;
 	}
 
+	if (pTAS2559->mnCurrentConfiguration >= pTAS2559->mpFirmware->mnConfigurations) {
+		dev_err(pTAS2559->dev, "Current configuration %u doesn't exist\n",
+			pTAS2559->mnCurrentConfiguration);
+		nResult = -EINVAL;
+		goto end;
+	}
+
 	pConfiguration = &(pTAS2559->mpFirmware->mpConfigurations[pTAS2559->mnCurrentConfiguration]);
 
 	if (pConfiguration->mnSamplingRate == nSamplingRate) {
@@ -1374,6 +1401,16 @@ static inline unsigned int fw_convert_number(unsigned char *pData)
 	return pData[3] + (pData[2] << 8) + (pData[1] << 16) + (pData[0] << 24);
 }
 
+#define FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, nRequired) \
+	do { \
+		if ((unsigned int)((pData) - (pDataStart)) + (nRequired) > (nSize)) { \
+			dev_err(pTAS2559->dev, \
+				"Firmware: parse out of bounds at %u need %u left %u\n", \
+				(unsigned int)((pData) - (pDataStart)), (nRequired), (nSize)); \
+			return -EINVAL; \
+		} \
+	} while (0)
+
 static int fw_parse_header(struct tas2559_priv *pTAS2559,
 			   struct TFirmware *pFirmware, unsigned char *pData, unsigned int nSize)
 {
@@ -1415,7 +1452,9 @@ static int fw_parse_header(struct tas2559_priv *pTAS2559,
 	memcpy(pFirmware->mpDDCName, pData, 64);
 	pData += 64;
 
-	n = strlen(pData);
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
+	n = strnlen(pData, nSize - (pData - pDataStart));
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, n + 1);
 	pFirmware->mpDescription = kmemdup(pData, n + 1, GFP_KERNEL);
 	pData += n + 1;
 
@@ -1424,6 +1463,7 @@ static int fw_parse_header(struct tas2559_priv *pTAS2559,
 		return -EINVAL;
 	}
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 4);
 	pFirmware->mnDeviceFamily = fw_convert_number(pData);
 	pData += 4;
 
@@ -1433,6 +1473,7 @@ static int fw_parse_header(struct tas2559_priv *pTAS2559,
 		return -EINVAL;
 	}
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 4);
 	pFirmware->mnDevice = fw_convert_number(pData);
 	pData += 4;
 
@@ -1448,15 +1489,17 @@ static int fw_parse_header(struct tas2559_priv *pTAS2559,
 }
 
 static int fw_parse_block_data(struct tas2559_priv *pTAS2559, struct TFirmware *pFirmware,
-			       struct TBlock *pBlock, unsigned char *pData)
+			       struct TBlock *pBlock, unsigned char *pData, unsigned int nSize)
 {
 	unsigned char *pDataStart = pData;
 	unsigned int n;
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 4);
 	pBlock->mnType = fw_convert_number(pData);
 	pData += 4;
 
 	if (pFirmware->mnDriverVersion >= PPC_DRIVER_CRCCHK) {
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 4);
 		pBlock->mbPChkSumPresent = pData[0];
 		pData++;
 
@@ -1473,39 +1516,62 @@ static int fw_parse_block_data(struct tas2559_priv *pTAS2559, struct TFirmware *
 		pBlock->mbYChkSumPresent = 0;
 	}
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 4);
 	pBlock->mnCommands = fw_convert_number(pData);
 	pData += 4;
 
+	if (pBlock->mnCommands > (UINT_MAX / 4)) {
+		dev_err(pTAS2559->dev, "block commands overflow: %u\n", pBlock->mnCommands);
+		pBlock->mnCommands = 0;
+		return pData - pDataStart;
+	}
 	n = pBlock->mnCommands * 4;
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, n);
 	pBlock->mpData = kmemdup(pData, n, GFP_KERNEL);
+	if (!pBlock->mpData) {
+		pBlock->mnCommands = 0;
+		pData += n;
+		return pData - pDataStart;
+	}
 	pData += n;
 
 	return pData - pDataStart;
 }
 
 static int fw_parse_data(struct tas2559_priv *pTAS2559, struct TFirmware *pFirmware,
-			 struct TData *pImageData, unsigned char *pData)
+			 struct TData *pImageData, unsigned char *pData, unsigned int nSize)
 {
 	unsigned char *pDataStart = pData;
 	unsigned int nBlock;
 	unsigned int n;
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 64);
 	memcpy(pImageData->mpName, pData, 64);
 	pData += 64;
 
-	n = strlen(pData);
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
+	n = strnlen(pData, nSize - (pData - pDataStart));
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, n + 1);
 	pImageData->mpDescription = kmemdup(pData, n + 1, GFP_KERNEL);
 	pData += n + 1;
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 2);
 	pImageData->mnBlocks = (pData[0] << 8) + pData[1];
 	pData += 2;
 
 	pImageData->mpBlocks =
 		kmalloc(sizeof(struct TBlock) * pImageData->mnBlocks, GFP_KERNEL);
+	if (!pImageData->mpBlocks) {
+		pImageData->mnBlocks = 0;
+		return pData - pDataStart;
+	}
 
 	for (nBlock = 0; nBlock < pImageData->mnBlocks; nBlock++) {
 		n = fw_parse_block_data(pTAS2559, pFirmware,
-					&(pImageData->mpBlocks[nBlock]), pData);
+					&(pImageData->mpBlocks[nBlock]), pData,
+					nSize - (pData - pDataStart));
+		if ((int)n < 0)
+			return (int)n;
 		pData += n;
 	}
 
@@ -1513,13 +1579,14 @@ static int fw_parse_data(struct tas2559_priv *pTAS2559, struct TFirmware *pFirmw
 }
 
 static int fw_parse_pll_data(struct tas2559_priv *pTAS2559,
-			     struct TFirmware *pFirmware, unsigned char *pData)
+			     struct TFirmware *pFirmware, unsigned char *pData, unsigned int nSize)
 {
 	unsigned char *pDataStart = pData;
 	unsigned int n;
 	unsigned int nPLL;
 	struct TPLL *pPLL;
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 2);
 	pFirmware->mnPLLs = (pData[0] << 8) + pData[1];
 	pData += 2;
 
@@ -1527,18 +1594,28 @@ static int fw_parse_pll_data(struct tas2559_priv *pTAS2559,
 		goto end;
 
 	pFirmware->mpPLLs = kmalloc_array(pFirmware->mnPLLs, sizeof(struct TPLL), GFP_KERNEL);
+	if (!pFirmware->mpPLLs) {
+		pFirmware->mnPLLs = 0;
+		return pData - pDataStart;
+	}
 
 	for (nPLL = 0; nPLL < pFirmware->mnPLLs; nPLL++) {
 		pPLL = &(pFirmware->mpPLLs[nPLL]);
 
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 64);
 		memcpy(pPLL->mpName, pData, 64);
 		pData += 64;
 
-		n = strlen(pData);
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
+		n = strnlen(pData, nSize - (pData - pDataStart));
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, n + 1);
 		pPLL->mpDescription = kmemdup(pData, n + 1, GFP_KERNEL);
 		pData += n + 1;
 
-		n = fw_parse_block_data(pTAS2559, pFirmware, &(pPLL->mBlock), pData);
+		n = fw_parse_block_data(pTAS2559, pFirmware, &(pPLL->mBlock), pData,
+					nSize - (pData - pDataStart));
+		if ((int)n < 0)
+			return (int)n;
 		pData += n;
 	}
 
@@ -1547,13 +1624,14 @@ end:
 }
 
 static int fw_parse_program_data(struct tas2559_priv *pTAS2559,
-				 struct TFirmware *pFirmware, unsigned char *pData)
+				 struct TFirmware *pFirmware, unsigned char *pData, unsigned int nSize)
 {
 	unsigned char *pDataStart = pData;
 	unsigned int n;
 	unsigned int nProgram;
 	struct TProgram *pProgram;
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 2);
 	pFirmware->mnPrograms = (pData[0] << 8) + pData[1];
 	pData += 2;
 
@@ -1562,23 +1640,35 @@ static int fw_parse_program_data(struct tas2559_priv *pTAS2559,
 
 	pFirmware->mpPrograms =
 		kmalloc(sizeof(struct TProgram) * pFirmware->mnPrograms, GFP_KERNEL);
+	if (!pFirmware->mpPrograms) {
+		pFirmware->mnPrograms = 0;
+		return pData - pDataStart;
+	}
 
 	for (nProgram = 0; nProgram < pFirmware->mnPrograms; nProgram++) {
 		pProgram = &(pFirmware->mpPrograms[nProgram]);
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 64);
 		memcpy(pProgram->mpName, pData, 64);
 		pData += 64;
 
-		n = strlen(pData);
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
+		n = strnlen(pData, nSize - (pData - pDataStart));
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, n + 1);
 		pProgram->mpDescription = kmemdup(pData, n + 1, GFP_KERNEL);
 		pData += n + 1;
 
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
 		pProgram->mnAppMode = pData[0];
 		pData++;
 
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 2);
 		pProgram->mnBoost = (pData[0] << 8) + pData[1];
 		pData += 2;
 
-		n = fw_parse_data(pTAS2559, pFirmware, &(pProgram->mData), pData);
+		n = fw_parse_data(pTAS2559, pFirmware, &(pProgram->mData), pData,
+				  nSize - (pData - pDataStart));
+		if ((int)n < 0)
+			return (int)n;
 		pData += n;
 	}
 
@@ -1588,13 +1678,14 @@ end:
 }
 
 static int fw_parse_configuration_data(struct tas2559_priv *pTAS2559,
-				       struct TFirmware *pFirmware, unsigned char *pData)
+				       struct TFirmware *pFirmware, unsigned char *pData, unsigned int nSize)
 {
 	unsigned char *pDataStart = pData;
 	unsigned int n;
 	unsigned int nConfiguration;
 	struct TConfiguration *pConfiguration;
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 2);
 	pFirmware->mnConfigurations = (pData[0] << 8) + pData[1];
 	pData += 2;
 
@@ -1603,45 +1694,60 @@ static int fw_parse_configuration_data(struct tas2559_priv *pTAS2559,
 
 	pFirmware->mpConfigurations =
 		kmalloc(sizeof(struct TConfiguration) * pFirmware->mnConfigurations,
-			GFP_KERNEL);
+		GFP_KERNEL);
+	if (!pFirmware->mpConfigurations) {
+		pFirmware->mnConfigurations = 0;
+		return pData - pDataStart;
+	}
 
 	for (nConfiguration = 0; nConfiguration < pFirmware->mnConfigurations;
 	     nConfiguration++) {
 		pConfiguration = &(pFirmware->mpConfigurations[nConfiguration]);
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 64);
 		memcpy(pConfiguration->mpName, pData, 64);
 		pData += 64;
 
-		n = strlen(pData);
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
+		n = strnlen(pData, nSize - (pData - pDataStart));
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, n + 1);
 		pConfiguration->mpDescription = kmemdup(pData, n + 1, GFP_KERNEL);
 		pData += n + 1;
 
 		if ((pFirmware->mnDriverVersion >= PPC_DRIVER_CONFDEV)
 		    || ((pFirmware->mnDriverVersion >= PPC_DRIVER_CFGDEV_NONCRC)
 			&& (pFirmware->mnDriverVersion < PPC_DRIVER_CRCCHK))) {
+			FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 2);
 			pConfiguration->mnDevices = (pData[0] << 8) + pData[1];
 			pData += 2;
 		} else
 			pConfiguration->mnDevices = DevBoth;
 
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
 		pConfiguration->mnProgram = pData[0];
 		pData++;
 
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
 		pConfiguration->mnPLL = pData[0];
 		pData++;
 
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 4);
 		pConfiguration->mnSamplingRate = fw_convert_number(pData);
 		pData += 4;
 
 		if (pFirmware->mnDriverVersion >= PPC_DRIVER_MTPLLSRC) {
+			FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
 			pConfiguration->mnPLLSrc = pData[0];
 			pData++;
 
+			FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 4);
 			pConfiguration->mnPLLSrcRate = fw_convert_number(pData);
 			pData += 4;
-			dev_err(pTAS2559->dev, "line:%d, pData: 0x%x, 0x%x, 0x%x, 0x%x", __LINE__, pData[0], pData[1], pData[2], pData[3]);
 		}
 
-		n = fw_parse_data(pTAS2559, pFirmware, &(pConfiguration->mData), pData);
+		n = fw_parse_data(pTAS2559, pFirmware, &(pConfiguration->mData), pData,
+				  nSize - (pData - pDataStart));
+		if ((int)n < 0)
+			return (int)n;
 		pData += n;
 	}
 
@@ -1651,13 +1757,14 @@ end:
 }
 
 static int fw_parse_calibration_data(struct tas2559_priv *pTAS2559,
-			      struct TFirmware *pFirmware, unsigned char *pData)
+			      struct TFirmware *pFirmware, unsigned char *pData, unsigned int nSize)
 {
 	unsigned char *pDataStart = pData;
 	unsigned int n;
 	unsigned int nCalibration;
 	struct TCalibration *pCalibration;
 
+	FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 2);
 	pFirmware->mnCalibrations = (pData[0] << 8) + pData[1];
 	pData += 2;
 
@@ -1666,25 +1773,37 @@ static int fw_parse_calibration_data(struct tas2559_priv *pTAS2559,
 
 	pFirmware->mpCalibrations =
 		kmalloc(sizeof(struct TCalibration) * pFirmware->mnCalibrations, GFP_KERNEL);
+	if (!pFirmware->mpCalibrations) {
+		pFirmware->mnCalibrations = 0;
+		return pData - pDataStart;
+	}
 
 	for (nCalibration = 0;
 	     nCalibration < pFirmware->mnCalibrations;
 	     nCalibration++) {
 		pCalibration = &(pFirmware->mpCalibrations[nCalibration]);
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 64);
 		memcpy(pCalibration->mpName, pData, 64);
 		pData += 64;
 
-		n = strlen(pData);
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
+		n = strnlen(pData, nSize - (pData - pDataStart));
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, n + 1);
 		pCalibration->mpDescription = kmemdup(pData, n + 1, GFP_KERNEL);
 		pData += n + 1;
 
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
 		pCalibration->mnProgram = pData[0];
 		pData++;
 
+		FW_PARSE_BOUNDS_CHECK(pData, pDataStart, nSize, 1);
 		pCalibration->mnConfiguration = pData[0];
 		pData++;
 
-		n = fw_parse_data(pTAS2559, pFirmware, &(pCalibration->mData), pData);
+		n = fw_parse_data(pTAS2559, pFirmware, &(pCalibration->mData), pData,
+				  nSize - (pData - pDataStart));
+		if ((int)n < 0)
+			return (int)n;
 		pData += n;
 	}
 
@@ -1711,29 +1830,54 @@ static int fw_parse(struct tas2559_priv *pTAS2559,
 	}
 
 	pData += nPosition;
+	if (nPosition > nSize) {
+		dev_err(pTAS2559->dev, "Firmware: header consumes too much");
+		return -EINVAL;
+	}
 	nSize -= nPosition;
 	nPosition = 0;
 
-	nPosition = fw_parse_pll_data(pTAS2559, pFirmware, pData);
+	nPosition = fw_parse_pll_data(pTAS2559, pFirmware, pData, nSize);
+	if (nPosition < 0)
+		return nPosition;
 
 	pData += nPosition;
+	if (nPosition > nSize) {
+		dev_err(pTAS2559->dev, "Firmware: PLL data consumes too much");
+		return -EINVAL;
+	}
 	nSize -= nPosition;
 	nPosition = 0;
 
-	nPosition = fw_parse_program_data(pTAS2559, pFirmware, pData);
+	nPosition = fw_parse_program_data(pTAS2559, pFirmware, pData, nSize);
+	if (nPosition < 0)
+		return nPosition;
 
 	pData += nPosition;
+	if (nPosition > nSize) {
+		dev_err(pTAS2559->dev, "Firmware: program data consumes too much");
+		return -EINVAL;
+	}
 	nSize -= nPosition;
 	nPosition = 0;
 
-	nPosition = fw_parse_configuration_data(pTAS2559, pFirmware, pData);
+	nPosition = fw_parse_configuration_data(pTAS2559, pFirmware, pData, nSize);
+	if (nPosition < 0)
+		return nPosition;
 
 	pData += nPosition;
+	if (nPosition > nSize) {
+		dev_err(pTAS2559->dev, "Firmware: configuration data consumes too much");
+		return -EINVAL;
+	}
 	nSize -= nPosition;
 	nPosition = 0;
 
-	if (nSize > 64)
-		nPosition = fw_parse_calibration_data(pTAS2559, pFirmware, pData);
+	if (nSize > 64) {
+		nPosition = fw_parse_calibration_data(pTAS2559, pFirmware, pData, nSize);
+		if (nPosition < 0)
+			return nPosition;
+	}
 
 	return 0;
 }
@@ -2397,6 +2541,13 @@ static int tas2559_load_configuration(struct tas2559_priv *pTAS2559,
 		goto end;
 	}
 
+	if (pTAS2559->mnCurrentConfiguration >= pTAS2559->mpFirmware->mnConfigurations) {
+		dev_err(pTAS2559->dev, "Current configuration %u doesn't exist\n",
+			pTAS2559->mnCurrentConfiguration);
+		nResult = 0;
+		goto end;
+	}
+
 	if ((!pTAS2559->mbLoadConfigurationPrePowerUp)
 	    && (nConfiguration == pTAS2559->mnCurrentConfiguration)
 	    && (!bLoadSame)) {
@@ -2465,6 +2616,13 @@ int tas2559_set_config(struct tas2559_priv *pTAS2559, int config)
 	if (nConfiguration >= pTAS2559->mpFirmware->mnConfigurations) {
 		dev_err(pTAS2559->dev, "Configuration %d doesn't exist\n",
 			nConfiguration);
+		nResult = -EINVAL;
+		goto end;
+	}
+
+	if (nProgram >= pTAS2559->mpFirmware->mnPrograms) {
+		dev_err(pTAS2559->dev, "Current program %u doesn't exist\n",
+			nProgram);
 		nResult = -EINVAL;
 		goto end;
 	}
@@ -2557,8 +2715,9 @@ static int tas2559_load_calibration(struct tas2559_priv *pTAS2559,	char *pFileNa
 	int nResult = 0;
 	int nFile;
 	mm_segment_t fs;
-	unsigned char pBuffer[1000];
+	unsigned char *pBuffer = NULL;
 	int nSize = 0;
+	loff_t pos;
 
 	dev_dbg(pTAS2559->dev, "%s:\n", __func__);
 
@@ -2570,7 +2729,23 @@ static int tas2559_load_calibration(struct tas2559_priv *pTAS2559,	char *pFileNa
 		 pFileName, nFile);
 
 	if (nFile >= 0) {
-		nSize = sys_read(nFile, pBuffer, 1000);
+		pos = sys_lseek(nFile, 0, SEEK_END);
+		if (pos <= 0 || pos > 65536) {
+			dev_err(pTAS2559->dev, "TAS2559 invalid calibration file size: %lld\n", pos);
+			sys_close(nFile);
+			set_fs(fs);
+			return -EINVAL;
+		}
+		nSize = (int)pos;
+		sys_lseek(nFile, 0, SEEK_SET);
+		pBuffer = vmalloc(nSize);
+		if (!pBuffer) {
+			dev_err(pTAS2559->dev, "TAS2559 failed to alloc calibration buffer\n");
+			sys_close(nFile);
+			set_fs(fs);
+			return -ENOMEM;
+		}
+		nSize = sys_read(nFile, pBuffer, nSize);
 		sys_close(nFile);
 	} else {
 		dev_err(pTAS2559->dev, "TAS2559 cannot open calibration file: %s\n",
@@ -2580,8 +2755,11 @@ static int tas2559_load_calibration(struct tas2559_priv *pTAS2559,	char *pFileNa
 
 	set_fs(fs);
 
-	if (!nSize)
+	if (nSize <= 0) {
+		if (nSize < 0)
+			nResult = nSize;
 		goto end;
+	}
 
 	tas2559_clear_firmware(pTAS2559->mpCalFirmware);
 	dev_info(pTAS2559->dev, "TAS2559 calibration file size = %d\n", nSize);
@@ -2594,6 +2772,8 @@ static int tas2559_load_calibration(struct tas2559_priv *pTAS2559,	char *pFileNa
 			 pTAS2559->mpCalFirmware->mnCalibrations);
 
 end:
+	if (pBuffer)
+		vfree(pBuffer);
 
 	return nResult;
 }
@@ -2604,6 +2784,11 @@ void tas2559_fw_ready(const struct firmware *pFW, void *pContext)
 	int nResult;
 	unsigned int nProgram = 0;
 	unsigned int nSampleRate = 0;
+
+	if (unlikely(pTAS2559->mbShutdown)) {
+		release_firmware(pFW);
+		return;
+	}
 
 #ifdef CONFIG_TAS2559_CODEC
 	mutex_lock(&pTAS2559->codec_lock);
@@ -2723,10 +2908,18 @@ int tas2559_set_program(struct tas2559_priv *pTAS2559,
 			dev_err(pTAS2559->dev,
 				"Program %d, no valid configuration found for sample rate %d, ignore\n",
 				nProgram, nSampleRate);
+			if (pTAS2559->mnCurrentConfiguration >=
+					pTAS2559->mpFirmware->mnConfigurations)
+				pTAS2559->mnCurrentConfiguration = 0;
 			nResult = 0;
 			goto end;
 		}
 	} else {
+		if ((unsigned int)nConfig >= pTAS2559->mpFirmware->mnConfigurations) {
+			dev_err(pTAS2559->dev, "Configuration %d doesn't exist\n", nConfig);
+			nResult = 0;
+			goto end;
+		}
 		if (pTAS2559->mpFirmware->mpConfigurations[nConfig].mnProgram != nProgram) {
 			dev_err(pTAS2559->dev, "%s, configuration program doesn't match\n", __func__);
 			nResult = 0;
@@ -2854,7 +3047,8 @@ int tas2559_set_calibration(struct tas2559_priv *pTAS2559, int nCalibration)
 		nResult = tas2559_load_calibration(pTAS2559, TAS2559_CAL_NAME);
 
 		if (nResult < 0) {
-			nResult = 0;
+			dev_info(pTAS2559->dev, "load new calibration file %s fail %d\n",
+				TAS2559_CAL_NAME, nResult);
 			goto end;
 		}
 
@@ -2872,6 +3066,14 @@ int tas2559_set_calibration(struct tas2559_priv *pTAS2559, int nCalibration)
 
 	if (pTAS2559->mbLoadConfigurationPrePowerUp)
 		goto end;
+
+	if (pTAS2559->mnCurrentProgram >= pTAS2559->mpFirmware->mnPrograms ||
+		pTAS2559->mnCurrentConfiguration >= pTAS2559->mpFirmware->mnConfigurations) {
+		dev_err(pTAS2559->dev, "Current program %u or configuration %u doesn't exist\n",
+			pTAS2559->mnCurrentProgram, pTAS2559->mnCurrentConfiguration);
+		nResult = 0;
+		goto end;
+	}
 
 	pCalibration = &(pTAS2559->mpCalFirmware->mpCalibrations[nCalibration]);
 	pProgram = &(pTAS2559->mpFirmware->mpPrograms[pTAS2559->mnCurrentProgram]);
@@ -2902,7 +3104,7 @@ int tas2559_get_Cali_prm_r0(struct tas2559_priv *pTAS2559, enum channel chl, int
 	int nReg;
 	int nBook, nPage, nOffset;
 	unsigned char *pCommands;
-	int nCali_Re;
+	int nCali_Re = 0;
 	bool bFound = false;
 	int len;
 
@@ -2936,6 +3138,12 @@ int tas2559_get_Cali_prm_r0(struct tas2559_priv *pTAS2559, enum channel chl, int
 				if (nOffset == 0x85) {
 					len = ((int)nBook << 8) | nPage;
 
+					if (nn + 3 > pBlock->mnCommands) {
+						dev_err(pTAS2559->dev, "%s, out of bounds at %d\n",
+							__func__, nn);
+						break;
+					}
+
 					nBook = pCommands[4 * nn + 4];
 					nPage = pCommands[4 * nn + 5];
 					nOffset = pCommands[4 * nn + 6];
@@ -2951,11 +3159,7 @@ int tas2559_get_Cali_prm_r0(struct tas2559_priv *pTAS2559, enum channel chl, int
 						goto end;
 					}
 
-					nn += 2;
-					nn += ((len - 1) / 4);
-
-					if ((len - 1) % 4)
-						nn++;
+					nn += 2 + (len + 2) / 4;
 				} else {
 					dev_err(pTAS2559->dev, "%s, format error %d\n", __func__, nOffset);
 					break;

@@ -1076,7 +1076,7 @@ END:
 int production_test_ms_raw(char *path_limits, int stop_on_fail, TestToDo *todo)
 {
 	int ret, count_fail = 0;
-	MutualSenseFrame msRawFrame;
+	MutualSenseFrame msRawFrame = {0};
 	int *thresholds = NULL;
 	int *thresholds_min = NULL;
 	int *thresholds_max = NULL;
@@ -1424,6 +1424,14 @@ ERROR:
 			kfree(thresholds);
 			thresholds = NULL;
 		}
+		if (thresholds_min != NULL) {
+			kfree(thresholds_min);
+			thresholds_min = NULL;
+		}
+		if (thresholds_max != NULL) {
+			kfree(thresholds_max);
+			thresholds_max = NULL;
+		}
 		if (adj != NULL) {
 			kfree(adj);
 			adj = NULL;
@@ -1443,6 +1451,18 @@ ERROR_LIMITS:
 	if (thresholds != NULL) {
 		kfree(thresholds);
 		thresholds = NULL;
+	}
+	if (thresholds_min != NULL) {
+		kfree(thresholds_min);
+		thresholds_min = NULL;
+	}
+	if (thresholds_max != NULL) {
+		kfree(thresholds_max);
+		thresholds_max = NULL;
+	}
+	if (adj != NULL) {
+		kfree(adj);
+		adj = NULL;
 	}
 	return ret;
 }
@@ -1749,6 +1769,10 @@ ERROR_LIMITS:
 	if (thresholds != NULL) {
 		kfree(thresholds);
 		thresholds = NULL;
+	}
+	if (adj != NULL) {
+		kfree(adj);
+		adj = NULL;
 	}
 	return ret;
 }
@@ -2071,8 +2095,8 @@ int production_test_ms_cx(char *path_limits, int stop_on_fail, TestToDo *todo)
 		}
 
 		ret =
-			checkLimitsMapAdj(adjvert, msCompData.header.force_node - 1,
-					  msCompData.header.sense_node - 1,
+			checkLimitsMapAdj(adjvert, msCompData.header.force_node -
+					  1, msCompData.header.sense_node,
 					  thresholds_max);
 
 		if (ret != OK) {
@@ -2080,7 +2104,7 @@ int production_test_ms_cx(char *path_limits, int stop_on_fail, TestToDo *todo)
 				 "%s production_test_data: checkLimitsMapAdj CX2 ADJV failed... ERROR COUNT = %d \n",
 				 tag, ret);
 			logError(0,
-				 "%s MS CX2 ADJ HORIZ TEST:.................FAIL \n\n",
+				 "%s MS CX2 ADJ VERT TEST:.................FAIL \n\n",
 				 tag);
 			count_fail += 1;
 
@@ -2253,19 +2277,19 @@ int production_test_ms_cx(char *path_limits, int stop_on_fail, TestToDo *todo)
 			}
 
 			ret =
-				checkLimitsMapAdjTotal(total_adjvert,
-						       totCompData.header.
-						       force_node - 1,
-						       totCompData.header.
-						       sense_node - 1,
-						       thresholds_max);
+			checkLimitsMapAdjTotal(total_adjvert,
+					       totCompData.header.
+					       force_node - 1,
+					       totCompData.header.
+					       sense_node,
+					       thresholds_max);
 
 			if (ret != OK) {
 				logError(1,
 					 "%s production_test_data: checkLimitsMapAdj MS TOTAL CX ADJV failed... ERROR COUNT = %d \n",
 					 tag, ret);
 				logError(0,
-					 "%s MS TOTAL CX ADJ HORIZ TEST:.................FAIL \n",
+					 "%s MS TOTAL CX ADJ VERT TEST:.................FAIL \n",
 					 tag);
 				count_fail += 1;
 
@@ -2302,7 +2326,7 @@ int production_test_ms_cx(char *path_limits, int stop_on_fail, TestToDo *todo)
 			logError(0,
 				 "%s MS CX testes finished!.................FAILED  fails_count = %d\n\n",
 				 tag, count_fail);
-			return ret;
+			goto ERROR;
 		}
 	} else
 		logError(0, "%s MS KEY CX TEST:.................SKIPPED\n",
@@ -2321,7 +2345,7 @@ int production_test_ms_cx(char *path_limits, int stop_on_fail, TestToDo *todo)
 			logError(0,
 				 "%s MS CX testes finished!.................FAILED  fails_count = %d\n\n",
 				 tag, count_fail);
-			return ret;
+			goto ERROR;
 		}
 	} else
 		logError(0, "%s MS KEY CX TEST:.................SKIPPED \n",
@@ -2335,6 +2359,8 @@ ERROR:
 			 tag);
 		kfree(msCompData.node_data);
 		msCompData.node_data = NULL;
+		kfree(totCompData.node_data);
+		totCompData.node_data = NULL;
 		return OK;
 	} else {
 		print_frame_i8("MS Init Data (Cx2) =",
@@ -2452,7 +2478,7 @@ int production_test_ms_key_cx(char *path_limits, int stop_on_fail,
 	int *thresholds_max = NULL;
 	int trows, tcolumns;
 	MutualSenseData msCompData;
-	TotMutualSenseData totCompData;
+	TotMutualSenseData totCompData = { 0 };
 	short container;
 	ret = readMutualSenseCompensationData(LOAD_CX_MS_KEY, &msCompData);
 
@@ -2934,14 +2960,14 @@ int production_test_ms_cx_lp(char *path_limits, int stop_on_fail, TestToDo *todo
 		}
 
 		ret = checkLimitsMapAdj(adjvert, msCompData.header.force_node -
-					1, msCompData.header.sense_node - 1,
+					1, msCompData.header.sense_node,
 					thresholds_max);
 		if (ret != OK) {
 			logError(1,
 				 "%s production_test_data: checkLimitsMapAdj CX2 ADJV LP failed... ERROR COUNT = %d\n",
 				 tag, ret);
 			logError(0,
-				 "%s MS LP CX2 ADJ HORIZ TEST:.................FAIL\n\n",
+				 "%s MS LP CX2 ADJ VERT TEST:.................FAIL\n\n",
 				 tag);
 			count_fail += 1;
 			if (stop_on_fail)
@@ -3124,7 +3150,7 @@ int production_test_ms_cx_lp(char *path_limits, int stop_on_fail, TestToDo *todo
 						     totCompData.header.
 						     force_node - 1,
 						     totCompData.header.
-						     sense_node - 1,
+						     sense_node,
 						     thresholds_max);
 			if (ret != OK) {
 				logError(1,
@@ -3165,6 +3191,8 @@ ERROR:
 			 tag);
 		kfree(msCompData.node_data);
 		msCompData.node_data = NULL;
+		kfree(totCompData.node_data);
+		totCompData.node_data = NULL;
 		return OK;
 	} else {
 		print_frame_i8("MS LP Init Data (Cx2) =", array1dTo2d_i8(
@@ -3273,7 +3301,7 @@ int production_test_ss_raw(char *path_limits, int stop_on_fail, TestToDo *todo)
 	int ret;
 	int count_fail = 0;
 	int rows, columns;
-	SelfSenseFrame ssRawFrame;
+	SelfSenseFrame ssRawFrame = {0};
 	int *thresholds = NULL;
 	int trows, tcolumns;
 	logError(0, "%s \n", tag);
@@ -3578,7 +3606,7 @@ int production_test_ss_raw_lp(char *path_limits, int stop_on_fail,
 	int ret;
 	int count_fail = 0;
 	int rows, columns;
-	SelfSenseFrame ssRawFrame;
+	SelfSenseFrame ssRawFrame = {0};
 	int *thresholds = NULL;
 	int trows, tcolumns;
 	logError(0, "%s \n", tag);
@@ -5274,7 +5302,7 @@ int getLimitsFile(char *path, LimitFile *file)
 		} else {
 			logError(1,
 				 "%s Error while allocating data... ERROR %08X \n",
-				 tag, path, ERROR_ALLOC);
+				 tag, ERROR_ALLOC);
 			return ERROR_ALLOC;
 		}
 
@@ -5309,7 +5337,7 @@ int getLimitsFile(char *path, LimitFile *file)
 				} else {
 					logError(1,
 						 "%s Error while allocating data... ERROR %08X \n",
-						 tag, path, ERROR_ALLOC);
+						 tag, ERROR_ALLOC);
 					release_firmware(fw);
 					return ERROR_ALLOC;
 				}
@@ -5415,7 +5443,7 @@ int parseProductionTestLimits(char *path, LimitFile *file, char *label,
 		 size);
 
 	while (find == 0) {
-		if (readLine(&data_file[pointer], line, size - pointer, &n) < 0) {
+		if (readLine(&data_file[pointer], line, size - pointer, &n, sizeof(line)) < 0) {
 			find = -1;
 			break;
 		}
@@ -5430,6 +5458,8 @@ int parseProductionTestLimits(char *path, LimitFile *file, char *label,
 					 "%s parseProductionTestLimits: kstrdup ERROR %08X\n",
 					 tag, ERROR_ALLOC);
 				ret = ERROR_ALLOC;
+				kfree(*data);
+				*data = NULL;
 				goto END;
 			}
 
@@ -5468,6 +5498,17 @@ int parseProductionTestLimits(char *path, LimitFile *file, char *label,
 
 				kfree(buf);
 				buf = NULL;
+				/* guard against int overflow of row*column and
+				 * oversized allocations from corrupt limits files
+				 */
+				if (*row <= 0 || *column <= 0 ||
+				    *row > 100 || *column > 100) {
+					logError(1,
+						 "%s parseProductionTestLimits: invalid row/column %d %d\n",
+						 tag, *row, *column);
+					ret = ERROR_FILE_PARSE;
+					goto END;
+				}
 				*data = (int *)kmalloc(((*row) * (*column)) * sizeof(int), GFP_KERNEL);
 				j = 0;
 
@@ -5482,11 +5523,13 @@ int parseProductionTestLimits(char *path, LimitFile *file, char *label,
 				for (i = 0; i < *row; i++) {
 					if (readLine
 					    (&data_file[pointer], line,
-					     size - pointer, &n) < 0) {
+					     size - pointer, &n, sizeof(line)) < 0) {
 						logError(1,
 							 "%s parseProductionTestLimits : ERROR %08X\n",
 							 tag, ERROR_FILE_READ);
 						ret = ERROR_FILE_READ;
+						kfree(*data);
+						*data = NULL;
 						goto END;
 					}
 
@@ -5498,6 +5541,8 @@ int parseProductionTestLimits(char *path, LimitFile *file, char *label,
 							 "%s parseProductionTestLimits: kstrdup ERROR %08X\n",
 							 tag, ERROR_ALLOC);
 						ret = ERROR_ALLOC;
+						kfree(*data);
+						*data = NULL;
 						goto END;
 					}
 
@@ -5527,6 +5572,8 @@ int parseProductionTestLimits(char *path, LimitFile *file, char *label,
 					 "%s parseProductionTestLimits 3: ERROR %08X\n",
 					 tag, ERROR_FILE_PARSE);
 				ret = ERROR_FILE_PARSE;
+				kfree(*data);
+				*data = NULL;
 				goto END;
 			}
 
@@ -5554,14 +5601,14 @@ END:
  * @param n pointer to a int variable which will contain the number of characters of the line
  * @return OK if success or an error code which specify the type of error encountered
  */
-int readLine(char *data, char *line, int size, int *n)
+int readLine(char *data, char *line, int size, int *n, int line_size)
 {
 	int i = 0;
 
 	if (size < 1)
 		return -EINVAL;
 
-	while (data[i] != '\n' && i < size) {
+	while (i < size && i < line_size - 1 && data[i] != '\n') {
 		line[i] = data[i];
 		i++;
 	}

@@ -40,11 +40,11 @@
 #define FTS_DRIVER_VERSION                  "Focaltech V2.1 20171229"
 
 #define BYTE_OFF_0(x)           (u8)((x) & 0xFF)
-#define BYTE_OFF_8(x)           (u8)((x >> 8) & 0xFF)
-#define BYTE_OFF_16(x)          (u8)((x >> 16) & 0xFF)
-#define BYTE_OFF_24(x)          (u8)((x >> 24) & 0xFF)
-#define FLAGBIT(x)              (0x00000001 << (x))
-#define FLAGBITS(x, y)          ((0xFFFFFFFF >> (32 - (y) - 1)) << (x))
+#define BYTE_OFF_8(x)           (u8)(((x) >> 8) & 0xFF)
+#define BYTE_OFF_16(x)          (u8)(((x) >> 16) & 0xFF)
+#define BYTE_OFF_24(x)          (u8)(((x) >> 24) & 0xFF)
+#define FLAGBIT(x)              (0x00000001U << (x))
+#define FLAGBITS(x, y)          ((0xFFFFFFFFU >> (32 - (y) - 1)) << (x))
 
 #define FLAG_ICSERIALS_LEN      8
 #define FLAG_HID_BIT            10
@@ -87,7 +87,6 @@
 #define FTS_REG_VENDOR_ID                   0xA8
 #define FTS_REG_LCD_BUSY_NUM                0xAB
 #define FTS_REG_FACE_DEC_MODE_EN            0xB0
-#define FTS_REG_FACE_DEC_MODE_STATUS        0x01
 #define FTS_REG_IDE_PARA_VER_ID             0xB5
 #define FTS_REG_IDE_PARA_STATUS             0xB6
 #define FTS_REG_GLOVE_MODE_EN               0xC0

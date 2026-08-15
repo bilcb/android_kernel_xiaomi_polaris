@@ -669,6 +669,7 @@ struct synaptics_rmi4_fwu_handle {
 	bool write_bootloader;
 	unsigned int data_pos;
 	unsigned char *ext_data_source;
+	struct mutex sysfs_mutex;
 	unsigned char *read_config_buf;
 	unsigned char intr_mask;
 	unsigned char command;
@@ -904,6 +905,22 @@ static int fwu_allocate_read_config_buf(unsigned int count)
 	return 0;
 }
 
+static int fwu_set_config_size(unsigned short block_count)
+{
+	unsigned int size;
+
+	size = (unsigned int)fwu->block_size * (unsigned int)block_count;
+	if (size == 0 || size > 0xFFFF) {
+		dev_err(fwu->rmi4_data->pdev->dev.parent,
+				"%s: Invalid config size %u (block_size %u, block_count %u)\n",
+				__func__, size, fwu->block_size, block_count);
+		return -EINVAL;
+	}
+	fwu->config_size = (unsigned short)size;
+
+	return 0;
+}
+
 static void fwu_compare_partition_tables(void)
 {
 	fwu->incompatible_partition_tables = false;
@@ -1056,7 +1073,7 @@ static void fwu_parse_partition_table(const unsigned char *partition_table,
 	return;
 }
 
-static void fwu_parse_image_header_10_utility(const unsigned char *image)
+static int fwu_parse_image_header_10_utility(const unsigned char *image)
 {
 	unsigned char ii;
 	unsigned char num_of_containers;
@@ -1065,20 +1082,46 @@ static void fwu_parse_image_header_10_utility(const unsigned char *image)
 	unsigned int length;
 	const unsigned char *content;
 	struct container_descriptor *descriptor;
+	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
 	num_of_containers = fwu->img.utility.size / 4;
 
 	for (ii = 0; ii < num_of_containers; ii++) {
 		if (ii >= MAX_UTILITY_PARAMS)
 			continue;
+		if ((unsigned long)(fwu->img.utility.data - image) +
+				(ii * 4) + 4 > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Invalid utility container address table\n",
+					__func__);
+			return -EINVAL;
+		}
 		addr = le_to_uint(fwu->img.utility.data + (ii * 4));
+		if ((unsigned long)addr + sizeof(*descriptor) > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Invalid utility container address 0x%x\n",
+					__func__, addr);
+			return -EINVAL;
+		}
 		descriptor = (struct container_descriptor *)(image + addr);
 		container_id = descriptor->container_id[0] |
 				descriptor->container_id[1] << 8;
 		content = image + le_to_uint(descriptor->content_address);
 		length = le_to_uint(descriptor->content_length);
+		if ((unsigned long)(content - image) + length > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Invalid utility container content\n",
+					__func__);
+			return -EINVAL;
+		}
 		switch (container_id) {
 		case UTILITY_PARAMETER_CONTAINER:
+			if (length == 0) {
+				dev_err(rmi4_data->pdev->dev.parent,
+						"%s: Empty utility parameter container\n",
+						__func__);
+				return -EINVAL;
+			}
 			fwu->img.utility_param[ii].data = content;
 			fwu->img.utility_param[ii].size = length;
 			fwu->img.utility_param_id[ii] = content[0];
@@ -1088,10 +1131,10 @@ static void fwu_parse_image_header_10_utility(const unsigned char *image)
 		};
 	}
 
-	return;
+	return 0;
 }
 
-static void fwu_parse_image_header_10_bootloader(const unsigned char *image)
+static int fwu_parse_image_header_10_bootloader(const unsigned char *image)
 {
 	unsigned char ii;
 	unsigned char num_of_containers;
@@ -1100,16 +1143,35 @@ static void fwu_parse_image_header_10_bootloader(const unsigned char *image)
 	unsigned int length;
 	const unsigned char *content;
 	struct container_descriptor *descriptor;
+	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
+	if (fwu->img.bootloader.size < 4) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Invalid bootloader container size %u\n",
+				__func__, fwu->img.bootloader.size);
+		return -EINVAL;
+	}
 	num_of_containers = (fwu->img.bootloader.size - 4) / 4;
 
 	for (ii = 1; ii <= num_of_containers; ii++) {
 		addr = le_to_uint(fwu->img.bootloader.data + (ii * 4));
+		if ((unsigned long)addr + sizeof(*descriptor) > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Invalid bootloader container address 0x%x\n",
+					__func__, addr);
+			return -EINVAL;
+		}
 		descriptor = (struct container_descriptor *)(image + addr);
 		container_id = descriptor->container_id[0] |
 				descriptor->container_id[1] << 8;
 		content = image + le_to_uint(descriptor->content_address);
 		length = le_to_uint(descriptor->content_length);
+		if ((unsigned long)(content - image) + length > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Invalid bootloader container content\n",
+					__func__);
+			return -EINVAL;
+		}
 		switch (container_id) {
 		case BL_IMAGE_CONTAINER:
 			fwu->img.bl_image.data = content;
@@ -1130,11 +1192,12 @@ static void fwu_parse_image_header_10_bootloader(const unsigned char *image)
 		};
 	}
 
-	return;
+	return 0;
 }
 
-static void fwu_parse_image_header_10(void)
+static int fwu_parse_image_header_10(void)
 {
+	int retval;
 	unsigned char ii;
 	unsigned char num_of_containers;
 	unsigned int addr;
@@ -1145,6 +1208,7 @@ static void fwu_parse_image_header_10(void)
 	const unsigned char *content;
 	struct container_descriptor *descriptor;
 	struct image_header_10 *header;
+	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
 	image = fwu->image;
 	header = (struct image_header_10 *)image;
@@ -1153,20 +1217,50 @@ static void fwu_parse_image_header_10(void)
 
 	/* address of top level container */
 	offset = le_to_uint(header->top_level_container_start_addr);
+	if ((unsigned long)offset + sizeof(*descriptor) > fwu->image_size) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Invalid top level container address 0x%x\n",
+				__func__, offset);
+		return -EINVAL;
+	}
 	descriptor = (struct container_descriptor *)(image + offset);
 
 	/* address of top level container content */
 	offset = le_to_uint(descriptor->content_address);
+	if ((unsigned long)offset + 4 > fwu->image_size) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Invalid top level content address 0x%x\n",
+				__func__, offset);
+		return -EINVAL;
+	}
 	num_of_containers = le_to_uint(descriptor->content_length) / 4;
 
 	for (ii = 0; ii < num_of_containers; ii++) {
+		if ((unsigned long)offset + 4 > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Container address table out of bounds\n",
+					__func__);
+			return -EINVAL;
+		}
 		addr = le_to_uint(image + offset);
 		offset += 4;
+		if ((unsigned long)addr + sizeof(*descriptor) > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Invalid container address 0x%x\n",
+					__func__, addr);
+			return -EINVAL;
+		}
 		descriptor = (struct container_descriptor *)(image + addr);
 		container_id = descriptor->container_id[0] |
 				descriptor->container_id[1] << 8;
 		content = image + le_to_uint(descriptor->content_address);
 		length = le_to_uint(descriptor->content_length);
+		if ((unsigned long)(content - image) + length > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Invalid container 0x%04x content\n",
+					__func__, container_id);
+			return -EINVAL;
+		}
 		switch (container_id) {
 		case UI_CONTAINER:
 		case CORE_CODE_CONTAINER:
@@ -1179,15 +1273,25 @@ static void fwu_parse_image_header_10(void)
 			fwu->img.ui_config.size = length;
 			break;
 		case BL_CONTAINER:
+			if (length == 0) {
+				dev_err(rmi4_data->pdev->dev.parent,
+						"%s: Empty bootloader container\n",
+						__func__);
+				return -EINVAL;
+			}
 			fwu->img.bl_version = *content;
 			fwu->img.bootloader.data = content;
 			fwu->img.bootloader.size = length;
-			fwu_parse_image_header_10_bootloader(image);
+			retval = fwu_parse_image_header_10_bootloader(image);
+			if (retval < 0)
+				return retval;
 			break;
 		case UTILITY_CONTAINER:
 			fwu->img.utility.data = content;
 			fwu->img.utility.size = length;
-			fwu_parse_image_header_10_utility(image);
+			retval = fwu_parse_image_header_10_utility(image);
+			if (retval < 0)
+				return retval;
 			break;
 		case GUEST_CODE_CONTAINER:
 			fwu->img.contains_guest_code = true;
@@ -1211,6 +1315,12 @@ static void fwu_parse_image_header_10(void)
 			fwu->img.fl_config.size = length;
 			break;
 		case GENERAL_INFORMATION_CONTAINER:
+			if (length < 8) {
+				dev_err(rmi4_data->pdev->dev.parent,
+						"%s: General information container too small (%u bytes)\n",
+						__func__, length);
+				return -EINVAL;
+			}
 			fwu->img.contains_firmware_id = true;
 			fwu->img.firmware_id = le_to_uint(content + 4);
 			break;
@@ -1219,10 +1329,10 @@ static void fwu_parse_image_header_10(void)
 		}
 	}
 
-	return;
+	return 0;
 }
 
-static void fwu_parse_image_header_05_06(void)
+static int fwu_parse_image_header_05_06(void)
 {
 	int retval;
 	const unsigned char *image;
@@ -1231,6 +1341,13 @@ static void fwu_parse_image_header_05_06(void)
 
 	image = fwu->image;
 	header = (struct image_header_05_06 *)image;
+
+	if (fwu->image_size < IMAGE_AREA_OFFSET) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Image too small for V5/V6 format (%u bytes)\n",
+				__func__, fwu->image_size);
+		return -EINVAL;
+	}
 
 	fwu->img.checksum = le_to_uint(header->checksum);
 
@@ -1245,13 +1362,32 @@ static void fwu_parse_image_header_05_06(void)
 		fwu->img.ui_firmware.data = image + IMAGE_AREA_OFFSET;
 		if (fwu->img.contains_bootloader)
 			fwu->img.ui_firmware.data += fwu->img.bootloader_size;
-	}
 
-	if ((fwu->img.bl_version == BL_V6) && header->options_tddi)
+		if ((fwu->img.bl_version == BL_V6) && header->options_tddi)
+			fwu->img.ui_firmware.data = image + IMAGE_AREA_OFFSET;
+
+		if ((unsigned long)(fwu->img.ui_firmware.data - image) +
+				fwu->img.ui_firmware.size > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: UI firmware region out of bounds\n",
+					__func__);
+			return -EINVAL;
+		}
+	} else if ((fwu->img.bl_version == BL_V6) && header->options_tddi) {
 		fwu->img.ui_firmware.data = image + IMAGE_AREA_OFFSET;
+	}
 
 	fwu->img.ui_config.size = le_to_uint(header->config_size);
 	if (fwu->img.ui_config.size) {
+		if (!fwu->img.ui_firmware.data ||
+		    (unsigned long)(fwu->img.ui_firmware.data - image) +
+				fwu->img.ui_firmware.size +
+				fwu->img.ui_config.size > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: UI configuration region out of bounds\n",
+					__func__);
+			return -EINVAL;
+		}
 		fwu->img.ui_config.data = fwu->img.ui_firmware.data +
 				fwu->img.ui_firmware.size;
 	}
@@ -1264,6 +1400,13 @@ static void fwu_parse_image_header_05_06(void)
 	if (fwu->img.contains_disp_config) {
 		fwu->img.disp_config_offset = le_to_uint(header->dsp_cfg_addr);
 		fwu->img.dp_config.size = le_to_uint(header->dsp_cfg_size);
+		if ((unsigned long)fwu->img.disp_config_offset +
+				fwu->img.dp_config.size > fwu->image_size) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Display configuration region out of bounds\n",
+					__func__);
+			return -EINVAL;
+		}
 		fwu->img.dp_config.data = image + fwu->img.disp_config_offset;
 	} else {
 		retval = secure_memcpy(fwu->img.cstmr_product_id,
@@ -1298,25 +1441,33 @@ static void fwu_parse_image_header_05_06(void)
 	fwu->img.lockdown.size = LOCKDOWN_SIZE;
 	fwu->img.lockdown.data = image + IMAGE_AREA_OFFSET - LOCKDOWN_SIZE;
 
-	return;
+	return 0;
 }
 
 static int fwu_parse_image_info(void)
 {
+	int retval;
 	struct image_header_10 *header;
 	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
 	header = (struct image_header_10 *)fwu->image;
 
+	if (fwu->image_size < sizeof(struct image_header_10)) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Image too small (%u bytes)\n",
+				__func__, fwu->image_size);
+		return -EINVAL;
+	}
+
 	memset(&fwu->img, 0x00, sizeof(fwu->img));
 
 	switch (header->major_header_version) {
 	case IMAGE_HEADER_VERSION_10:
-		fwu_parse_image_header_10();
+		retval = fwu_parse_image_header_10();
 		break;
 	case IMAGE_HEADER_VERSION_05:
 	case IMAGE_HEADER_VERSION_06:
-		fwu_parse_image_header_05_06();
+		retval = fwu_parse_image_header_05_06();
 		break;
 	default:
 		dev_err(rmi4_data->pdev->dev.parent,
@@ -1324,12 +1475,22 @@ static int fwu_parse_image_info(void)
 				__func__, header->major_header_version);
 		return -EINVAL;
 	}
+	if (retval < 0)
+		return retval;
 
 	if (fwu->bl_version == BL_V7 || fwu->bl_version == BL_V8) {
 		if (!fwu->img.contains_flash_config) {
 			dev_err(rmi4_data->pdev->dev.parent,
 					"%s: No flash config found in firmware image\n",
 					__func__);
+			return -EINVAL;
+		}
+
+		if (fwu->img.fl_config.size <
+				(unsigned int)fwu->partitions * 8 + 2) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Flash config partition too small (%u bytes)\n",
+					__func__, fwu->img.fl_config.size);
 			return -EINVAL;
 		}
 
@@ -1907,6 +2068,13 @@ static int fwu_read_f34_v7_queries(void)
 	fwu->payload_length = query_1_7.payload_length_15_8 << 8 |
 			query_1_7.payload_length_7_0;
 
+	if (fwu->block_size == 0 || fwu->payload_length == 0) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Invalid F34 V7 geometry (block_size %u, payload_length %u)\n",
+				__func__, fwu->block_size, fwu->payload_length);
+		return -EINVAL;
+	}
+
 	fwu->off.flash_status = V7_FLASH_STATUS_OFFSET;
 	fwu->off.partition_id = V7_PARTITION_ID_OFFSET;
 	fwu->off.block_number = V7_BLOCK_NUMBER_OFFSET;
@@ -1993,7 +2161,10 @@ static int fwu_read_f34_lockdown_data(void)
 
 	block_count = fwu->blkcount.lockdown_data;
 	fwu->config_area = UI_CONFIG_AREA;
-	fwu->config_size = fwu->block_size * block_count;
+
+	retval = fwu_set_config_size(block_count);
+	if (retval < 0)
+		return retval;
 
 	retval = fwu_allocate_read_config_buf(fwu->config_size);
 	if (retval < 0)
@@ -2003,15 +2174,22 @@ static int fwu_read_f34_lockdown_data(void)
 	if (retval < 0)
 		return retval;
 
-	secure_memcpy(rmi4_data->lockdown_info, LOCKDOWN_INFO_SIZE,
-		&fwu->read_config_buf[4], fwu->read_config_buf_size, LOCKDOWN_INFO_SIZE);
+	if (fwu->read_config_buf_size >= 4 + LOCKDOWN_INFO_SIZE) {
+		secure_memcpy(rmi4_data->lockdown_info, LOCKDOWN_INFO_SIZE,
+			&fwu->read_config_buf[4], fwu->read_config_buf_size,
+			LOCKDOWN_INFO_SIZE);
 
-	dev_info(rmi4_data->pdev->dev.parent,
-			"%s: Lockdown info: 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n",
-			__func__, fwu->read_config_buf[4], fwu->read_config_buf[5],
-			fwu->read_config_buf[6], fwu->read_config_buf[7],
-			fwu->read_config_buf[8], fwu->read_config_buf[9],
-			fwu->read_config_buf[10], fwu->read_config_buf[11]);
+		dev_info(rmi4_data->pdev->dev.parent,
+				"%s: Lockdown info: 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n",
+				__func__, fwu->read_config_buf[4], fwu->read_config_buf[5],
+				fwu->read_config_buf[6], fwu->read_config_buf[7],
+				fwu->read_config_buf[8], fwu->read_config_buf[9],
+				fwu->read_config_buf[10], fwu->read_config_buf[11]);
+	} else {
+		dev_warn(rmi4_data->pdev->dev.parent,
+				"%s: Lockdown data buffer too small (%u bytes)\n",
+				__func__, fwu->read_config_buf_size);
+	}
 
 	return retval;
 }
@@ -2065,6 +2243,13 @@ static int fwu_read_f34_v5v6_queries(void)
 	}
 
 	batohs(&fwu->block_size, &(buf[0]));
+
+	if (fwu->block_size == 0) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Invalid F34 V5/V6 block size\n",
+				__func__);
+		return -EINVAL;
+	}
 
 	if (fwu->bl_version == BL_V5) {
 		fwu->off.flash_cmd = fwu->off.payload + fwu->block_size;
@@ -2195,7 +2380,6 @@ static int fwu_read_f34_queries(void)
 {
 	int retval;
 	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
-	u8 *tp_maker;
 
 	memset(&fwu->blkcount, 0x00, sizeof(fwu->blkcount));
 	memset(&fwu->phyaddr, 0x00, sizeof(fwu->phyaddr));
@@ -2205,11 +2389,10 @@ static int fwu_read_f34_queries(void)
 	else
 		retval = fwu_read_f34_v5v6_queries();
 
-	tp_maker = kzalloc(20, GFP_KERNEL);
-	if (tp_maker == NULL)
-		dev_err(rmi4_data->pdev->dev.parent,
-			"%s fail to alloc vendor name memory\n", __func__);
-
+	if (rmi4_data->lockdown_info[0] >= '0' &&
+			rmi4_data->lockdown_info[0] <= '9')
+		update_hardware_info(TYPE_TP_MAKER,
+				rmi4_data->lockdown_info[0] - '0');
 	return retval;
 }
 
@@ -2560,7 +2743,9 @@ static int fwu_read_f34_guest_serialization_partition(void)
 	}
 	block_count = fwu->blkcount.pm_config;
 
-	fwu->config_size = fwu->block_size * block_count;
+	retval = fwu_set_config_size(block_count);
+	if (retval < 0)
+		return retval;
 	kfree(fwu->read_config_buf);
 	fwu->read_config_buf = kzalloc(fwu->config_size, GFP_KERNEL);
 	if (!fwu->read_config_buf) {
@@ -2581,15 +2766,22 @@ static int fwu_read_f34_guest_serialization_partition(void)
 		return retval;
 	}
 
-	secure_memcpy(rmi4_data->lockdown_info, LOCKDOWN_INFO_SIZE,
-		fwu->read_config_buf, fwu->read_config_buf_size, LOCKDOWN_INFO_SIZE);
+	if (fwu->read_config_buf_size >= LOCKDOWN_INFO_SIZE) {
+		secure_memcpy(rmi4_data->lockdown_info, LOCKDOWN_INFO_SIZE,
+			fwu->read_config_buf, fwu->read_config_buf_size,
+			LOCKDOWN_INFO_SIZE);
 
-	dev_info(rmi4_data->pdev->dev.parent,
-			"%s: Lockdown info: 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n",
-			__func__, fwu->read_config_buf[0], fwu->read_config_buf[1],
-			fwu->read_config_buf[2], fwu->read_config_buf[3],
-			fwu->read_config_buf[4], fwu->read_config_buf[5],
-			fwu->read_config_buf[6], fwu->read_config_buf[7]);
+		dev_info(rmi4_data->pdev->dev.parent,
+				"%s: Lockdown info: 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x\n",
+				__func__, fwu->read_config_buf[0], fwu->read_config_buf[1],
+				fwu->read_config_buf[2], fwu->read_config_buf[3],
+				fwu->read_config_buf[4], fwu->read_config_buf[5],
+				fwu->read_config_buf[6], fwu->read_config_buf[7]);
+	} else {
+		dev_warn(rmi4_data->pdev->dev.parent,
+				"%s: Guest serialization buffer too small (%u bytes)\n",
+				__func__, fwu->read_config_buf_size);
+	}
 
 	return retval;
 }
@@ -2623,9 +2815,12 @@ static int fwu_get_image_firmware_id(unsigned int *fw_id)
 			return -ENOMEM;
 		}
 		while (strptr[index] >= '0' && strptr[index] <= '9') {
+			if (index >= MAX_FIRMWARE_ID_LEN - 1)
+				break;
 			firmware_id[index] = strptr[index];
 			index++;
 		}
+		firmware_id[index] = '\0';
 
 		retval = sstrtoul(firmware_id, 10, (unsigned long *)fw_id);
 		kfree(firmware_id);
@@ -2722,12 +2917,17 @@ static enum flash_area fwu_go_nogo(void)
 			"%s: Device firmware Config ID = %02x%02x%02x%02x\n",
 			__func__, fwu->config_id[0], fwu->config_id[1], fwu->config_id[2], fwu->config_id[3]);
 
+	if (!fwu->img.ui_config.data) {
+		flash_area = NONE;
+		goto exit;
+	}
+
 	dev_info(rmi4_data->pdev->dev.parent,
 			"%s: Image firmware Config ID = %02x%02x%02x%02x\n",
 			__func__, fwu->img.ui_config.data[0], fwu->img.ui_config.data[1],
 			fwu->img.ui_config.data[2], fwu->img.ui_config.data[3]);
 
-	for (ii = 0; ii < config_id_size; ii++) {
+	for (ii = 0; ii < config_id_size && ii < fwu->img.ui_config.size; ii++) {
 		if (fwu->img.ui_config.data[ii] != fwu->config_id[ii]) {
 			flash_area = UI_CONFIG;
 			goto exit;
@@ -3294,11 +3494,18 @@ static int fwu_write_utility_parameter(void)
 	unsigned char checksum_array[4];
 	unsigned char *pbuf;
 	unsigned short remaining_size;
-	unsigned short utility_param_size;
+	unsigned int utility_param_size;
 	unsigned long checksum;
 	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
-	utility_param_size = fwu->blkcount.utility_param * fwu->block_size;
+	utility_param_size = (unsigned int)fwu->blkcount.utility_param *
+			(unsigned int)fwu->block_size;
+	if (utility_param_size < 4 || utility_param_size > 0xFFFF) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Invalid utility parameter size %u\n",
+				__func__, utility_param_size);
+		return -EINVAL;
+	}
 	retval = fwu_allocate_read_config_buf(utility_param_size);
 	if (retval < 0)
 		return retval;
@@ -3502,7 +3709,10 @@ static int fwu_write_partition_table_v7(void)
 
 	block_count = fwu->blkcount.bl_config;
 	fwu->config_area = BL_CONFIG_AREA;
-	fwu->config_size = fwu->block_size * block_count;
+
+	retval = fwu_set_config_size(block_count);
+	if (retval < 0)
+		return retval;
 
 	retval = fwu_allocate_read_config_buf(fwu->config_size);
 	if (retval < 0)
@@ -3789,7 +3999,9 @@ static int fwu_do_read_config(void)
 			goto exit;
 	}
 
-	fwu->config_size = fwu->block_size * block_count;
+	retval = fwu_set_config_size(block_count);
+	if (retval < 0)
+		goto exit;
 
 	retval = fwu_allocate_read_config_buf(fwu->config_size);
 	if (retval < 0)
@@ -4165,6 +4377,10 @@ static const char *fwu_get_firmware_name(struct synaptics_rmi4_data *rmi4_data)
 				def = i;
 
 			for (j = 0; j < bdata->tp_id_num; j++) {
+				if (bdata->tp_id_bytes[j] >= LOCKDOWN_INFO_SIZE) {
+					found = false;
+					break;
+				}
 				if (bdata->config_array[i].tp_ids[j] !=
 						rmi4_data->lockdown_info[bdata->tp_id_bytes[j]]) {
 					found = false;
@@ -4221,8 +4437,8 @@ static int fwu_start_reflash(void)
 
 	if (fwu->image == NULL) {
 		retval = secure_memcpy(fwu->image_name, MAX_IMAGE_NAME_LEN,
-				fw_name, sizeof(FW_IMAGE_NAME),
-				strlen(fw_name));
+				fw_name, strlen(fw_name) + 1,
+				strlen(fw_name) + 1);
 
 		if (retval < 0) {
 			dev_err(rmi4_data->pdev->dev.parent,
@@ -4249,6 +4465,7 @@ static int fwu_start_reflash(void)
 				__func__, fw_entry->size);
 
 		fwu->image = fw_entry->data;
+		fwu->image_size = fw_entry->size;
 	}
 
 	retval = fwu_parse_image_info();
@@ -4863,18 +5080,41 @@ static ssize_t fwu_sysfs_store_image(struct file *data_file,
 	int retval;
 	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
+	mutex_lock(&fwu->sysfs_mutex);
+
+	if (!fwu->ext_data_source) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: No image data buffer\n",
+				__func__);
+		retval = -EINVAL;
+		goto exit;
+	}
+
+	if (fwu->data_pos + count > fwu->image_size) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Data exceeds image size\n",
+				__func__);
+		retval = -EINVAL;
+		goto exit;
+	}
+
 	retval = secure_memcpy(&fwu->ext_data_source[fwu->data_pos],
 			fwu->image_size - fwu->data_pos, buf, count, count);
 	if (retval < 0) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to copy image data\n",
 				__func__);
-		return retval;
+		goto exit;
 	}
 
 	fwu->data_pos += count;
 
-	return count;
+	retval = count;
+
+exit:
+	mutex_unlock(&fwu->sysfs_mutex);
+
+	return retval;
 }
 
 static ssize_t fwu_sysfs_do_recovery_store(struct device *dev,
@@ -4889,9 +5129,11 @@ static ssize_t fwu_sysfs_do_recovery_store(struct device *dev,
 		goto exit;
 	}
 
+	mutex_lock(&fwu->sysfs_mutex);
+
 	retval = fwu_scan_pdt();
 	if (retval < 0)
-		goto exit;
+		goto exit_unlock;
 
 	pr_err("%s: fwu->in_ub_mode = %d\n", __func__, fwu->in_ub_mode);
 
@@ -4900,28 +5142,32 @@ static ssize_t fwu_sysfs_do_recovery_store(struct device *dev,
 				"%s: Not in microbootloader mode\n",
 				__func__);
 		retval = -EINVAL;
-		goto exit;
+		goto exit_unlock;
 	}
 
-	if (!fwu->ext_data_source)
-		return -EINVAL;
-	else
-		fwu->image = fwu->ext_data_source;
+	if (!fwu->ext_data_source) {
+		retval = -EINVAL;
+		goto exit_unlock;
+	}
+	fwu->image = fwu->ext_data_source;
 
 	retval = fwu_start_recovery();
 	if (retval < 0) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to do recovery\n",
 				__func__);
-		goto exit;
+		goto exit_unlock;
 	}
 
 	retval = count;
 
-exit:
+exit_unlock:
 	kfree(fwu->ext_data_source);
 	fwu->ext_data_source = NULL;
 	fwu->image = NULL;
+	mutex_unlock(&fwu->sysfs_mutex);
+
+exit:
 	return retval;
 }
 
@@ -4937,18 +5183,21 @@ static ssize_t fwu_sysfs_do_reflash_store(struct device *dev,
 		goto exit;
 	}
 
+	mutex_lock(&fwu->sysfs_mutex);
+
 	if (fwu->in_ub_mode) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: In microbootloader mode\n",
 				__func__);
 		retval = -EINVAL;
-		goto exit;
+		goto exit_unlock;
 	}
 
-	if (!fwu->ext_data_source)
-		return -EINVAL;
-	else
-		fwu->image = fwu->ext_data_source;
+	if (!fwu->ext_data_source) {
+		retval = -EINVAL;
+		goto exit_unlock;
+	}
+	fwu->image = fwu->ext_data_source;
 
 	if (input & LOCKDOWN) {
 		fwu->do_lockdown = true;
@@ -4957,7 +5206,7 @@ static ssize_t fwu_sysfs_do_reflash_store(struct device *dev,
 
 	if ((input != NORMAL) && (input != FORCE)) {
 		retval = -EINVAL;
-		goto exit;
+		goto exit_unlock;
 	}
 
 	if (input == FORCE)
@@ -4968,17 +5217,20 @@ static ssize_t fwu_sysfs_do_reflash_store(struct device *dev,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to do reflash\n",
 				__func__);
-		goto exit;
+		goto exit_unlock;
 	}
 
 	retval = count;
 
-exit:
+exit_unlock:
 	kfree(fwu->ext_data_source);
 	fwu->ext_data_source = NULL;
 	fwu->image = NULL;
 	fwu->force_update = FORCE_UPDATE;
 	fwu->do_lockdown = DO_LOCKDOWN;
+	mutex_unlock(&fwu->sysfs_mutex);
+
+exit:
 	return retval;
 }
 
@@ -4999,33 +5251,39 @@ static ssize_t fwu_sysfs_write_config_store(struct device *dev,
 		goto exit;
 	}
 
+	mutex_lock(&fwu->sysfs_mutex);
+
 	if (fwu->in_ub_mode) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: In microbootloader mode\n",
 				__func__);
 		retval = -EINVAL;
-		goto exit;
+		goto exit_unlock;
 	}
 
-	if (!fwu->ext_data_source)
-		return -EINVAL;
-	else
-		fwu->image = fwu->ext_data_source;
+	if (!fwu->ext_data_source) {
+		retval = -EINVAL;
+		goto exit_unlock;
+	}
+	fwu->image = fwu->ext_data_source;
 
 	retval = fwu_start_write_config();
 	if (retval < 0) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to write config\n",
 				__func__);
-		goto exit;
+		goto exit_unlock;
 	}
 
 	retval = count;
 
-exit:
+exit_unlock:
 	kfree(fwu->ext_data_source);
 	fwu->ext_data_source = NULL;
 	fwu->image = NULL;
+	mutex_unlock(&fwu->sysfs_mutex);
+
+exit:
 	return retval;
 }
 
@@ -5081,6 +5339,13 @@ static ssize_t fwu_sysfs_image_name_store(struct device *dev,
 	int retval;
 	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
+	if (count >= MAX_IMAGE_NAME_LEN) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Image name too long (%zu bytes)\n",
+				__func__, count);
+		return -EINVAL;
+	}
+
 	retval = secure_memcpy(fwu->image_name, MAX_IMAGE_NAME_LEN,
 			buf, count, count);
 	if (retval < 0) {
@@ -5104,6 +5369,15 @@ static ssize_t fwu_sysfs_image_size_store(struct device *dev,
 	if (retval)
 		return retval;
 
+	if (size == 0 || size > 0xFFFFFFFFUL) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Invalid image size %lu\n",
+				__func__, size);
+		return -EINVAL;
+	}
+
+	mutex_lock(&fwu->sysfs_mutex);
+
 	fwu->image_size = size;
 	fwu->data_pos = 0;
 
@@ -5113,8 +5387,11 @@ static ssize_t fwu_sysfs_image_size_store(struct device *dev,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to alloc mem for image data\n",
 				__func__);
+		mutex_unlock(&fwu->sysfs_mutex);
 		return -ENOMEM;
 	}
+
+	mutex_unlock(&fwu->sysfs_mutex);
 
 	return count;
 }
@@ -5168,6 +5445,8 @@ static ssize_t fwu_sysfs_write_guest_code_store(struct device *dev,
 	unsigned int input;
 	struct synaptics_rmi4_data *rmi4_data = fwu->rmi4_data;
 
+	mutex_lock(&fwu->sysfs_mutex);
+
 	if (sscanf(buf, "%u", &input) != 1) {
 		retval = -EINVAL;
 		goto exit;
@@ -5186,10 +5465,12 @@ static ssize_t fwu_sysfs_write_guest_code_store(struct device *dev,
 		goto exit;
 	}
 
-	if (!fwu->ext_data_source)
-		return -EINVAL;
-	else
+	if (!fwu->ext_data_source) {
+		retval = -EINVAL;
+		goto exit;
+	} else {
 		fwu->image = fwu->ext_data_source;
+	}
 
 	retval = fwu_start_write_guest_code();
 	if (retval < 0) {
@@ -5205,6 +5486,7 @@ exit:
 	kfree(fwu->ext_data_source);
 	fwu->ext_data_source = NULL;
 	fwu->image = NULL;
+	mutex_unlock(&fwu->sysfs_mutex);
 	return retval;
 }
 
@@ -5246,10 +5528,12 @@ static void firmware_force_update(struct synaptics_rmi4_data *rmi4_data)
 				"%s: Failed to do recovery\n",
 				__func__);
 		release_firmware(fw_entry);
+		fwu->image = NULL;
 		return;
 	}
 
 	release_firmware(fw_entry);
+	fwu->image = NULL;
 
 	return;
 }
@@ -5292,13 +5576,16 @@ static ssize_t synaptics_fw_version_read(struct file *file, char __user *buf, si
 			fwu->config_id[0], fwu->config_id[1],
 			fwu->config_id[2], fwu->config_id[3]);
 
+	if (cnt > count)
+		cnt = count;
+
 	ret = copy_to_user(buf, tmp, cnt);
+	if (ret != 0)
+		return -EFAULT;
+
 	*pos += cnt;
 
 end:
-	if (ret != 0)
-		return 0;
-	else
 		return cnt;
 }
 
@@ -5322,13 +5609,15 @@ static ssize_t synaptics_lockdown_info_read(struct file *file, char __user *buf,
 					rmi4_data->lockdown_info[4], rmi4_data->lockdown_info[5],
 					rmi4_data->lockdown_info[6], rmi4_data->lockdown_info[7]);
 
+	if (cnt > count)
+		cnt = count;
+
 	retval = copy_to_user(buf, tmp, cnt);
+	if (retval != 0)
+		return -EFAULT;
 
 	*pos += cnt;
-	if (retval != 0)
-		return 0;
-	else
-		return cnt;
+	return cnt;
 }
 
 static const struct file_operations synaptics_lockdown_info_ops = {
@@ -5338,7 +5627,7 @@ static const struct file_operations synaptics_lockdown_info_ops = {
 static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 {
 	int retval;
-	unsigned char attr_count;
+	int attr_count;
 	struct pdt_properties pdt_props;
 
 	if (fwu) {
@@ -5367,6 +5656,8 @@ static int synaptics_rmi4_fwu_init(struct synaptics_rmi4_data *rmi4_data)
 	}
 
 	fwu->rmi4_data = rmi4_data;
+
+	mutex_init(&fwu->sysfs_mutex);
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
 			PDT_PROPS,
@@ -5461,6 +5752,7 @@ exit_remove_attrs:
 	sysfs_remove_bin_file(&rmi4_data->input_dev->dev.kobj, &dev_attr_data);
 
 exit_free_mem:
+	kfree(fwu->read_config_buf);
 	kfree(fwu->image_name);
 
 exit_free_fwu:

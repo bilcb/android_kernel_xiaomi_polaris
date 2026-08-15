@@ -913,6 +913,9 @@ static ssize_t qpnp_wled_ramp_ms_store(struct device *dev,
 	if (rc)
 		return rc;
 
+	if (data <= 0)
+		return -EINVAL;
+
 	wled->ramp_ms = data;
 	return count;
 }
@@ -936,6 +939,9 @@ static ssize_t qpnp_wled_ramp_step_store(struct device *dev,
 	rc = kstrtoint(buf, 10, &data);
 	if (rc)
 		return rc;
+
+	if (data <= 0)
+		return -EINVAL;
 
 	wled->ramp_step = data;
 	return count;

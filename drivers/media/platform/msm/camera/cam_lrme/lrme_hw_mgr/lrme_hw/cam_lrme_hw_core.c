@@ -419,7 +419,7 @@ static int cam_lrme_hw_util_submit_req(struct cam_lrme_core *lrme_core,
 		cdm_cmd->userdata = NULL;
 		cdm_cmd->cookie = 0;
 
-		for (i = 0; i <= frame_req->num_hw_update_entries; i++) {
+		for (i = 0; i < frame_req->num_hw_update_entries; i++) {
 			cmd = (frame_req->hw_update_entries + i);
 			cdm_cmd->cmd[i].bl_addr.mem_handle = cmd->handle;
 			cdm_cmd->cmd[i].offset = cmd->offset;
@@ -872,9 +872,6 @@ int cam_lrme_hw_stop(void *hw_priv, void *hw_stop_args, uint32_t arg_size)
 	if (lrme_hw->open_count)
 		goto unlock;
 
-	lrme_core->req_proc = NULL;
-	lrme_core->req_submit = NULL;
-
 	if (lrme_core->hw_cdm_info) {
 		struct cam_lrme_cdm_info *hw_cdm_info =
 			lrme_core->hw_cdm_info;
@@ -893,6 +890,9 @@ int cam_lrme_hw_stop(void *hw_priv, void *hw_stop_args, uint32_t arg_size)
 		CAM_ERR(CAM_LRME, "Failed in Disable SOC, rc=%d", rc);
 		goto unlock;
 	}
+
+	lrme_core->req_proc = NULL;
+	lrme_core->req_submit = NULL;
 
 	lrme_hw->hw_state = CAM_HW_STATE_POWER_DOWN;
 	if (lrme_core->state == CAM_LRME_CORE_STATE_IDLE) {
@@ -1055,7 +1055,7 @@ int cam_lrme_hw_flush(void *hw_priv, void *hw_flush_args, uint32_t arg_size)
 
 	if (lrme_core->state != CAM_LRME_CORE_STATE_PROCESSING &&
 		lrme_core->state != CAM_LRME_CORE_STATE_REQ_PENDING &&
-		lrme_core->state == CAM_LRME_CORE_STATE_REQ_PROC_PEND) {
+		lrme_core->state != CAM_LRME_CORE_STATE_REQ_PROC_PEND) {
 		mutex_unlock(&lrme_hw->hw_mutex);
 		CAM_DBG(CAM_LRME, "Stop not needed in %d state",
 			lrme_core->state);

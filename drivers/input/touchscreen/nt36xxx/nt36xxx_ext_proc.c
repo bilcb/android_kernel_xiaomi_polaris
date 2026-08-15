@@ -133,7 +133,7 @@ Description:
 return:
 	n.a.
 *******************************************************/
-void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
+static void __nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
 {
 	int32_t i = 0;
 	int32_t j = 0;
@@ -148,9 +148,14 @@ void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
 	head_addr = xdata_addr - (xdata_addr % XDATA_SECTOR_SIZE);
 	dummy_len = xdata_addr - head_addr;
 	data_len = ts->x_num * ts->y_num * 2;
-	residual_len = (head_addr + dummy_len + data_len) % XDATA_SECTOR_SIZE;
 
-	mutex_lock(&ts->mdata_lock);
+	if ((dummy_len + data_len) > sizeof(xdata_tmp) - (I2C_TANSFER_LENGTH - 1) ||
+	    (data_len / 2) > ARRAY_SIZE(xdata)) {
+		NVT_ERR("data too large: x_num=%d y_num=%d\n", ts->x_num, ts->y_num);
+		return;
+	}
+
+	residual_len = (head_addr + dummy_len + data_len) % XDATA_SECTOR_SIZE;
 
 	/*printk("head_addr=0x%05X, dummy_len=0x%05X, data_len=0x%05X, residual_len=0x%05X\n", head_addr, dummy_len, data_len, residual_len);*/
 
@@ -224,13 +229,19 @@ void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
 		xdata[ts->x_num * ts->y_num + i] = (int16_t)(buf[1 + i * 2] + 256 * buf[1 + i * 2 + 1]);
 	}
 #endif
-	mutex_unlock(&ts->mdata_lock);
 
 	/*---set xdata index to EVENT BUF ADDR---*/
 	buf[0] = 0xFF;
 	buf[1] = (ts->mmap->EVENT_BUF_ADDR >> 16) & 0xFF;
 	buf[2] = (ts->mmap->EVENT_BUF_ADDR >> 8) & 0xFF;
 	CTP_I2C_WRITE(ts->client, I2C_FW_Address, buf, 3);
+}
+
+void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
+{
+	mutex_lock(&ts->mdata_lock);
+	__nvt_read_mdata(xdata_addr, xdata_btn_addr);
+	mutex_unlock(&ts->mdata_lock);
 }
 
 /*******************************************************
@@ -244,12 +255,15 @@ void nvt_read_mdata_rss(uint32_t xdata_i_addr, uint32_t xdata_q_addr, uint32_t x
 {
 	int i = 0;
 
+	if (ts->x_num * ts->y_num + TOUCH_KEY_NUM > ARRAY_SIZE(xdata_i))
+		return;
+
 	mutex_lock(&ts->mdata_lock);
 
-	nvt_read_mdata(xdata_i_addr, xdata_btn_i_addr);
+	__nvt_read_mdata(xdata_i_addr, xdata_btn_i_addr);
 	memcpy(xdata_i, xdata, ((ts->x_num * ts->y_num + TOUCH_KEY_NUM) * sizeof(int32_t)));
 
-	nvt_read_mdata(xdata_q_addr, xdata_btn_q_addr);
+	__nvt_read_mdata(xdata_q_addr, xdata_btn_q_addr);
 	memcpy(xdata_q, xdata, ((ts->x_num * ts->y_num + TOUCH_KEY_NUM) * sizeof(int32_t)));
 
 	for (i = 0; i < (ts->x_num * ts->y_num + TOUCH_KEY_NUM); i++) {
@@ -267,11 +281,15 @@ return:
 *******************************************************/
 void nvt_get_mdata(int32_t *buf, uint8_t *m_x_num, uint8_t *m_y_num)
 {
-    *m_x_num = ts->x_num;
-    *m_y_num = ts->y_num;
+	int32_t copy_num;
+
+	*m_x_num = ts->x_num;
+	*m_y_num = ts->y_num;
+
+	copy_num = min_t(int, ts->x_num * ts->y_num + TOUCH_KEY_NUM, ARRAY_SIZE(xdata));
 
 	mutex_lock(&ts->mdata_lock);
-	memcpy(buf, xdata, ((ts->x_num * ts->y_num + TOUCH_KEY_NUM) * sizeof(int32_t)));
+	memcpy(buf, xdata, copy_num * sizeof(int32_t));
 	mutex_unlock(&ts->mdata_lock);
 }
 
@@ -301,6 +319,11 @@ static int32_t c_show(struct seq_file *m, void *v)
 	int32_t i = 0;
 	int32_t j = 0;
 
+	if (ts->x_num * ts->y_num + TOUCH_KEY_NUM > ARRAY_SIZE(xdata))
+		return 0;
+
+	mutex_lock(&ts->mdata_lock);
+
 	for (i = 0; i < ts->y_num; i++) {
 		for (j = 0; j < ts->x_num; j++) {
 			seq_printf(m, "%5d, ", xdata[i * ts->x_num + j]);
@@ -316,6 +339,8 @@ static int32_t c_show(struct seq_file *m, void *v)
 #endif
 
 	seq_printf(m, "\n\n");
+
+	mutex_unlock(&ts->mdata_lock);
 	return 0;
 }
 
@@ -443,11 +468,13 @@ static int32_t nvt_baseline_open(struct inode *inode, struct file *file)
 	nvt_change_mode(TEST_MODE_2);
 
 	if (nvt_check_fw_status()) {
+		nvt_change_mode(NORMAL_MODE);
 		mutex_unlock(&ts->lock);
 		return -EAGAIN;
 	}
 
 	if (nvt_get_fw_info()) {
+		nvt_change_mode(NORMAL_MODE);
 		mutex_unlock(&ts->lock);
 		return -EAGAIN;
 	}
@@ -503,11 +530,13 @@ static int32_t nvt_raw_open(struct inode *inode, struct file *file)
 	nvt_change_mode(TEST_MODE_2);
 
 	if (nvt_check_fw_status()) {
+		nvt_change_mode(NORMAL_MODE);
 		mutex_unlock(&ts->lock);
 		return -EAGAIN;
 	}
 
 	if (nvt_get_fw_info()) {
+		nvt_change_mode(NORMAL_MODE);
 		mutex_unlock(&ts->lock);
 		return -EAGAIN;
 	}
@@ -570,11 +599,13 @@ static int32_t nvt_diff_open(struct inode *inode, struct file *file)
 	nvt_change_mode(TEST_MODE_2);
 
 	if (nvt_check_fw_status()) {
+		nvt_change_mode(NORMAL_MODE);
 		mutex_unlock(&ts->lock);
 		return -EAGAIN;
 	}
 
 	if (nvt_get_fw_info()) {
+		nvt_change_mode(NORMAL_MODE);
 		mutex_unlock(&ts->lock);
 		return -EAGAIN;
 	}

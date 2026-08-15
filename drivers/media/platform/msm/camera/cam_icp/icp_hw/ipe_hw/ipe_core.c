@@ -154,14 +154,14 @@ static int cam_ipe_handle_pc(struct cam_hw_info *ipe_dev)
 		CAM_CPAS_REG_CPASTOP, hw_info->pwr_ctrl,
 		true, &pwr_ctrl);
 	if (!(pwr_ctrl & IPE_COLLAPSE_MASK)) {
-		cam_cpas_reg_read(core_info->cpas_handle,
-			CAM_CPAS_REG_CPASTOP, hw_info->pwr_status,
-			true, &pwr_status);
 		cam_cpas_reg_write(core_info->cpas_handle,
 			CAM_CPAS_REG_CPASTOP,
 			hw_info->pwr_ctrl, true, 0x1);
+		cam_cpas_reg_read(core_info->cpas_handle,
+			CAM_CPAS_REG_CPASTOP, hw_info->pwr_status,
+			true, &pwr_status);
 
-		if (pwr_status >> IPE_PWR_ON_MASK)
+		if (pwr_status & IPE_PWR_ON_MASK)
 			return -EINVAL;
 
 	}
@@ -245,6 +245,7 @@ static int cam_ipe_cmd_reset(struct cam_hw_soc_info *soc_info,
 	}
 
 	/* IPE reset*/
+	retry_cnt = 0;
 	status = 0;
 	cam_io_w_mb((uint32_t)0x3,
 		soc_info->reg_map[0].mem_base + IPE_TOP_RST_CMD);
@@ -327,7 +328,8 @@ int cam_ipe_process_cmd(void *device_priv, uint32_t cmd_type,
 		if (!core_info->cpas_start) {
 			rc = cam_cpas_start(core_info->cpas_handle,
 				&cpas_vote->ahb_vote, &cpas_vote->axi_vote);
-			core_info->cpas_start = true;
+			if (!rc)
+				core_info->cpas_start = true;
 		}
 		break;
 	}

@@ -352,9 +352,11 @@ void tas2557_enableIRQ(struct tas2557_priv *pTAS2557, bool enable)
 			}
 		}
 	} else {
-		if (gpio_is_valid(pTAS2557->mnGpioINT))
-			disable_irq_nosync(pTAS2557->mnIRQ);
-		pTAS2557->mbIRQEnable = false;
+		if (pTAS2557->mbIRQEnable) {
+			if (gpio_is_valid(pTAS2557->mnGpioINT))
+				disable_irq_nosync(pTAS2557->mnIRQ);
+			pTAS2557->mbIRQEnable = false;
+		}
 	}
 }
 
@@ -405,7 +407,9 @@ static void irq_work_routine(struct work_struct *work)
 	}
 
 	if ((!pTAS2557->mpFirmware->mnConfigurations)
-		|| (!pTAS2557->mpFirmware->mnPrograms)) {
+		|| (!pTAS2557->mpFirmware->mnPrograms)
+		|| (pTAS2557->mnCurrentConfiguration >= pTAS2557->mpFirmware->mnConfigurations)
+		|| (pTAS2557->mnCurrentProgram >= pTAS2557->mpFirmware->mnPrograms)) {
 		dev_info(pTAS2557->dev, "%s, firmware not loaded\n", __func__);
 		goto end;
 	}
@@ -564,6 +568,11 @@ static void timer_work_routine(struct work_struct *work)
 		goto end;
 	}
 
+	if (pTAS2557->mnCurrentProgram >= pTAS2557->mpFirmware->mnPrograms) {
+		dev_err(pTAS2557->dev, "%s: invalid program index %u\n",
+			__func__, pTAS2557->mnCurrentProgram);
+		goto end;
+	}
 	pProgram = &(pTAS2557->mpFirmware->mpPrograms[pTAS2557->mnCurrentProgram]);
 	if (!pTAS2557->mbPowerUp
 		|| (pProgram->mnAppMode != TAS2557_APP_TUNINGMODE)) {
@@ -704,6 +713,9 @@ static int tas2557_i2c_probe(struct i2c_client *pClient,
 	int nResult = 0;
 	unsigned int nValue = 0;
 	const char *pFWName;
+	bool bResetGPIORequested = false;
+	bool bINTGPIORequested = false;
+	bool bIRQRequested = false;
 
 	dev_info(&pClient->dev, "%s enter\n", __func__);
 
@@ -725,8 +737,14 @@ static int tas2557_i2c_probe(struct i2c_client *pClient,
 		goto err;
 	}
 
-	if (pClient->dev.of_node)
-		tas2557_parse_dt(&pClient->dev, pTAS2557);
+	if (pClient->dev.of_node) {
+		nResult = tas2557_parse_dt(&pClient->dev, pTAS2557);
+		if (nResult) {
+			dev_err(&pClient->dev, "Failed to parse device tree: %d\n",
+				nResult);
+			goto err;
+		}
+	}
 
 	if (gpio_is_valid(pTAS2557->mnResetGPIO)) {
 		nResult = gpio_request(pTAS2557->mnResetGPIO, "TAS2557-RESET");
@@ -735,6 +753,7 @@ static int tas2557_i2c_probe(struct i2c_client *pClient,
 				__func__, pTAS2557->mnResetGPIO);
 			goto err;
 		}
+		bResetGPIORequested = true;
 		tas2557_hw_reset(pTAS2557);
 	}
 
@@ -762,14 +781,6 @@ static int tas2557_i2c_probe(struct i2c_client *pClient,
 	}
 
 	msleep(1);
-	{
-
-		int i;
-		for(i =0; i<0x10; i++){
-			tas2557_dev_read(pTAS2557, i, &nValue);
-			dev_err(pTAS2557->dev, "address:%x  value: %x\n",i, nValue);
-			}
-	}
 
 	/* Ti's original codes logic (which firmware binary selected) */
 	tas2557_dev_read(pTAS2557, TAS2557_REV_PGID_REG, &nValue);
@@ -804,6 +815,7 @@ static int tas2557_i2c_probe(struct i2c_client *pClient,
 				__func__, pTAS2557->mnGpioINT);
 			goto err;
 		}
+		bINTGPIORequested = true;
 
 		gpio_direction_input(pTAS2557->mnGpioINT);
 		pTAS2557->mnIRQ = gpio_to_irq(pTAS2557->mnGpioINT);
@@ -817,6 +829,7 @@ static int tas2557_i2c_probe(struct i2c_client *pClient,
 				"request_irq failed, %d\n", nResult);
 			goto err;
 		}
+		bIRQRequested = true;
 		disable_irq_nosync(pTAS2557->mnIRQ);
 	}
 
@@ -852,8 +865,19 @@ static int tas2557_i2c_probe(struct i2c_client *pClient,
 
 	nResult = request_firmware_nowait(THIS_MODULE, 1, pFWName,
 		pTAS2557->dev, GFP_KERNEL, pTAS2557, tas2557_fw_ready);
+	if (nResult < 0)
+		goto err;
+
+	return 0;
 
 err:
+
+	if (bIRQRequested)
+		free_irq(pTAS2557->mnIRQ, pTAS2557);
+	if (bINTGPIORequested)
+		gpio_free(pTAS2557->mnGpioINT);
+	if (bResetGPIORequested)
+		gpio_free(pTAS2557->mnResetGPIO);
 
 	return nResult;
 }
@@ -864,6 +888,21 @@ static int tas2557_i2c_remove(struct i2c_client *pClient)
 
 	dev_info(pTAS2557->dev, "%s\n", __func__);
 
+	pTAS2557->mbShutdown = true;
+
+	/* free IRQs first: sync-waits handler exit, no new irq_work scheduled */
+	if (gpio_is_valid(pTAS2557->mnGpioINT))
+		free_irq(pTAS2557->mnIRQ, pTAS2557);
+
+	/* drain async work first, then kill the timer it may re-arm */
+	hrtimer_cancel(&pTAS2557->mtimer);
+	cancel_work_sync(&pTAS2557->mtimerwork);
+	hrtimer_cancel(&pTAS2557->mtimer);
+	cancel_work_sync(&pTAS2557->mtimerwork);
+	cancel_delayed_work_sync(&pTAS2557->irq_work);
+	hrtimer_cancel(&pTAS2557->mtimer);
+	cancel_work_sync(&pTAS2557->mtimerwork);
+
 #ifdef CONFIG_TAS2557_CODEC
 	tas2557_deregister_codec(pTAS2557);
 	mutex_destroy(&pTAS2557->codec_lock);
@@ -873,6 +912,15 @@ static int tas2557_i2c_remove(struct i2c_client *pClient)
 	tas2557_deregister_misc(pTAS2557);
 	mutex_destroy(&pTAS2557->file_lock);
 #endif
+
+#ifdef ENABLE_TILOAD
+	tiload_driver_exit_tas2557();
+#endif
+
+	if (gpio_is_valid(pTAS2557->mnGpioINT))
+		gpio_free(pTAS2557->mnGpioINT);
+	if (gpio_is_valid(pTAS2557->mnResetGPIO))
+		gpio_free(pTAS2557->mnResetGPIO);
 
 	mutex_destroy(&pTAS2557->dev_lock);
 	return 0;

@@ -54,7 +54,7 @@ static ssize_t synaptics_rmi4_hover_finger_en_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count);
 
 static struct device_attribute attrs[] = {
-	__ATTR(hover_finger_en, (S_IRUGO | S_IWUGO),
+	__ATTR(hover_finger_en, (S_IRUGO | S_IWUSR | S_IWGRP),
 			synaptics_rmi4_hover_finger_en_show,
 			synaptics_rmi4_hover_finger_en_store),
 };
@@ -152,6 +152,9 @@ DECLARE_COMPLETION(prox_remove_complete);
 
 static void prox_hover_finger_lift(void)
 {
+	if (!prox || !prox->prox_dev)
+		return;
+
 	input_report_key(prox->prox_dev, BTN_TOUCH, 0);
 	input_report_key(prox->prox_dev, BTN_TOOL_FINGER, 0);
 	input_sync(prox->prox_dev);
@@ -167,7 +170,12 @@ static void prox_hover_finger_report(void)
 	int y;
 	int z;
 	struct prox_finger_data *data;
-	struct synaptics_rmi4_data *rmi4_data = prox->rmi4_data;
+	struct synaptics_rmi4_data *rmi4_data;
+
+	if (!prox || !prox->prox_dev)
+		return;
+
+	rmi4_data = prox->rmi4_data;
 
 	data = prox->finger_data;
 
@@ -179,6 +187,8 @@ static void prox_hover_finger_report(void)
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read hovering finger data\n",
 				__func__);
+		if (prox->hover_finger_present)
+			prox_hover_finger_lift();
 		return;
 	}
 
@@ -380,6 +390,12 @@ f12_found:
 	for (ii = intr_off;
 			ii < (intr_src + intr_off);
 			ii++) {
+		if (ii >= 8) {
+			dev_err(rmi4_data->pdev->dev.parent,
+					"%s: Interrupt source %d exceeds 8-bit mask\n",
+					__func__, ii);
+			break;
+		}
 		prox->intr_mask |= 1 << ii;
 	}
 
@@ -416,19 +432,23 @@ static ssize_t synaptics_rmi4_hover_finger_en_store(struct device *dev,
 {
 	int retval;
 	unsigned int input;
-	struct synaptics_rmi4_data *rmi4_data = prox->rmi4_data;
+	struct synaptics_rmi4_data *rmi4_data;
 
 	if (!prox)
 		return -ENODEV;
+
+	rmi4_data = prox->rmi4_data;
 
 	if (sscanf(buf, "%x", &input) != 1)
 		return -EINVAL;
 
 	if (input == 1)
 		prox->hover_finger_en = true;
-	else if (input == 0)
+	else if (input == 0) {
 		prox->hover_finger_en = false;
-	else
+		if (prox->hover_finger_present)
+			prox_hover_finger_lift();
+	} else
 		return -EINVAL;
 
 	retval = prox_set_hover_finger_en();
@@ -450,6 +470,9 @@ int synaptics_rmi4_prox_hover_finger_en(bool enable)
 		return -ENODEV;
 
 	prox->hover_finger_en = enable;
+
+	if (!enable && prox->hover_finger_present)
+		prox_hover_finger_lift();
 
 	retval = prox_set_hover_finger_en();
 	if (retval < 0)
@@ -474,7 +497,7 @@ static void synaptics_rmi4_prox_attn(struct synaptics_rmi4_data *rmi4_data,
 static int synaptics_rmi4_prox_init(struct synaptics_rmi4_data *rmi4_data)
 {
 	int retval;
-	unsigned char attr_count;
+	int attr_count;
 
 	if (prox) {
 		dev_dbg(rmi4_data->pdev->dev.parent,
@@ -511,7 +534,7 @@ static int synaptics_rmi4_prox_init(struct synaptics_rmi4_data *rmi4_data)
 
 	retval = prox_set_hover_finger_en();
 	if (retval < 0)
-		return retval;
+		goto exit_free_finger_data;
 
 	prox->prox_dev = input_allocate_device();
 	if (prox->prox_dev == NULL) {
@@ -609,6 +632,8 @@ exit:
 
 static void synaptics_rmi4_prox_reset(struct synaptics_rmi4_data *rmi4_data)
 {
+	int retval;
+
 	if (!prox) {
 		synaptics_rmi4_prox_init(rmi4_data);
 		return;
@@ -616,9 +641,21 @@ static void synaptics_rmi4_prox_reset(struct synaptics_rmi4_data *rmi4_data)
 
 	prox_hover_finger_lift();
 
-	prox_scan_pdt();
+	retval = prox_scan_pdt();
+	if (retval < 0) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to rescan PDT after reset\n",
+				__func__);
+		return;
+	}
 
-	prox_set_hover_finger_en();
+	retval = prox_set_hover_finger_en();
+	if (retval < 0) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Failed to re-enable hovering finger after reset\n",
+				__func__);
+		return;
+	}
 
 	return;
 }

@@ -171,6 +171,7 @@ static ssize_t nfc_read(struct file *filp, char __user *buf,
 	unsigned char *tmp = NULL;
 	int ret;
 	int irq_gpio_val = 0;
+	unsigned long flags;
 
 	if (!nqx_dev) {
 		ret = -ENODEV;
@@ -195,10 +196,12 @@ static ssize_t nfc_read(struct file *filp, char __user *buf,
 		}
 		while (1) {
 			ret = 0;
+			spin_lock_irqsave(&nqx_dev->irq_enabled_lock, flags);
 			if (!nqx_dev->irq_enabled) {
 				nqx_dev->irq_enabled = true;
 				enable_irq(nqx_dev->client->irq);
 			}
+			spin_unlock_irqrestore(&nqx_dev->irq_enabled_lock, flags);
 			if (!gpio_get_value(nqx_dev->irq_gpio)) {
 				ret = wait_event_interruptible(nqx_dev->read_wq,
 					!nqx_dev->irq_enabled);
@@ -238,7 +241,7 @@ static ssize_t nfc_read(struct file *filp, char __user *buf,
 		goto err;
 	}
 
-	if (((tmp[0] & 0xff) == 0x61) && ((tmp[1] & 0xff) == 0x07) && ((tmp[2] & 0xff) == 0x01)) {
+	if ((ret >= 3) && ((tmp[0] & 0xff) == 0x61) && ((tmp[1] & 0xff) == 0x07) && ((tmp[2] & 0xff) == 0x01)) {
 		wake_lock_timeout(&fieldon_wl, msecs_to_jiffies(3*1000));
 	}
 #ifdef NFC_KERNEL_BU
@@ -900,8 +903,11 @@ static int nqx_clock_select(struct nqx_dev *nqx_dev)
 
 	nqx_dev->s_clk = clk_get(&nqx_dev->client->dev, "ref_clk");
 
-	if (nqx_dev->s_clk == NULL)
+	if (IS_ERR(nqx_dev->s_clk)) {
+		r = PTR_ERR(nqx_dev->s_clk);
+		nqx_dev->s_clk = NULL;
 		goto err_clk;
+	}
 
 	if (nqx_dev->clk_run == false)
 		r = clk_prepare_enable(nqx_dev->s_clk);
@@ -1252,6 +1258,7 @@ err_request_hw_check_failed:
 err_request_irq_failed:
 	misc_deregister(&nqx_dev->nqx_device);
 err_misc_register:
+	wake_lock_destroy(&fieldon_wl);
 	mutex_destroy(&nqx_dev->read_mutex);
 err_clkreq_gpio:
 	gpio_free(platform_data->clkreq_gpio);
@@ -1295,12 +1302,14 @@ static int nqx_remove(struct i2c_client *client)
 	unregister_reboot_notifier(&nfcc_notifier);
 	free_irq(client->irq, nqx_dev);
 	misc_deregister(&nqx_dev->nqx_device);
+	mutex_lock(&nqx_dev->read_mutex);
+	wake_lock_destroy(&fieldon_wl);
+	mutex_unlock(&nqx_dev->read_mutex);
 	mutex_destroy(&nqx_dev->read_mutex);
 	gpio_free(nqx_dev->clkreq_gpio);
 	/* optional gpio, not sure was configured in probe */
 	if (nqx_dev->ese_gpio > 0)
 		gpio_free(nqx_dev->ese_gpio);
-	wake_lock_destroy(&fieldon_wl);
 	gpio_free(nqx_dev->firm_gpio);
 	gpio_free(nqx_dev->irq_gpio);
 	gpio_free(nqx_dev->en_gpio);

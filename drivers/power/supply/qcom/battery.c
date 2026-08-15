@@ -1675,6 +1675,7 @@ int qcom_batt_init(int smb_version)
 		goto unreg_notifier;
 	}
 
+	chip->pl_disable = true;
 	chip->qcom_batt_class.name = "qcom-battery",
 	chip->qcom_batt_class.owner = THIS_MODULE,
 	chip->qcom_batt_class.class_attrs = pl_attributes;

@@ -1105,8 +1105,10 @@ static int smb2_set_wireless_dc_icl(struct smb_charger *chg,
 	if (val->intval) {
 		chg->dc_adapter = val->intval;
 		vote(chg->dc_icl_votable, DCIN_USER_VOTER, true, val->intval);
-	} else
-		vote(chg->dc_icl_votable, DCIN_ADAPTER_VOTER, false, 0);
+	} else {
+		chg->dc_adapter = 0;
+		vote(chg->dc_icl_votable, DCIN_USER_VOTER, false, 0);
+	}
 
 	return 0;
 }
@@ -1206,12 +1208,18 @@ static int smb2_get_prop_wireless_signal(struct smb_charger *chg,
 static int smb2_get_prop_wirless_type(struct smb_charger *chg,
 				union power_supply_propval *val)
 {
-	chg->idtp_psy = power_supply_get_by_name("idt");
-	if (chg->idtp_psy)
-		power_supply_get_property(chg->idtp_psy,
+	int rc;
+
+	if (!chg->idtp_psy) {
+		chg->idtp_psy = power_supply_get_by_name("idt");
+		if (!chg->idtp_psy)
+			return -EINVAL;
+	}
+
+	rc = power_supply_get_property(chg->idtp_psy,
 			POWER_SUPPLY_PROP_TX_ADAPTER, val);
 
-	return 1;
+	return rc;
 }
 
 /*************************
@@ -1260,13 +1268,13 @@ static int smb2_wireless_get_prop(struct power_supply *psy,
 		rc = smblib_get_prop_wireless_version(chg, val);
 		break;
 	case POWER_SUPPLY_PROP_SIGNAL_STRENGTH:
-		smb2_get_prop_wireless_signal(chg, val);
+		rc = smb2_get_prop_wireless_signal(chg, val);
 		break;
 	case POWER_SUPPLY_PROP_WIRELESS_WAKELOCK:
 		val->intval = 1;
 		break;
 	case POWER_SUPPLY_PROP_TX_ADAPTER:
-		smb2_get_prop_wirless_type(chg, val);
+		rc = smb2_get_prop_wirless_type(chg, val);
 		break;
 	default:
 		return -EINVAL;
@@ -1312,7 +1320,7 @@ static int smb2_init_wireless_psy(struct smb2 *chip)
 						  &wireless_psy_desc,
 						  &wireless_cfg);
 	if (IS_ERR(chg->wireless_psy)) {
-		pr_err("Couldn't register USB power supply\n");
+		pr_err("Couldn't register wireless power supply\n");
 		return PTR_ERR(chg->wireless_psy);
 	}
 
@@ -1480,7 +1488,7 @@ static int smb2_batt_get_prop(struct power_supply *psy,
 		val->intval = 0;
 		break;
 	case POWER_SUPPLY_PROP_CHARGER_TYPE:
-		val->intval = chg->usb_psy_desc.type;
+		val->intval = chg->real_charger_type;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
@@ -1997,7 +2005,9 @@ static int smb2_init_hw(struct smb2 *chip)
 		smblib_get_charge_param(chg, &chg->param.dc_icl,
 					&chip->dt.dc_icl_ua);
 
-	smb2_init_jeita(chip);
+	rc = smb2_init_jeita(chip);
+	if (rc < 0)
+		return rc;
 
 	if (chip->dt.min_freq_khz > 0) {
 		chg->param.freq_buck.min_u = chip->dt.min_freq_khz;
@@ -3047,6 +3057,8 @@ cleanup:
 	smb2_free_interrupts(chg);
 	if (chg->batt_psy)
 		power_supply_unregister(chg->batt_psy);
+	if (!IS_ERR_OR_NULL(chg->wireless_psy))
+		power_supply_unregister(chg->wireless_psy);
 	if (chg->usb_main_psy)
 		power_supply_unregister(chg->usb_main_psy);
 	if (chg->usb_psy)
@@ -3074,6 +3086,8 @@ static int smb2_remove(struct platform_device *pdev)
 	power_supply_unregister(chg->batt_psy);
 	power_supply_unregister(chg->usb_psy);
 	power_supply_unregister(chg->usb_port_psy);
+	if (!IS_ERR_OR_NULL(chg->wireless_psy))
+		power_supply_unregister(chg->wireless_psy);
 	regulator_unregister(chg->vconn_vreg->rdev);
 	regulator_unregister(chg->vbus_vreg->rdev);
 
@@ -3103,7 +3117,7 @@ static void smb2_shutdown(struct platform_device *pdev)
 	smblib_masked_write(chg, USBIN_OPTIONS_1_CFG_REG,
 				 AUTO_SRC_DETECT_BIT, AUTO_SRC_DETECT_BIT);
 }
-#ifdef CONFIG_FB
+#ifdef CONFIG_PM
 static int smblib_suspend(struct device *dev)
 {
 	return 0;
@@ -3142,7 +3156,7 @@ static struct platform_driver smb2_driver = {
 		.name		= "qcom,qpnp-smb2",
 		.owner		= THIS_MODULE,
 		.of_match_table	= match_table,
-#ifdef CONFIG_FB
+#ifdef CONFIG_PM
 		.pm		= &smb2_pm_ops,
 #endif
 	},

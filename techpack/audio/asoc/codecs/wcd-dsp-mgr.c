@@ -458,14 +458,7 @@ dload_error:
 	 * code section download failure, enable_dsp can check this
 	 * and retry.
 	 */
-	if (type == WDSP_ELF_FLAG_RE) {
-		/* Notify all components that image is downloaded */
-		wdsp_broadcast_event_downseq(wdsp, post, NULL);
-		ret = 0;
-	} else {
-		wdsp_broadcast_event_downseq(wdsp,
-			WDSP_EVENT_DLOAD_FAILED, NULL);
-	}
+	wdsp_broadcast_event_downseq(wdsp, WDSP_EVENT_DLOAD_FAILED, NULL);
 
 	return ret;
 }
@@ -1245,6 +1238,7 @@ static int wdsp_mgr_parse_dt_entries(struct wdsp_mgr_priv *wdsp)
 				      &wdsp->img_fname);
 #ifdef MIUI_CUST_GLOBAL
 	wdsp->img_fname  = "cpe_intl";
+	ret = 0;
 	pr_info("%s: using global wdsp fw: %s.\n", __func__, wdsp->img_fname);
 #else
 	pr_info("%s: using non-global wdsp fw: %s.\n", __func__, wdsp->img_fname);

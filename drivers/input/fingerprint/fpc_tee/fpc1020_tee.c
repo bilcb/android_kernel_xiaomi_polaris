@@ -152,7 +152,7 @@ found:
 			vreg = NULL;
 		}
 		fpc1020->vreg[i] = vreg;
-		dev_err(dev, "fp_vdd_vreg is enabled!\n");
+		dev_err(dev, "%s is enabled!\n", name);
 	} else {
 		if (vreg) {
 			if (regulator_is_enabled(vreg)) {
@@ -381,6 +381,7 @@ static int device_prepare(struct fpc1020_data *fpc1020, bool enable)
 		rc = vreg_setup(fpc1020, "fp_vdd_vreg", true);
 		if (rc) {
 			pr_err("fp_vdd_vreg config failed, rc = %d\n", rc);
+			(void)vreg_setup(fpc1020, "vdd_ana", false);
 			goto free_irq_exit;
 		}
 		dev_err(dev, "fp_vdd_reg enabled success\n");
@@ -403,6 +404,9 @@ static int device_prepare(struct fpc1020_data *fpc1020, bool enable)
 		usleep_range(PWR_ON_SLEEP_MIN_US, PWR_ON_SLEEP_MAX_US);
 
 		(void)vreg_setup(fpc1020, "vdd_ana", false);
+#ifdef CONFIG_FINGERPRINT_FP_VREG_CONTROL
+		(void)vreg_setup(fpc1020, "fp_vdd_vreg", false);
+#endif
 #if 0
 exit_2:
 		(void)vreg_setup(fpc1020, "vdd_io", false);
@@ -410,6 +414,7 @@ exit_1:
 		(void)vreg_setup(fpc1020, "vcc_spi", false);
 #endif
 free_irq_exit:
+		disable_irq_wake(gpio_to_irq(fpc1020->irq_gpio));
 		disable_irq(gpio_to_irq(fpc1020->irq_gpio));
 		devm_free_irq(dev, gpio_to_irq(fpc1020->irq_gpio), fpc1020);
 rst_gpio_exit:
@@ -530,12 +535,12 @@ static ssize_t irq_enable_set(struct device *dev,
 	int rc = 0;
 	struct fpc1020_data *fpc1020 = dev_get_drvdata(dev);
 
-	if (!strncmp(buf, "1", strlen("1"))) {
+	if (!strncmp(buf, "1", strlen("1")) && fpc1020->prepared) {
 		mutex_lock(&fpc1020->lock);
 		enable_irq(gpio_to_irq(fpc1020->irq_gpio));
 		mutex_unlock(&fpc1020->lock);
 		pr_debug("fpc enable irq\n");
-	} else if (!strncmp(buf, "0", strlen("0"))) {
+	} else if (!strncmp(buf, "0", strlen("0")) && fpc1020->prepared) {
 		mutex_lock(&fpc1020->lock);
 		disable_irq(gpio_to_irq(fpc1020->irq_gpio));
 		mutex_unlock(&fpc1020->lock);
@@ -775,16 +780,20 @@ static int fpc1020_remove(struct platform_device *pdev)
 {
 	struct fpc1020_data *fpc1020 = platform_get_drvdata(pdev);
 
+	if (fpc1020->prepared) {
+		disable_irq(gpio_to_irq(fpc1020->irq_gpio));
+		disable_irq_wake(gpio_to_irq(fpc1020->irq_gpio));
+	}
+	cancel_work_sync(&fpc1020->work);
 	drm_unregister_client(&fpc1020->fb_notifier);
 	sysfs_remove_group(&pdev->dev.kobj, &attribute_group);
 	mutex_destroy(&fpc1020->lock);
 	wakeup_source_trash(&fpc1020->ttw_wl);
 	wakeup_source_trash(&fpc1020->screen_wl);
 	(void)vreg_setup(fpc1020, "vdd_ana", false);
-    /*
-	(void)vreg_setup(fpc1020, "vdd_io", false);
-	(void)vreg_setup(fpc1020, "vcc_spi", false);
-    */
+#ifdef CONFIG_FINGERPRINT_FP_VREG_CONTROL
+	(void)vreg_setup(fpc1020, "fp_vdd_vreg", false);
+#endif
 	dev_info(&pdev->dev, "%s\n", __func__);
 
 	return 0;

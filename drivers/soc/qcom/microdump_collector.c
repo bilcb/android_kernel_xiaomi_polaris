@@ -46,9 +46,15 @@ static struct kobj_type checknv_ktype = {
 
 static void checknv_kobj_clean(struct work_struct *work)
 {
-	kobject_uevent(checknv_kobj, KOBJ_REMOVE);
-	kobject_put(checknv_kobj);
-	kset_unregister(checknv_kset);
+	if (checknv_kobj) {
+		kobject_uevent(checknv_kobj, KOBJ_REMOVE);
+		kobject_put(checknv_kobj);
+		checknv_kobj = NULL;
+	}
+	if (checknv_kset) {
+		kset_unregister(checknv_kset);
+		checknv_kset = NULL;
+	}
 }
 
 static void checknv_kobj_create(struct work_struct *work)
@@ -57,8 +63,7 @@ static void checknv_kobj_create(struct work_struct *work)
 
 	if (checknv_kset != NULL) {
 		pr_err("checknv_kset is not NULL, should clean up.");
-		kobject_uevent(checknv_kobj, KOBJ_REMOVE);
-		kobject_put(checknv_kobj);
+		checknv_kobj_clean(NULL);
 	}
 
 	checknv_kobj = kzalloc(sizeof(struct kobject), GFP_KERNEL);
@@ -88,14 +93,17 @@ static void checknv_kobj_create(struct work_struct *work)
 
 del_kobj:
 	kobject_put(checknv_kobj);
+	checknv_kobj = NULL;
 	kset_unregister(checknv_kset);
+	checknv_kset = NULL;
+	return;
 
 free_kobj:
 	kfree(checknv_kobj);
+	checknv_kobj = NULL;
 }
 
 static DECLARE_DELAYED_WORK(create_kobj_work, checknv_kobj_create);
-static DECLARE_WORK(clean_kobj_work, checknv_kobj_clean);
 static char last_modem_sfr_reason[MAX_SSR_REASON_LEN] = "none";
 
 struct microdump_data {
@@ -120,8 +128,8 @@ static int microdump_modem_notifier_nb(struct notifier_block *nb,
 
 		memset(segment, 0, sizeof(segment));
 
-		crash_reason = smem_get_entry(SMEM_SSR_REASON_MSS0, &size_reason
-				, 0, SMEM_ANY_HOST_FLAG);
+		crash_reason = smem_get_entry_no_rlock(SMEM_SSR_REASON_MSS0,
+				&size_reason, 0, SMEM_ANY_HOST_FLAG);
 		if (IS_ERR_OR_NULL(crash_reason)) {
 			pr_info("%s: smem %d not available\n",
 				__func__, SMEM_SSR_REASON_MSS0);
@@ -131,7 +139,8 @@ static int microdump_modem_notifier_nb(struct notifier_block *nb,
 		segment[0].v_address = crash_reason;
 		segment[0].size = size_reason;
 
-		crash_data = smem_get_entry(smem_id, &size_data, SMEM_MODEM, 0);
+		crash_data = smem_get_entry_no_rlock(smem_id, &size_data,
+				SMEM_MODEM, 0);
 		if (IS_ERR_OR_NULL(crash_data)) {
 			pr_info("%s: smem %d not available\n ",
 				__func__, smem_id);
@@ -140,7 +149,8 @@ static int microdump_modem_notifier_nb(struct notifier_block *nb,
 
 		segment[1].v_address = crash_data;
 		segment[1].size = size_data;
-		strlcpy(last_modem_sfr_reason, crash_reason, MAX_SSR_REASON_LEN);
+		strlcpy(last_modem_sfr_reason, crash_reason,
+			min(size_reason, MAX_SSR_REASON_LEN));
 		pr_err("modem subsystem failure reason: %s.\n", last_modem_sfr_reason);
 
 		// If the NV protected file (critical_info) is destroyed, restart to recovery to inform user
@@ -202,10 +212,12 @@ static int __init microdump_init(void)
 		goto out;
 
 	drv->microdump_dev = create_ramdump_device("microdump_modem", NULL);
-	if (!drv->microdump_dev) {
+	if (IS_ERR_OR_NULL(drv->microdump_dev)) {
 		pr_err("%s: Unable to create a microdump_modem ramdump device\n"
 			, __func__);
-		ret = -ENODEV;
+		ret = IS_ERR(drv->microdump_dev) ?
+				PTR_ERR(drv->microdump_dev) : -ENODEV;
+		drv->microdump_dev = NULL;
 		goto out_kfree;
 	}
 
@@ -225,7 +237,8 @@ out:
 
 static void __exit microdump_exit(void)
 {
-	schedule_work(&clean_kobj_work);
+	cancel_delayed_work_sync(&create_kobj_work);
+	checknv_kobj_clean(NULL);
 	if (!drv)
 		return;
 

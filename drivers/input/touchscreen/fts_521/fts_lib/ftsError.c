@@ -90,7 +90,7 @@ int dumpErrorInfo(u8 *outBuf, int size)
 			 ret);
 		return ret;
 	} else {
-		if (outBuf != NULL) {
+		if (outBuf != NULL && size > 0) {
 			sign =
 			    size >
 			    ERROR_DUMP_ROW_SIZE *
@@ -241,6 +241,9 @@ int addErrorIntoList(u8 *event, int size)
 
 	logError(0, "%s Adding error in to ErrorList... \n", tag);
 
+	if (event == NULL || size < 0 || size > FIFO_EVENT_SIZE)
+		return ERROR_OP_NOT_ALLOW;
+
 	memcpy(&errors.list[errors.last_index * FIFO_EVENT_SIZE], event, size);
 	i = FIFO_EVENT_SIZE - size;
 	if (i > 0) {
@@ -298,14 +301,17 @@ int pollErrorList(int *event_to_search, int event_bytes)
 	int i = 0, j = 0, find = 0;
 	int count = getErrorListCount();
 
+	if (event_to_search == NULL || event_bytes <= 0 || event_bytes > FIFO_EVENT_SIZE)
+		return ERROR_OP_NOT_ALLOW;
+
 	logError(0, "%s Starting to poll ErrorList... \n", tag);
 	while (find != 1 && i < count) {
 		find = 1;
 		for (j = 0; j < event_bytes; j++) {
 
-			if (event_to_search[i] != -1
+			if (event_to_search[j] != -1
 			    && (int)errors.list[i * FIFO_EVENT_SIZE + j] !=
-			    event_to_search[i]) {
+			    event_to_search[j]) {
 				find = 0;
 				break;
 			}
@@ -332,6 +338,9 @@ int pollForErrorType(u8 *list, int size)
 {
 	int i = 0, j = 0, find = 0;
 	int count = getErrorListCount();
+
+	if (list == NULL || size <= 0 || size > FIFO_EVENT_SIZE)
+		return ERROR_OP_NOT_ALLOW;
 
 	logError(0, "%s %s: Starting to poll ErrorList... count = %d \n", tag,
 		 __func__, count);

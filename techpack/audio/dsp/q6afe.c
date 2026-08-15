@@ -386,10 +386,15 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 		else
 			return -EINVAL;
 } else if (data->opcode == ULTRASOUND_OPCODE) {
-		if (data->payload != NULL)
-			elliptic_process_apr_payload(data->payload);
-		else
+		if (data->payload == NULL) {
 			pr_err("[ELUS]: payload is invalid");
+		} else if (data->payload_size < 3 * sizeof(uint32_t)) {
+			pr_err("[ELUS]: payload size %d too small\n",
+				data->payload_size);
+		} else {
+			elliptic_process_apr_payload(data->payload,
+					data->payload_size);
+		}
 	} else if (data->payload_size) {
 		uint32_t *payload;
 		uint16_t port_id = 0;
@@ -2385,7 +2390,7 @@ int afe_send_spdif_ch_status_cfg(struct afe_param_id_spdif_ch_status_cfg
 	}
 	ch_status.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
 			APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
-	ch_status.hdr.pkt_size = sizeof(ch_status_cfg);
+	ch_status.hdr.pkt_size = sizeof(ch_status);
 	ch_status.hdr.src_port = 0;
 	ch_status.hdr.dest_port = 0;
 	ch_status.hdr.token = index;
@@ -4866,7 +4871,7 @@ int afe_cmd_memory_map_nowait(int port_id, phys_addr_t dma_addr_p,
 						mmap_region_cmd;
 	mregion->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
 				APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
-	mregion->hdr.pkt_size = sizeof(mregion);
+	mregion->hdr.pkt_size = cmd_size;
 	mregion->hdr.src_port = 0;
 	mregion->hdr.dest_port = 0;
 	mregion->hdr.token = 0;

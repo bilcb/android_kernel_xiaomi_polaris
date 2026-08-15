@@ -374,7 +374,9 @@ static int generic_read(struct i2c_client *client, unsigned short length)
 		}
 	};
 
-	check_buffer(&buffer.read, &buffer.read_size, length);
+	retval = check_buffer(&buffer.read, &buffer.read_size, length);
+	if (retval < 0)
+		return retval;
 	msg[0].buf = buffer.read;
 
 	retval = do_i2c_transfer(client, msg);
@@ -432,9 +434,13 @@ static void find_blob_size(unsigned int index)
 
 	while (ii < hid_dd.report_descriptor_length) {
 		if (buf[ii] == PREFIX_REPORT_COUNT_1BYTE) {
+			if (ii + 1 >= hid_dd.report_descriptor_length)
+				return;
 			hid_report.blob_size = buf[ii + 1];
 			return;
 		} else if (buf[ii] == PREFIX_REPORT_COUNT_2BYTES) {
+			if (ii + 2 >= hid_dd.report_descriptor_length)
+				return;
 			hid_report.blob_size = buf[ii + 1] | (buf[ii + 2] << 8);
 			return;
 		}
@@ -453,20 +459,28 @@ static void find_reports(unsigned int index)
 	static unsigned short usage_page;
 
 	if (buf[ii] == PREFIX_REPORT_ID) {
+		if (ii + 1 >= hid_dd.report_descriptor_length)
+			return;
 		report_id = buf[ii + 1];
 		report_id_index = ii;
 		return;
 	}
 
 	if (buf[ii] == PREFIX_USAGE_PAGE_1BYTE) {
+		if (ii + 1 >= hid_dd.report_descriptor_length)
+			return;
 		usage_page = buf[ii + 1];
 		return;
 	} else if (buf[ii] == PREFIX_USAGE_PAGE_2BYTES) {
+		if (ii + 2 >= hid_dd.report_descriptor_length)
+			return;
 		usage_page = buf[ii + 1] | (buf[ii + 2] << 8);
 		return;
 	}
 
 	if ((usage_page == VENDOR_DEFINED_PAGE) && (buf[ii] == PREFIX_USAGE)) {
+		if (ii + 1 >= hid_dd.report_descriptor_length)
+			return;
 		switch (buf[ii + 1]) {
 		case USAGE_GET_BLOB:
 			hid_report.get_blob_id = report_id;
@@ -532,7 +546,11 @@ static int switch_to_rmi(struct synaptics_rmi4_data *rmi4_data)
 
 	mutex_lock(&rmi4_data->rmi4_io_ctrl_mutex);
 
-	check_buffer(&buffer.write, &buffer.write_size, 11);
+	retval = check_buffer(&buffer.write, &buffer.write_size, 11);
+	if (retval < 0) {
+		mutex_unlock(&rmi4_data->rmi4_io_ctrl_mutex);
+		return retval;
+	}
 
 	/* set rmi mode */
 	buffer.write[0] = hid_dd.command_register_index & MASK_8BIT;
@@ -562,7 +580,11 @@ static int check_report_mode(struct synaptics_rmi4_data *rmi4_data)
 
 	mutex_lock(&rmi4_data->rmi4_io_ctrl_mutex);
 
-	check_buffer(&buffer.write, &buffer.write_size, 7);
+	retval = check_buffer(&buffer.write, &buffer.write_size, 7);
+	if (retval < 0) {
+		mutex_unlock(&rmi4_data->rmi4_io_ctrl_mutex);
+		return retval;
+	}
 
 	buffer.write[0] = hid_dd.command_register_index & MASK_8BIT;
 	buffer.write[1] = hid_dd.command_register_index >> 8;
@@ -581,6 +603,14 @@ static int check_report_mode(struct synaptics_rmi4_data *rmi4_data)
 		goto exit;
 
 	report_size = (buffer.read[1] << 8) | buffer.read[0];
+
+	if (report_size < 4) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: Report size too small (%d)\n",
+				__func__, report_size);
+		retval = -EINVAL;
+		goto exit;
+	}
 
 	retval = generic_write(i2c, 7);
 	if (retval < 0)
@@ -610,7 +640,11 @@ static int hid_i2c_init(struct synaptics_rmi4_data *rmi4_data)
 
 	mutex_lock(&rmi4_data->rmi4_io_ctrl_mutex);
 
-	check_buffer(&buffer.write, &buffer.write_size, 6);
+	retval = check_buffer(&buffer.write, &buffer.write_size, 6);
+	if (retval < 0) {
+		mutex_unlock(&rmi4_data->rmi4_io_ctrl_mutex);
+		return retval;
+	}
 
 	/* read device descriptor */
 	buffer.write[0] = bdata->device_descriptor_addr & MASK_8BIT;
@@ -655,8 +689,17 @@ static int hid_i2c_init(struct synaptics_rmi4_data *rmi4_data)
 	if (retval < 0)
 		goto exit;
 
-	while (gpio_get_value(bdata->irq_gpio))
-		msleep(20);
+	{
+		int gpio_timeout = 50;
+		while (gpio_get_value(bdata->irq_gpio) && --gpio_timeout)
+			msleep(20);
+		if (!gpio_timeout) {
+			dev_err(&i2c->dev, "%s: Timeout waiting for IRQ GPIO low\n",
+					__func__);
+			retval = -ETIMEDOUT;
+			goto exit;
+		}
+	}
 
 	retval = generic_read(i2c, hid_dd.input_report_max_length);
 	if (retval < 0)
@@ -687,6 +730,12 @@ exit:
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to initialize HID/I2C interface\n",
 				__func__);
+		kfree(buffer.read);
+		buffer.read = NULL;
+		buffer.read_size = 0;
+		kfree(buffer.write);
+		buffer.write = NULL;
+		buffer.write_size = 0;
 		return retval;
 	}
 
@@ -719,8 +768,12 @@ static int synaptics_rmi4_i2c_read(struct synaptics_rmi4_data *rmi4_data,
 recover:
 	mutex_lock(&rmi4_data->rmi4_io_ctrl_mutex);
 
-	check_buffer(&buffer.write, &buffer.write_size,
+	retval = check_buffer(&buffer.write, &buffer.write_size,
 			hid_dd.output_report_max_length + 2);
+	if (retval < 0) {
+		mutex_unlock(&rmi4_data->rmi4_io_ctrl_mutex);
+		return retval;
+	}
 	msg[0].buf = buffer.write;
 	buffer.write[0] = hid_dd.output_register_index & MASK_8BIT;
 	buffer.write[1] = hid_dd.output_register_index >> 8;
@@ -733,7 +786,11 @@ recover:
 	buffer.write[8] = length & MASK_8BIT;
 	buffer.write[9] = length >> 8;
 
-	check_buffer(&buffer.read, &buffer.read_size, length + 4);
+	retval = check_buffer(&buffer.read, &buffer.read_size, length + 4);
+	if (retval < 0) {
+		mutex_unlock(&rmi4_data->rmi4_io_ctrl_mutex);
+		return retval;
+	}
 	msg[1].buf = buffer.read;
 
 	retval = do_i2c_transfer(i2c, &msg[0]);
@@ -792,7 +849,7 @@ static int synaptics_rmi4_i2c_write(struct synaptics_rmi4_data *rmi4_data,
 {
 	int retval;
 	unsigned char recover = 1;
-	unsigned char msg_length;
+	unsigned short msg_length;
 	struct i2c_client *i2c = to_i2c_client(rmi4_data->pdev->dev.parent);
 	struct i2c_msg msg[] = {
 		{
@@ -809,7 +866,11 @@ static int synaptics_rmi4_i2c_write(struct synaptics_rmi4_data *rmi4_data,
 recover:
 	mutex_lock(&rmi4_data->rmi4_io_ctrl_mutex);
 
-	check_buffer(&buffer.write, &buffer.write_size, msg_length);
+	retval = check_buffer(&buffer.write, &buffer.write_size, msg_length);
+	if (retval < 0) {
+		mutex_unlock(&rmi4_data->rmi4_io_ctrl_mutex);
+		return retval;
+	}
 	msg[0].len = msg_length;
 	msg[0].buf = buffer.write;
 	buffer.write[0] = hid_dd.output_register_index & MASK_8BIT;
@@ -897,6 +958,7 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 			dev_err(&client->dev,
 					"%s: Failed to allocate memory for board data\n",
 					__func__);
+			kfree(synaptics_dsx_i2c_device);
 			return -ENOMEM;
 		}
 		hw_if.board_data->cap_button_map = devm_kzalloc(&client->dev,
@@ -906,6 +968,7 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 			dev_err(&client->dev,
 					"%s: Failed to allocate memory for 0D button map\n",
 					__func__);
+			kfree(synaptics_dsx_i2c_device);
 			return -ENOMEM;
 		}
 		hw_if.board_data->vir_button_map = devm_kzalloc(&client->dev,
@@ -915,9 +978,17 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 			dev_err(&client->dev,
 					"%s: Failed to allocate memory for virtual button map\n",
 					__func__);
+			kfree(synaptics_dsx_i2c_device);
 			return -ENOMEM;
 		}
-		parse_dt(&client->dev, hw_if.board_data);
+		retval = parse_dt(&client->dev, hw_if.board_data);
+		if (retval < 0) {
+			dev_err(&client->dev,
+					"%s: Failed to parse device tree\n",
+					__func__);
+			kfree(synaptics_dsx_i2c_device);
+			return retval;
+		}
 	}
 #else
 	hw_if.board_data = client->dev.platform_data;
@@ -939,6 +1010,7 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 		dev_err(&client->dev,
 				"%s: Failed to register platform device\n",
 				__func__);
+		kfree(synaptics_dsx_i2c_device);
 		return -ENODEV;
 	}
 
@@ -947,13 +1019,13 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 
 static int synaptics_rmi4_i2c_remove(struct i2c_client *client)
 {
+	platform_device_unregister(synaptics_dsx_i2c_device);
+
 	if (buffer.read_size)
 		kfree(buffer.read);
 
 	if (buffer.write_size)
 		kfree(buffer.write);
-
-	platform_device_unregister(synaptics_dsx_i2c_device);
 
 	return 0;
 }

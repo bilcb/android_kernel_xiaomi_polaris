@@ -2693,8 +2693,8 @@ static void force_enable_int_th(struct qpnp_adc_tm_chip *chip, bool is_low, bool
 						THERMAL_TRIP_ACTIVATION_ENABLED);
 				if (rc < 0)
 					pr_err("re-enable high int thr error:%d\n", i);
-
-				chip->sensor[i].low_thr_triggered--;
+				else
+					chip->sensor[i].low_thr_triggered--;
 			}
 		}
 
@@ -2706,8 +2706,8 @@ static void force_enable_int_th(struct qpnp_adc_tm_chip *chip, bool is_low, bool
 						THERMAL_TRIP_ACTIVATION_ENABLED);
 				if (rc < 0)
 					pr_err("re-enable low int thr error:%d\n", i);
-
-				chip->sensor[i].high_thr_triggered--;
+				else
+					chip->sensor[i].high_thr_triggered--;
 			}
 		}
 
@@ -2768,6 +2768,11 @@ static irqreturn_t qpnp_adc_tm_rc_thr_isr(int irq, void *data)
 			pr_err("Sensor trip read failed\n");
 			force_enable_int_th(chip, true, true);
 			clear_tmp_low_high(chip);
+			pm_wakeup_event(chip->dev,
+					QPNP_ADC_WAKEUP_SRC_TIMEOUT_MS);
+			queue_work(chip->low_thr_wq, &chip->trigger_low_thr_work);
+			queue_work(chip->high_thr_wq,
+					&chip->trigger_high_thr_work);
 			return IRQ_HANDLED;
 		}
 		status_low >>= 1;

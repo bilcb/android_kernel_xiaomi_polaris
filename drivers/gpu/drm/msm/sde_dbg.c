@@ -3235,8 +3235,16 @@ static ssize_t sde_dbg_reg_base_reg_write(struct file *file,
 	if (off % sizeof(u32))
 		return -EFAULT;
 
+	if (!dbg->base)
+		return -EFAULT;
+
 	mutex_lock(&sde_dbg_base.mutex);
 	if (off >= dbg->max_offset) {
+		mutex_unlock(&sde_dbg_base.mutex);
+		return -EFAULT;
+	}
+
+	if (!sde_dbg_reg_base_is_valid_range(off, sizeof(u32))) {
 		mutex_unlock(&sde_dbg_base.mutex);
 		return -EFAULT;
 	}
@@ -3283,6 +3291,9 @@ static ssize_t sde_dbg_reg_base_reg_read(struct file *file,
 	}
 
 	if (!ppos)
+		return -EINVAL;
+
+	if (!dbg->base)
 		return -EINVAL;
 
 	mutex_lock(&sde_dbg_base.mutex);

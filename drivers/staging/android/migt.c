@@ -48,6 +48,7 @@ enum freq_type {
 };
 
 static bool migt_enabled;
+static DEFINE_SPINLOCK(migt_lock);
 static cpumask_var_t active_cluster_cpus;
 static struct hrtimer hrtimer;
 static DEFINE_PER_CPU(struct migt, migt_info);
@@ -73,7 +74,7 @@ static int set_migt_freq(const char *buf, const struct kernel_param *kp)
 	unsigned int val, cpu;
 	const char *cp = buf;
 	bool enabled = false;
-	enum freq_type type;
+	enum freq_type type = boost_freq;
 
 	if (strstr(kp->name, "migt_freq"))
 		type = boost_freq;
@@ -87,12 +88,14 @@ static int set_migt_freq(const char *buf, const struct kernel_param *kp)
 		if (sscanf(buf, "%u\n", &val) != 1)
 			return -EINVAL;
 
+		spin_lock(&migt_lock);
 		for_each_possible_cpu(i) {
 			if (type == boost_freq)
 				per_cpu(migt_info, i).boost_freq = val;
 			else
 				per_cpu(migt_info, i).ceiling_freq = val;
 		}
+		spin_unlock(&migt_lock);
 		goto check_enable;
 	}
 
@@ -101,22 +104,42 @@ static int set_migt_freq(const char *buf, const struct kernel_param *kp)
 
 	cp = buf;
 	for (i = 0; i < ntokens; i += 2) {
-		if (sscanf(cp, "%u:%u", &cpu, &val) != 2)
+		int consumed = 0;
+
+		if (sscanf(cp, "%u:%u%n", &cpu, &val, &consumed) != 2)
 			return -EINVAL;
 
 		if (cpu >= num_possible_cpus())
 			return -EINVAL;
 
+		cp += consumed;
+		if (i + 2 >= ntokens)
+			break;
+		if (*cp != ' ')
+			return -EINVAL;
+		cp++;
+	}
+
+	spin_lock(&migt_lock);
+	cp = buf;
+	for (i = 0; i < ntokens; i += 2) {
+		int consumed = 0;
+
+		sscanf(cp, "%u:%u%n", &cpu, &val, &consumed);
 		if (type == boost_freq)
 			per_cpu(migt_info, cpu).boost_freq = val;
 		else
 			per_cpu(migt_info, cpu).ceiling_freq = val;
 
-		cp = strchr(cp, ' ');
+		cp += consumed;
+		if (i + 2 >= ntokens)
+			break;
 		cp++;
 	}
+	spin_unlock(&migt_lock);
 
 check_enable:
+	spin_lock(&migt_lock);
 	for_each_possible_cpu(i) {
 		if (per_cpu(migt_info, i).boost_freq) {
 			enabled = true;
@@ -124,6 +147,7 @@ check_enable:
 		}
 	}
 	migt_enabled = enabled;
+	spin_unlock(&migt_lock);
 	return 0;
 }
 
@@ -132,7 +156,7 @@ static int get_migt_freq(char *buf, const struct kernel_param *kp)
 	int cnt = 0, cpu;
 	struct migt *s;
 	unsigned int freq = 0;
-	enum freq_type type;
+	enum freq_type type = boost_freq;
 
 	if (strstr(kp->name, "migt_freq"))
 		type = boost_freq;
@@ -141,10 +165,12 @@ static int get_migt_freq(char *buf, const struct kernel_param *kp)
 
 	for_each_possible_cpu(cpu) {
 		s = &per_cpu(migt_info, cpu);
+		spin_lock(&migt_lock);
 		if (type == boost_freq)
 			freq = s->boost_freq;
 		else
 			freq = s->ceiling_freq;
+		spin_unlock(&migt_lock);
 
 		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
 				"%d:%u ", cpu, freq);
@@ -173,7 +199,11 @@ static int boost_adjust_notify(struct notifier_block *nb, unsigned long val,
 	struct cpufreq_policy *policy = data;
 	unsigned int cpu = policy->cpu;
 	struct migt *s = &per_cpu(migt_info, cpu);
-	unsigned int min_freq = s->migt_min;
+	unsigned int min_freq;
+
+	spin_lock(&migt_lock);
+	min_freq = s->migt_min;
+	spin_unlock(&migt_lock);
 
 	switch (val) {
 	case CPUFREQ_ADJUST:
@@ -204,7 +234,11 @@ static int ceiling_adjust_notify(struct notifier_block *nb, unsigned long val,
 	struct cpufreq_policy *policy = data;
 	unsigned int cpu = policy->cpu;
 	struct migt *s = &per_cpu(migt_info, cpu);
-	unsigned int max_freq = s->migt_ceiling_max;
+	unsigned int max_freq;
+
+	spin_lock(&migt_lock);
+	max_freq = s->migt_ceiling_max;
+	spin_unlock(&migt_lock);
 
 	switch (val) {
 	case CPUFREQ_ADJUST:
@@ -266,7 +300,9 @@ static void do_migt_rem(struct work_struct *work)
 
 	for_each_possible_cpu(i) {
 		i_migt_info = &per_cpu(migt_info, i);
+		spin_lock(&migt_lock);
 		i_migt_info->migt_min = 0;
+		spin_unlock(&migt_lock);
 	}
 
 	/* Update policies for all online CPUs */
@@ -280,7 +316,9 @@ static void do_migt_ceiling_restore(void)
 
 	for_each_possible_cpu(i) {
 		i_migt_info = &per_cpu(migt_info, i);
+		spin_lock(&migt_lock);
 		i_migt_info->migt_ceiling_max = UINT_MAX;
+		spin_unlock(&migt_lock);
 	}
 
 	/* Update policies for all online CPUs */
@@ -299,7 +337,9 @@ static void do_migt(struct work_struct *work)
 
 	for_each_possible_cpu(i) {
 		i_migt_info = &per_cpu(migt_info, i);
+		spin_lock(&migt_lock);
 		i_migt_info->migt_min = i_migt_info->boost_freq;
+		spin_unlock(&migt_lock);
 	}
 
 	/* Update policies for all online CPUs */
@@ -315,7 +355,9 @@ static void do_migt_ceiling_limit(void)
 
 	for_each_possible_cpu(i) {
 		i_migt_info = &per_cpu(migt_info, i);
+		spin_lock(&migt_lock);
 		i_migt_info->migt_ceiling_max = i_migt_info->ceiling_freq;
+		spin_unlock(&migt_lock);
 	}
 
 	/* Update policies for all online CPUs */

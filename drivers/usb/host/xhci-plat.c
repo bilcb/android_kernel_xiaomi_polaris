@@ -146,8 +146,8 @@ static ssize_t config_imod_store(struct device *pdev,
 	u32 imod;
 	unsigned long flags;
 
-	if (kstrtouint(buff, 10, &imod) != 1)
-		return 0;
+	if (kstrtouint(buff, 10, &imod))
+		return -EINVAL;
 
 	imod &= ER_IRQ_INTERVAL_MASK;
 	xhci = hcd_to_xhci(hcd);
@@ -194,7 +194,6 @@ static int xhci_plat_probe(struct platform_device *pdev)
 {
 	const struct of_device_id *match;
 	const struct hc_driver	*driver;
-	struct device		*dwc = NULL;
 	struct device		*sysdev, *phydev;
 	struct xhci_hcd		*xhci;
 	struct resource         *res;
@@ -222,9 +221,6 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	 * 3. xhci_plat is grandchild of a pci device (dwc3-pci)
 	 */
 	sysdev = &pdev->dev;
-
-	if (sysdev->parent && !sysdev->of_node && sysdev->parent->of_node)
-		dwc =sysdev->parent;
 
 	phydev = &pdev->dev;
 	if (sysdev->parent && !sysdev->of_node && sysdev->parent->of_node)
@@ -335,11 +331,6 @@ static int xhci_plat_probe(struct platform_device *pdev)
 
 	if (device_property_read_u32(&pdev->dev, "usb-core-id", &xhci->core_id))
 		xhci->core_id = -EINVAL;
-
-	if (dwc)
-		hcd->usb_phy = devm_usb_get_phy_by_phandle(dwc, "usb-phy", 0);
-	else
-		hcd->usb_phy = devm_usb_get_phy_by_phandle(sysdev, "usb-phy", 0);
 
 	hcd->usb_phy = devm_usb_get_phy_by_phandle(phydev, "usb-phy", 0);
 	if (IS_ERR(hcd->usb_phy)) {

@@ -1211,17 +1211,22 @@ static int cam_cpas_hw_register_client(struct cam_hw_info *cpas_hw,
 	rc = cam_common_util_get_string_index(soc_private->client_name,
 		soc_private->num_clients, client_name, &client_indx);
 
-	mutex_lock(&cpas_core->client_mutex[client_indx]);
-
-	if (rc || !CAM_CPAS_CLIENT_VALID(client_indx) ||
-		CAM_CPAS_CLIENT_REGISTERED(cpas_core, client_indx)) {
-		CAM_ERR(CAM_CPAS,
-			"Inval client %s %d : %d %d %pK %d",
+	if (rc || !CAM_CPAS_CLIENT_VALID(client_indx)) {
+		CAM_ERR(CAM_CPAS, "Inval client %s %d : %d %d",
 			register_params->identifier,
 			register_params->cell_index,
-			CAM_CPAS_CLIENT_VALID(client_indx),
-			CAM_CPAS_CLIENT_REGISTERED(cpas_core, client_indx),
-			cpas_core->cpas_client[client_indx], rc);
+			CAM_CPAS_CLIENT_VALID(client_indx), rc);
+		mutex_unlock(&cpas_hw->hw_mutex);
+		return -EPERM;
+	}
+
+	mutex_lock(&cpas_core->client_mutex[client_indx]);
+
+	if (CAM_CPAS_CLIENT_REGISTERED(cpas_core, client_indx)) {
+		CAM_ERR(CAM_CPAS, "client %s %d : %pK already registered",
+			register_params->identifier,
+			register_params->cell_index,
+			cpas_core->cpas_client[client_indx]);
 		mutex_unlock(&cpas_core->client_mutex[client_indx]);
 		mutex_unlock(&cpas_hw->hw_mutex);
 		return -EPERM;

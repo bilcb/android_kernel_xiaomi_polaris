@@ -4042,10 +4042,15 @@ void usbpd_vbus_sm(struct work_struct *w)
 
 	/* to be done, pd->sm_queued = false; */
 	pd_vbus_reset(pd);
+	pm_relax(&pd->dev);
 }
 
 void kick_usbpd_vbus_sm(void)
 {
+	if (!pd_lobal) {
+		pr_err("kick_usbpd_vbus_sm: pd not initialized\n");
+		return;
+	}
 	pm_stay_awake(&pd_lobal->dev);
 
 	/* to be done pd_lobal->sm_queued = true;*/
@@ -4058,13 +4063,14 @@ void kick_usbpd_vbus_sm(void)
 static ssize_t pd_vbus_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
-	struct usbpd *pd = dev_get_drvdata(dev);
+	if (!pd_lobal) {
+		pr_err("pd_vbus_show: pd not initialized\n");
+		return -EAGAIN;
+	}
 	pr_err("pd_vbus_show handle state %s, vbus %d\n",
 			usbpd_state_strings[pd_lobal->current_state],pd_lobal->vbus_enabled);
 
-	pd_vbus_reset(pd);
-
-	return 0;
+	return snprintf(buf, PAGE_SIZE, "ok\n");
 }
 
 
@@ -4073,9 +4079,14 @@ static ssize_t pd_vbus_store(struct device *dev,
 {
 	int val = 0;
 
-	if (sscanf(buf, "%d\n", &val) != 0)
+	if (sscanf(buf, "%d", &val) != 1)
 	{
 		pr_err("pd_vbus_store input err\n");
+		return -EINVAL;
+	}
+	if (!pd_lobal) {
+		pr_err("pd_vbus_store: pd not initialized\n");
+		return -EAGAIN;
 	}
 	pr_err("pd_vbus_store handle state %s, vbus %d,val %d\n",
 			usbpd_state_strings[pd_lobal->current_state],pd_lobal->vbus_enabled,val);
@@ -4444,6 +4455,7 @@ void usbpd_destroy(struct usbpd *pd)
 	power_supply_put(pd->usb_psy);
 	destroy_workqueue(pd->wq);
 	device_unregister(&pd->dev);
+	pd_lobal = NULL;
 }
 EXPORT_SYMBOL(usbpd_destroy);
 

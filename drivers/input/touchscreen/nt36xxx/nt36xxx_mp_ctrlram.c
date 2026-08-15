@@ -107,7 +107,7 @@ static int nvt_mp_buffer_init(void)
 	RecordResult_Short = (uint8_t *)kzalloc(RecordResult_BufSize, GFP_KERNEL);
 	if (!RecordResult_Short) {
 		NVT_ERR("kzalloc for RecordResult_Short failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RecordResult_Short_Diff = RecordResult_Short;
@@ -115,25 +115,25 @@ static int nvt_mp_buffer_init(void)
 	RecordResult_Short_Base = (uint8_t *)kzalloc(RecordResult_BufSize, GFP_KERNEL);
 	if (!RecordResult_Short_Base) {
 		NVT_ERR("kzalloc for RecordResult_Short_Base failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RecordResult_Open = (uint8_t *)kzalloc(RecordResult_BufSize, GFP_KERNEL);
 	if (!RecordResult_Open) {
 		NVT_ERR("kzalloc for RecordResult_Open failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RecordResult_FWMutual = (uint8_t *)kzalloc(RecordResult_BufSize, GFP_KERNEL);
 	if (!RecordResult_FWMutual) {
 		NVT_ERR("kzalloc for RecordResult_FWMutual failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RecordResult_FW_CC = (uint8_t *)kzalloc(RecordResult_BufSize, GFP_KERNEL);
 	if (!RecordResult_FW_CC) {
 		NVT_ERR("kzalloc for RecordResult_FW_CC failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RecordResult_FW_CC_I = RecordResult_FW_CC;
@@ -141,25 +141,25 @@ static int nvt_mp_buffer_init(void)
 	RecordResult_FW_CC_Q = (uint8_t *)kzalloc(RecordResult_BufSize, GFP_KERNEL);
 	if (!RecordResult_FW_CC_Q) {
 		NVT_ERR("kzalloc for RecordResult_FW_CC_Q failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RecordResult_FW_DiffMax = (uint8_t *)kzalloc(RecordResult_BufSize, GFP_KERNEL);
 	if (!RecordResult_FW_DiffMax) {
 		NVT_ERR("kzalloc for RecordResult_FW_DiffMax failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RecordResult_FW_DiffMin = (uint8_t *)kzalloc(RecordResult_BufSize, GFP_KERNEL);
 	if (!RecordResult_FW_DiffMin) {
 		NVT_ERR("kzalloc for RecordResult_FW_DiffMin failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RawData_Short = (int32_t *)kzalloc(RawData_BufSize, GFP_KERNEL);
 	if (!RawData_Short) {
 		NVT_ERR("kzalloc for RawData_Short failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RawData_Short_Diff = RawData_Short;
@@ -167,43 +167,43 @@ static int nvt_mp_buffer_init(void)
 	RawData_Short_Base = (int32_t *)kzalloc(RawData_BufSize, GFP_KERNEL);
 	if (!RawData_Short_Base) {
 		NVT_ERR("kzalloc for RawData_Short_Base failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RawData_Open = (int32_t *)kzalloc(RawData_BufSize, GFP_KERNEL);
 	if (!RawData_Open) {
 		NVT_ERR("kzalloc for RawData_Open failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RawData_Diff = (int32_t *)kzalloc(RawData_BufSize, GFP_KERNEL);
 	if (!RawData_Diff) {
 		NVT_ERR("kzalloc for RawData_Diff failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RawData_Diff_Min = (int32_t *)kzalloc(RawData_BufSize, GFP_KERNEL);
 	if (!RawData_Diff_Min) {
 		NVT_ERR("kzalloc for RawData_Diff_Min failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RawData_Diff_Max = (int32_t *)kzalloc(RawData_BufSize, GFP_KERNEL);
 	if (!RawData_Diff_Max) {
 		NVT_ERR("kzalloc for RawData_Diff_Max failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RawData_FWMutual = (int32_t *)kzalloc(RawData_BufSize, GFP_KERNEL);
 	if (!RawData_FWMutual) {
 		NVT_ERR("kzalloc for RawData_FWMutual failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RawData_FW_CC = (int32_t *)kzalloc(RawData_BufSize, GFP_KERNEL);
 	if (!RawData_FW_CC) {
 		NVT_ERR("kzalloc for RawData_FW_CC failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
 	RawData_FW_CC_I = RawData_FW_CC;
@@ -211,10 +211,32 @@ static int nvt_mp_buffer_init(void)
 	RawData_FW_CC_Q = (int32_t *)kzalloc(RawData_BufSize, GFP_KERNEL);
 	if (!RawData_FW_CC_Q) {
 		NVT_ERR("kzalloc for RawData_FW_CC_Q failed!\n");
-		return -ENOMEM;
+		goto err_alloc;
 	}
 
+
 	return 0;
+
+err_alloc:
+	kfree(RecordResult_FW_DiffMin);
+	kfree(RecordResult_FW_DiffMax);
+	kfree(RecordResult_FW_CC_Q);
+	kfree(RecordResult_FW_CC);
+	kfree(RecordResult_FWMutual);
+	kfree(RecordResult_Open);
+	kfree(RecordResult_Short_Base);
+	kfree(RecordResult_Short);
+	kfree(RawData_FW_CC_Q);
+	kfree(RawData_FW_CC);
+	kfree(RawData_FWMutual);
+	kfree(RawData_Diff_Max);
+	kfree(RawData_Diff_Min);
+	kfree(RawData_Diff);
+	kfree(RawData_Open);
+	kfree(RawData_Short_Base);
+	kfree(RawData_Short);
+
+	return -ENOMEM;
 }
 
 /*******************************************************
@@ -433,8 +455,12 @@ static int32_t nvt_read_baseline(int32_t *xdata)
 
 	nvt_read_mdata(ts->mmap->BASELINE_ADDR, ts->mmap->BASELINE_BTN_ADDR);
 
-	nvt_get_mdata(xdata, &x_num, &y_num);
+	if (ts->x_num * ts->y_num > IC_X_CFG_SIZE * IC_Y_CFG_SIZE + IC_KEY_CFG_SIZE) {
+		NVT_ERR("invalid x_num=%d y_num=%d\n", ts->x_num, ts->y_num);
+		return -EAGAIN;
+	}
 
+	nvt_get_mdata(xdata, &x_num, &y_num);
 	for (y = 0; y < y_num; y++) {
 		for (x = 0; x < x_num; x++) {
 			iArrayIndex = y * x_num + x;
@@ -488,8 +514,12 @@ static int32_t nvt_read_CC(int32_t *xdata)
 	else
 		nvt_read_mdata(ts->mmap->DIFF_PIPE0_ADDR, ts->mmap->DIFF_BTN_PIPE0_ADDR);
 
-	nvt_get_mdata(xdata, &x_num, &y_num);
+	if (ts->x_num * ts->y_num > IC_X_CFG_SIZE * IC_Y_CFG_SIZE + IC_KEY_CFG_SIZE) {
+		NVT_ERR("invalid x_num=%d y_num=%d\n", ts->x_num, ts->y_num);
+		return -EAGAIN;
+	}
 
+	nvt_get_mdata(xdata, &x_num, &y_num);
 	for (y = 0; y < y_num; y++) {
 		for (x = 0; x < x_num; x++) {
 			iArrayIndex = y * x_num + x;
@@ -607,8 +637,12 @@ static int32_t nvt_read_fw_noise(int32_t *xdata)
 	else
 		nvt_read_mdata(ts->mmap->DIFF_PIPE1_ADDR, ts->mmap->DIFF_BTN_PIPE1_ADDR);
 
-	nvt_get_mdata(xdata, &x_num, &y_num);
+	if (ts->x_num * ts->y_num > IC_X_CFG_SIZE * IC_Y_CFG_SIZE + IC_KEY_CFG_SIZE) {
+		NVT_ERR("invalid x_num=%d y_num=%d\n", ts->x_num, ts->y_num);
+		return -EAGAIN;
+	}
 
+	nvt_get_mdata(xdata, &x_num, &y_num);
 	for (y = 0; y < y_num; y++) {
 		for (x = 0; x < x_num; x++) {
 			iArrayIndex = y * x_num + x;
@@ -1290,7 +1324,7 @@ static int32_t nvt_selftest_open(struct inode *inode, struct file *file)
 		 * Ex. nvt_pid = 500A
 		 *     mpcriteria = "novatek-mp-criteria-500A"
 		 */
-		snprintf(mpcriteria, PAGE_SIZE, "novatek-mp-criteria-%04X", ts->nvt_pid);
+		snprintf(mpcriteria, sizeof(mpcriteria), "novatek-mp-criteria-%04X", ts->nvt_pid);
 
 		nvt_mp_parse_dt(np, mpcriteria);
 	} else {
@@ -1323,6 +1357,7 @@ static int32_t nvt_selftest_open(struct inode *inode, struct file *file)
 	nvt_change_mode(MP_MODE_CC);
 
 	if (nvt_check_fw_status()) {
+		nvt_change_mode(NORMAL_MODE);
 		mutex_unlock(&ts->lock);
 		NVT_ERR("check fw status failed!\n");
 		return -EAGAIN;
@@ -1467,6 +1502,11 @@ void nvt_mp_parse_ain(struct device_node *np, const char *name, uint8_t *array, 
 		NVT_ERR("error find %s. len=%d\n", name, len);
 	} else {
 		NVT_LOG("%s. len=%d\n", name, len);
+		if (len > ARRAY_SIZE(tmp)) {
+			NVT_ERR("len %d exceeds tmp buffer size %zu\n", len,
+				ARRAY_SIZE(tmp));
+			return;
+		}
 		ret = of_property_read_u32_array(np, name, tmp, len);
 		if (ret) {
 			NVT_ERR("error reading %s. ret=%d\n", name, ret);
@@ -1529,6 +1569,10 @@ void nvt_mp_parse_array(struct device_node *np, const char *name, int32_t *array
 		NVT_ERR("error find %s. len=%d\n", name, len);
 	} else {
 		NVT_LOG("%s. len=%d\n", name, len);
+		if (len > size) {
+			NVT_ERR("len %d exceeds array size %d\n", len, size);
+			len = size;
+		}
 		ret = of_property_read_u32_array(np, name, array, len);
 		if (ret) {
 			NVT_ERR("error reading %s. ret=%d\n", name, ret);
@@ -1667,6 +1711,8 @@ void nvt_mp_parse_dt(struct device_node *root, const char *node_compatible)
 
 	nvt_mp_parse_u32(np, "PS_Config_Diff_Test_Frame", &PS_Config_Diff_Test_Frame);
 
+	of_node_put(np);
+
 	NVT_LOG("Parse mp criteria done!\n");
 }
 #endif /* #ifdef CONFIG_OF */
@@ -1719,6 +1765,7 @@ static int nvt_short_test(void)
 	nvt_change_mode(MP_MODE_CC);
 
 	if (nvt_check_fw_status()) {
+		nvt_change_mode(NORMAL_MODE);
 		mutex_unlock(&ts->lock);
 		NVT_ERR("check fw status failed!\n");
 		return -EAGAIN;
@@ -1806,6 +1853,7 @@ static int nvt_open_test(void)
 	nvt_change_mode(MP_MODE_CC);
 
 	if (nvt_check_fw_status()) {
+		nvt_change_mode(NORMAL_MODE);
 		mutex_unlock(&ts->lock);
 		NVT_ERR("check fw status failed!\n");
 		return -EAGAIN;
@@ -1840,8 +1888,12 @@ static ssize_t nvt_selftest_read(struct file *file, char __user *buf, size_t cou
 
 	if (*pos != 0)
 		return 0;
-	cnt = snprintf(tmp, sizeof(ts->result_type), "%d\n", ts->result_type);
-	if (copy_to_user(buf, tmp, strlen(tmp))) {
+	cnt = snprintf(tmp, sizeof(tmp), "%d\n", ts->result_type);
+	if (cnt <= 0)
+		return 0;
+	if (cnt > count)
+		cnt = count;
+	if (copy_to_user(buf, tmp, cnt)) {
 		return -EFAULT;
 	}
 
@@ -1854,10 +1906,14 @@ static ssize_t nvt_selftest_write(struct file *file, const char __user *buf, siz
 	int retval = 0;
 	char tmp[6];
 
+	if (count >= sizeof(tmp))
+		count = sizeof(tmp) - 1;
+
 	if (copy_from_user(tmp, buf, count)) {
 		retval = -EFAULT;
 		goto out;
 	}
+	tmp[count] = '\0';
 
 	if (!strncmp("short", tmp, 5)) {
 		retval = nvt_short_test();
@@ -1902,6 +1958,8 @@ int32_t nvt_mp_proc_init(void)
 	} else {
 		if (nvt_mp_buffer_init()) {
 			NVT_ERR("Allocate mp memory failed\n");
+			proc_remove(NVT_proc_selftest_entry);
+			NVT_proc_selftest_entry = NULL;
 			return -EPERM;
 		}
 		else {

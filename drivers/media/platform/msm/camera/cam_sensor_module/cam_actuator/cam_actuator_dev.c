@@ -281,6 +281,7 @@ static int32_t cam_actuator_platform_remove(struct platform_device *pdev)
 	kfree(a_ctrl->soc_info.soc_private);
 	kfree(a_ctrl->i2c_data.per_frame);
 	a_ctrl->i2c_data.per_frame = NULL;
+	cam_unregister_subdev(&(a_ctrl->v4l2_dev_str));
 	devm_kfree(&pdev->dev, a_ctrl);
 
 	return rc;
@@ -313,6 +314,7 @@ static int32_t cam_actuator_driver_i2c_remove(struct i2c_client *client)
 	power_info->power_setting = NULL;
 	power_info->power_down_setting = NULL;
 	a_ctrl->soc_info.soc_private = NULL;
+	cam_unregister_subdev(&(a_ctrl->v4l2_dev_str));
 	kfree(a_ctrl);
 	return rc;
 }

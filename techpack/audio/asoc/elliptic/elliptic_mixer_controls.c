@@ -267,7 +267,7 @@ int get_elliptic_calibration_data(uint8_t *caldata, uint32_t max_size)
 	}
 
 	memcpy(caldata, (uint8_t *)&elliptic_engine_calibration_data_cache,
-		max_size);
+		copied);
 	return copied;
 }
 
@@ -283,7 +283,7 @@ int get_elliptic_calibration_v2_data(uint8_t *caldata, uint32_t max_size)
 	}
 
 	memcpy(caldata, (uint8_t *)&elliptic_engine_calibration_v2_data_cache,
-		max_size);
+		copied);
 	return copied;
 }
 
@@ -299,7 +299,7 @@ int get_elliptic_diagnostics_data(uint8_t *diagdata, uint32_t max_size)
 	}
 
 	memcpy(diagdata, (uint8_t *)&elliptic_engine_diagnostics_data_cache,
-		max_size);
+		copied);
 	return copied;
 }
 
@@ -392,9 +392,9 @@ int elliptic_ultrasound_rx_port_set(struct snd_kcontrol *kcontrol,
 		ret = elliptic_close_port(ULTRASOUND_RX_PORT_ID);
 	}
 	EL_PRINT_E("ultrasound_rx_port: enable=%d ret=%d",
-		ultrasound_tx_port_cache, ret);
+		ultrasound_rx_port_cache, ret);
 
-	return 0;
+	return ret;
 }
 
 int elliptic_ultrasound_rampdown_get(struct snd_kcontrol *kcontrol,
@@ -625,7 +625,7 @@ int elliptic_calibration_param_put(
 {
 	struct soc_mixer_control *mc =
 		(struct soc_mixer_control *)kcontrol->private_value;
-	struct elliptic_system_configuration_parameter param;
+	struct elliptic_system_configuration_parameter param = {0};
 
 	if (mc->reg != ELLIPTIC_CALIBRATION)
 		return -EINVAL;
@@ -671,8 +671,6 @@ int elliptic_system_configuration_param_get(
 {
 	struct soc_mixer_control *mc =
 		(struct soc_mixer_control *)kcontrol->private_value;
-
-	pr_err("%s: reg: %d shift: %d\n", __func__, mc->reg, mc->shift);
 
 	if (mc->reg != ELLIPTIC_SYSTEM_CONFIGURATION)
 		return -EINVAL;
@@ -741,6 +739,7 @@ int elliptic_system_configuration_param_get(
 	case ELLIPTIC_SYSTEM_CONFIGURATION_CALIBRATION_METHOD:
 		ucontrol->value.integer.value[0] =
 			elliptic_system_configuration_cache.calibration_method;
+		break;
 	case ELLIPTIC_SYSTEM_CONFIGURATION_DEBUG_MODE:
 		ucontrol->value.integer.value[0] =
 			elliptic_system_configuration_cache.debug_mode;
@@ -766,7 +765,7 @@ int elliptic_system_configuration_param_put(
 {
 	struct soc_mixer_control *mc =
 		(struct soc_mixer_control *)kcontrol->private_value;
-	struct elliptic_system_configuration_parameter param;
+	struct elliptic_system_configuration_parameter param = {0};
 	struct timeval tv;
 
 	if (mc->reg != ELLIPTIC_SYSTEM_CONFIGURATION)

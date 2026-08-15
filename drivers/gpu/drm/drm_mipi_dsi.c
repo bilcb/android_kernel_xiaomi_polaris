@@ -1068,6 +1068,7 @@ int mipi_dsi_dcs_set_display_brightness_ss(struct mipi_dsi_device *dsi,
 
 	return 0;
 }
+EXPORT_SYMBOL(mipi_dsi_dcs_set_display_brightness_ss);
 
 /**
  * mipi_dsi_dcs_set_display_brightness() - sets the brightness value of the

@@ -156,15 +156,15 @@ static int cam_bps_handle_pc(struct cam_hw_info *bps_dev)
 		CAM_CPAS_REG_CPASTOP, hw_info->pwr_ctrl,
 		true, &pwr_ctrl);
 	if (!(pwr_ctrl & BPS_COLLAPSE_MASK)) {
-		cam_cpas_reg_read(core_info->cpas_handle,
-			CAM_CPAS_REG_CPASTOP, hw_info->pwr_status,
-			true, &pwr_status);
-
 		cam_cpas_reg_write(core_info->cpas_handle,
 			CAM_CPAS_REG_CPASTOP,
 			hw_info->pwr_ctrl, true, 0x1);
 
-		if ((pwr_status >> BPS_PWR_ON_MASK)) {
+		cam_cpas_reg_read(core_info->cpas_handle,
+			CAM_CPAS_REG_CPASTOP, hw_info->pwr_status,
+			true, &pwr_status);
+
+		if ((pwr_status & BPS_PWR_ON_MASK)) {
 			CAM_ERR(CAM_ICP, "BPS: pwr_status(%x):pwr_ctrl(%x)",
 				pwr_status, pwr_ctrl);
 			return -EINVAL;
@@ -249,6 +249,7 @@ static int cam_bps_cmd_reset(struct cam_hw_soc_info *soc_info,
 	}
 
 	/* Reset BPS core*/
+	retry_cnt = 0;
 	status = 0;
 	cam_io_w_mb((uint32_t)0x3,
 		soc_info->reg_map[0].mem_base + BPS_TOP_RST_CMD);
@@ -335,7 +336,8 @@ int cam_bps_process_cmd(void *device_priv, uint32_t cmd_type,
 			rc = cam_cpas_start(core_info->cpas_handle,
 					&cpas_vote->ahb_vote,
 					&cpas_vote->axi_vote);
-			core_info->cpas_start = true;
+			if (!rc)
+				core_info->cpas_start = true;
 		}
 		break;
 	}

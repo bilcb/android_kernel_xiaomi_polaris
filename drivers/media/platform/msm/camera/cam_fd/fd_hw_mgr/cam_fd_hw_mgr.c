@@ -1285,6 +1285,7 @@ static int cam_fd_mgr_hw_flush_req(void *hw_mgr_priv,
 	struct cam_fd_device *hw_device;
 	struct cam_fd_hw_stop_args hw_stop_args;
 	struct cam_fd_hw_mgr_ctx *hw_ctx;
+	struct list_head flushed_reqs;
 	uint32_t i = 0;
 
 	hw_ctx = (struct cam_fd_hw_mgr_ctx *)flush_args->ctxt_to_hw_map;
@@ -1302,6 +1303,8 @@ static int cam_fd_mgr_hw_flush_req(void *hw_mgr_priv,
 		return rc;
 	}
 
+	INIT_LIST_HEAD(&flushed_reqs);
+
 	mutex_lock(&hw_mgr->frame_req_mutex);
 	for (i = 0; i < flush_args->num_req_active; i++) {
 		flush_req = (struct cam_fd_mgr_frame_request *)
@@ -1316,6 +1319,7 @@ static int cam_fd_mgr_hw_flush_req(void *hw_mgr_priv,
 				continue;
 
 			list_del_init(&frame_req->list);
+			list_add_tail(&frame_req->list, &flushed_reqs);
 			break;
 		}
 
@@ -1328,6 +1332,7 @@ static int cam_fd_mgr_hw_flush_req(void *hw_mgr_priv,
 				continue;
 
 			list_del_init(&frame_req->list);
+			list_add_tail(&frame_req->list, &flushed_reqs);
 			break;
 		}
 
@@ -1340,6 +1345,7 @@ static int cam_fd_mgr_hw_flush_req(void *hw_mgr_priv,
 				continue;
 
 			list_del_init(&frame_req->list);
+			list_add_tail(&frame_req->list, &flushed_reqs);
 
 			mutex_lock(&hw_device->lock);
 			if ((hw_device->ready_to_process == true) ||
@@ -1367,6 +1373,12 @@ unlock_dev_flush_req:
 	}
 	mutex_unlock(&hw_mgr->frame_req_mutex);
 
+	list_for_each_entry_safe(frame_req, req_temp, &flushed_reqs, list) {
+		list_del_init(&frame_req->list);
+		cam_fd_mgr_util_put_frame_req(&hw_mgr->frame_free_list,
+			&frame_req);
+	}
+
 	for (i = 0; i < flush_args->num_req_pending; i++) {
 		flush_req = (struct cam_fd_mgr_frame_request *)
 			flush_args->flush_req_pending[i];
@@ -1386,6 +1398,7 @@ static int cam_fd_mgr_hw_flush_ctx(void *hw_mgr_priv,
 	struct cam_fd_device *hw_device;
 	struct cam_fd_hw_stop_args hw_stop_args;
 	struct cam_fd_hw_mgr_ctx *hw_ctx;
+	struct list_head flushed_reqs;
 	uint32_t i = 0;
 
 	hw_ctx = (struct cam_fd_hw_mgr_ctx *)flush_args->ctxt_to_hw_map;
@@ -1403,6 +1416,8 @@ static int cam_fd_mgr_hw_flush_ctx(void *hw_mgr_priv,
 		return rc;
 	}
 
+	INIT_LIST_HEAD(&flushed_reqs);
+
 	mutex_lock(&hw_mgr->frame_req_mutex);
 	list_for_each_entry_safe(frame_req, req_temp,
 		&hw_mgr->frame_pending_list_high, list) {
@@ -1410,6 +1425,7 @@ static int cam_fd_mgr_hw_flush_ctx(void *hw_mgr_priv,
 			continue;
 
 		list_del_init(&frame_req->list);
+		list_add_tail(&frame_req->list, &flushed_reqs);
 	}
 
 	list_for_each_entry_safe(frame_req, req_temp,
@@ -1418,6 +1434,7 @@ static int cam_fd_mgr_hw_flush_ctx(void *hw_mgr_priv,
 			continue;
 
 		list_del_init(&frame_req->list);
+		list_add_tail(&frame_req->list, &flushed_reqs);
 	}
 
 	list_for_each_entry_safe(frame_req, req_temp,
@@ -1426,6 +1443,7 @@ static int cam_fd_mgr_hw_flush_ctx(void *hw_mgr_priv,
 			continue;
 
 		list_del_init(&frame_req->list);
+		list_add_tail(&frame_req->list, &flushed_reqs);
 		mutex_lock(&hw_device->lock);
 		if ((hw_device->ready_to_process == true) ||
 			(hw_device->cur_hw_ctx != hw_ctx))
@@ -1447,6 +1465,12 @@ unlock_dev_flush_ctx:
 	mutex_unlock(&hw_device->lock);
 	}
 	mutex_unlock(&hw_mgr->frame_req_mutex);
+
+	list_for_each_entry_safe(frame_req, req_temp, &flushed_reqs, list) {
+		list_del_init(&frame_req->list);
+		cam_fd_mgr_util_put_frame_req(&hw_mgr->frame_free_list,
+			&frame_req);
+	}
 
 	for (i = 0; i < flush_args->num_req_pending; i++) {
 		flush_req = (struct cam_fd_mgr_frame_request *)
@@ -1664,7 +1688,13 @@ static int cam_fd_mgr_hw_config(void *hw_mgr_priv, void *hw_config_args)
 	}
 
 	if (!config->num_hw_update_entries) {
-		CAM_ERR(CAM_FD, "No hw update enteries are available");
+		CAM_ERR(CAM_FD, "No hw update entries");
+		return -EINVAL;
+	}
+	if (config->num_hw_update_entries > CAM_FD_MAX_HW_ENTRIES) {
+		CAM_ERR(CAM_FD, "Too many hw update entries %d (max %d)",
+			config->num_hw_update_entries,
+			CAM_FD_MAX_HW_ENTRIES);
 		return -EINVAL;
 	}
 

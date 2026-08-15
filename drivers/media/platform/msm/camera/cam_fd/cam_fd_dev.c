@@ -73,6 +73,7 @@ static int cam_fd_dev_close(struct v4l2_subdev *sd,
 {
 	struct cam_fd_dev *fd_dev = &g_fd_dev;
 	struct cam_node *node = v4l2_get_subdevdata(sd);
+	int rc = 0;
 
 	if (!fd_dev->probe_done) {
 		CAM_ERR(CAM_FD, "FD Dev not initialized, fd_dev=%pK", fd_dev);
@@ -80,18 +81,27 @@ static int cam_fd_dev_close(struct v4l2_subdev *sd,
 	}
 
 	mutex_lock(&fd_dev->lock);
+	if (fd_dev->open_cnt <= 0) {
+		CAM_DBG(CAM_FD, "FD subdev is already closed");
+		rc = -EINVAL;
+		goto end;
+	}
+
 	fd_dev->open_cnt--;
 	CAM_DBG(CAM_FD, "FD Subdev open count %d", fd_dev->open_cnt);
-	mutex_unlock(&fd_dev->lock);
 
 	if (!node) {
 		CAM_ERR(CAM_FD, "Node ptr is NULL");
-		return -EINVAL;
+		rc = -EINVAL;
+		goto end;
 	}
 
-	cam_node_shutdown(node);
+	if (fd_dev->open_cnt == 0)
+		cam_node_shutdown(node);
 
-	return 0;
+end:
+	mutex_unlock(&fd_dev->lock);
+	return rc;
 }
 
 static const struct v4l2_subdev_internal_ops cam_fd_subdev_internal_ops = {
@@ -153,6 +163,8 @@ deinit_ctx:
 		if (cam_fd_context_deinit(&g_fd_dev.fd_ctx[i]))
 			CAM_ERR(CAM_FD, "FD context %d deinit failed", i);
 	}
+	if (cam_fd_hw_mgr_deinit(pdev->dev.of_node))
+		CAM_ERR(CAM_FD, "Failed in hw mgr deinit");
 unregister_subdev:
 	if (cam_subdev_remove(&g_fd_dev.sd))
 		CAM_ERR(CAM_FD, "Failed in subdev remove");

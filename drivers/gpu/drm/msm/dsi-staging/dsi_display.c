@@ -200,7 +200,8 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 	} else if (drm_dev && drm_dev->doze_state == DRM_BLANK_LP2) {
 		pr_err("unable to set doze backlight in LP2 state:%u\n", (u32)bl_temp);
 	} else {
-		drm_dev->doze_brightness = DOZE_BRIGHTNESS_INVALID;
+		if (drm_dev)
+			drm_dev->doze_brightness = DOZE_BRIGHTNESS_INVALID;
 		rc = dsi_panel_set_backlight(panel, (u32)bl_temp);
 		if (rc)
 			pr_err("unable to set backlight\n");
@@ -634,9 +635,9 @@ static int dsi_display_read_status(struct dsi_display_ctrl *ctrl,
 			config->status_buf, lenp[i]);
 		start += lenp[i];
 
-		if (cmds->post_wait_ms)
-			usleep_range(cmds->post_wait_ms*1000,
-				((cmds->post_wait_ms*1000)+10));
+		if (cmds[i].post_wait_ms)
+			usleep_range(cmds[i].post_wait_ms*1000,
+				((cmds[i].post_wait_ms*1000)+10));
 	}
 
 	return rc;
@@ -854,6 +855,17 @@ int dsi_display_read_panel(struct dsi_panel *panel, struct dsi_read_config *read
 		return -EPERM;
 	}
 
+	if (!read_config->read_cmd.count || !read_config->read_cmd.cmds) {
+		pr_err("read command not configured\n");
+		return -EINVAL;
+	}
+
+	if (read_config->cmds_rlen > sizeof(read_config->rbuf) - 12) {
+		pr_err("read length %u exceeds rbuf size %zu\n",
+		       read_config->cmds_rlen, sizeof(read_config->rbuf));
+		return -EINVAL;
+	}
+
 	dsi_display_clk_ctrl(display->dsi_clk_handle,
 		DSI_ALL_CLKS, DSI_CLK_ON);
 
@@ -958,14 +970,14 @@ int dsi_display_read_cmd(struct dsi_panel *panel, u32 packet_count,
 			cmds[i].post_wait_ms = data[4];
 			cmds[i].msg.tx_len = ((data[5] << 8) | (data[6]));
 			size = cmds[i].msg.tx_len * sizeof(u8);
-			if (size > length - 7) {
+			if (length < 7 || size > length - 7) {
 				pr_info("payload size is larger than length(%d)\n", length);
-				goto error_free_mem;
+				goto error_free_payloads;
 			}
 			payload = kzalloc(size, GFP_KERNEL);
 			if (!payload) {
 				rc = -ENOMEM;
-				goto error_free_mem;
+				goto error_free_payloads;
 			}
 
 			for (j = 0; j < cmds[i].msg.tx_len; j++)
@@ -998,7 +1010,6 @@ int dsi_display_read_cmd(struct dsi_panel *panel, u32 packet_count,
 error_free_payloads:
 	for (i = i - 1; i >= 0; i--)
 		kfree(cmds[i].msg.tx_buf);
-error_free_mem:
 	kfree(read_cmd->cmds);
 	read_cmd->cmds = NULL;
 error:
@@ -1184,7 +1195,7 @@ int dsi_display_set_power(struct drm_connector *connector,
 {
 	struct drm_device *dev = NULL;
 	struct dsi_display *display = disp;
-	struct drm_notify_data g_notify_data;
+	extern struct drm_notify_data g_notify_data;
 	int rc = 0;
 	int event = 0;
 	if (!display || !display->panel) {

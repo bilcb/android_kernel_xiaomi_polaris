@@ -39,7 +39,7 @@
 /*****************************************************************************
 * Global variable or extern global variabls/functions
 *****************************************************************************/
-u8 pb_file_ft8719[] = {
+static const u8 pb_file_ft8719[] = {
 #include "../include/pramboot/FT8719_Pramboot_V0.5_20171221.i"
 };
 
@@ -82,7 +82,7 @@ static int fts_ft8719_upgrade_mode(struct i2c_client *client, enum FW_FLASH_MODE
 		goto fw_reset;
 	}
 
-	delay = FTS_ERASE_SECTOR_DELAY * (len / FTS_MAX_LEN_SECTOR);
+	delay = FTS_ERASE_SECTOR_DELAY * ((len + FTS_MAX_LEN_SECTOR - 1) / FTS_MAX_LEN_SECTOR);
 	ret = fts_fwupg_erase(client, delay);
 	if (ret < 0) {
 		FTS_ERROR("erase cmd write fail");
@@ -119,6 +119,9 @@ static int fts_ft8719_upgrade_mode(struct i2c_client *client, enum FW_FLASH_MODE
 	return 0;
 
 fw_reset:
+	FTS_INFO("upgrade fail, reset to normal boot");
+	fts_fwupg_reset_in_boot(client);
+	msleep(400);
 	return -EIO;
 }
 

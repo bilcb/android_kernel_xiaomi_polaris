@@ -287,7 +287,8 @@ static int tas2559_fs_get(struct snd_kcontrol *pKcontrol,
 
 	mutex_lock(&pTAS2559->codec_lock);
 
-	if (pTAS2559->mpFirmware->mnConfigurations)
+	if (pTAS2559->mpFirmware && pTAS2559->mpFirmware->mnConfigurations
+	    && pTAS2559->mnCurrentConfiguration < pTAS2559->mpFirmware->mnConfigurations)
 		nFS = pTAS2559->mpFirmware->mpConfigurations[pTAS2559->mnCurrentConfiguration].mnSamplingRate;
 
 	pValue->value.integer.value[0] = nFS;

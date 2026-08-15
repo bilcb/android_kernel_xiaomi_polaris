@@ -124,7 +124,7 @@ int cam_eeprom_parse_dt_memory_map(struct device_node *node,
 {
 	int       i, rc = 0;
 	char      property[PROPERTY_MAXSIZE];
-	uint32_t  count = MSM_EEPROM_MEM_MAP_PROPERTIES_CNT;
+	uint32_t  count = sizeof(struct cam_eeprom_map_t) / sizeof(uint32_t);
 	struct    cam_eeprom_memory_map_t *map;
 
 	snprintf(property, PROPERTY_MAXSIZE, "num-blocks");
@@ -135,7 +135,7 @@ int cam_eeprom_parse_dt_memory_map(struct device_node *node,
 		return rc;
 	}
 
-	map = kzalloc((sizeof(*map) * data->num_map), GFP_KERNEL);
+	map = vzalloc((sizeof(*map) * data->num_map));
 	if (!map) {
 		rc = -ENOMEM;
 		return rc;
@@ -184,7 +184,7 @@ int cam_eeprom_parse_dt_memory_map(struct device_node *node,
 		data->num_data += map[i].mem.valid_size;
 	}
 
-	data->mapdata = kzalloc(data->num_data, GFP_KERNEL);
+	data->mapdata = vzalloc(data->num_data);
 	if (!data->mapdata) {
 		rc = -ENOMEM;
 		goto ERROR;
@@ -192,7 +192,7 @@ int cam_eeprom_parse_dt_memory_map(struct device_node *node,
 	return rc;
 
 ERROR:
-	kfree(data->map);
+	vfree(data->map);
 	memset(data, 0, sizeof(*data));
 	return rc;
 }
@@ -362,10 +362,11 @@ int cam_eeprom_parse_dt(struct cam_eeprom_ctrl_t *e_ctrl)
 	for (i = 0; i < soc_info->num_clk; i++) {
 		soc_info->clk[i] = devm_clk_get(soc_info->dev,
 			soc_info->clk_name[i]);
-		if (!soc_info->clk[i]) {
+		if (IS_ERR(soc_info->clk[i])) {
 			CAM_ERR(CAM_EEPROM, "get failed for %s",
 				soc_info->clk_name[i]);
-			rc = -ENOENT;
+			rc = PTR_ERR(soc_info->clk[i]);
+			soc_info->clk[i] = NULL;
 			return rc;
 		}
 	}

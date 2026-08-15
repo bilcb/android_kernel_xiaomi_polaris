@@ -92,6 +92,8 @@ struct __limits_cdev_data {
 	u32 min_freq;
 };
 
+static bool lmh_enabled = false;
+
 struct limits_dcvs_hw {
 	char sensor_name[THERMAL_NAME_LENGTH];
 	uint32_t affinity;
@@ -153,7 +155,7 @@ static unsigned long limits_mitigation_notify(struct limits_dcvs_hw *hw)
 	if (!cpu_dev) {
 		pr_err("Error in get CPU%d device\n",
 			cpumask_first(&hw->core_map));
-		goto notify_exit;
+		return hw->hw_freq_limit;
 	}
 
 	pr_debug("CPU:%d max value read:%lu\n",
@@ -182,7 +184,6 @@ static unsigned long limits_mitigation_notify(struct limits_dcvs_hw *hw)
 			max_limit);
 	trace_lmh_dcvs_freq(cpumask_first(&hw->core_map), max_limit);
 
-notify_exit:
 	hw->hw_freq_limit = max_limit;
 	get_online_cpus();
 	cpufreq_update_policy(cpumask_first(&hw->core_map));
@@ -347,6 +348,9 @@ static int enable_lmh(void)
 	int ret = 0;
 	struct scm_desc desc_arg;
 
+	if (lmh_enabled)
+		return 0;
+
 	desc_arg.args[0] = 1;
 	desc_arg.arginfo = SCM_ARGS(1, SCM_VAL);
 	ret = scm_call2(SCM_SIP_FNID(SCM_SVC_LMH, LIMITS_PROFILE_CHANGE),
@@ -355,6 +359,8 @@ static int enable_lmh(void)
 		pr_err("Error switching profile:[1]. err:%d\n", ret);
 		return ret;
 	}
+
+	lmh_enabled = true;
 
 	return ret;
 }
@@ -696,7 +702,6 @@ static int limits_dcvs_probe(struct platform_device *pdev)
 		| IRQF_NO_SUSPEND, hw->sensor_name, hw);
 	if (ret) {
 		pr_err("Error registering for irq. err:%d\n", ret);
-		ret = 0;
 		goto probe_exit;
 	}
 	limits_isens_vref_ldo_init(pdev, hw);
@@ -706,6 +711,10 @@ static int limits_dcvs_probe(struct platform_device *pdev)
 	device_create_file(&pdev->dev, &hw->lmh_freq_attr);
 
 probe_exit:
+	if (ret) {
+		thermal_zone_of_sensor_unregister(&pdev->dev, tzdev);
+		return ret;
+	}
 	mutex_lock(&lmh_dcvs_list_access);
 	INIT_LIST_HEAD(&hw->list);
 	list_add(&hw->list, &lmh_dcvs_hw_list);

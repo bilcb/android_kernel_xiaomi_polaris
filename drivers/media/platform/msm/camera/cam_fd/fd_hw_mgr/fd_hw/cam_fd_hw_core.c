@@ -566,6 +566,10 @@ irqreturn_t cam_fd_hw_irq(int irq_num, void *data)
 	 * We should never get an IRQ callback with no or more than one mask.
 	 * Validate first to make sure nothing going wrong.
 	 */
+	cam_fd_soc_register_write(soc_info, CAM_FD_REG_WRAPPER,
+		hw_static_info->wrapper_regs.irq_clear,
+		hw_static_info->irq_mask);
+
 	if (num_irqs != 1) {
 		CAM_ERR(CAM_FD,
 			"Invalid number of IRQs, value=0x%x, num_irqs=%d",
@@ -574,10 +578,6 @@ irqreturn_t cam_fd_hw_irq(int irq_num, void *data)
 	}
 
 	trace_cam_irq_activated("FD", irq_type);
-
-	cam_fd_soc_register_write(soc_info, CAM_FD_REG_WRAPPER,
-		hw_static_info->wrapper_regs.irq_clear,
-		hw_static_info->irq_mask);
 
 	if (irq_type == CAM_FD_IRQ_HALT_DONE) {
 		/*
@@ -908,7 +908,7 @@ int cam_fd_hw_start(void *hw_priv, void *hw_start_args, uint32_t arg_size)
 		cdm_cmd->userdata = NULL;
 		cdm_cmd->cookie = 0;
 
-		for (i = 0 ; i <= start_args->num_hw_update_entries; i++) {
+		for (i = 0 ; i < start_args->num_hw_update_entries; i++) {
 			cmd = (start_args->hw_update_entries + i);
 			cdm_cmd->cmd[i].bl_addr.mem_handle = cmd->handle;
 			cdm_cmd->cmd[i].offset = cmd->offset;

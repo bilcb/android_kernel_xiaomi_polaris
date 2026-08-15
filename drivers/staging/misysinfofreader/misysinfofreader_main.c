@@ -43,7 +43,7 @@ void misysinfo_update_slowpath(u64 time_stamp_ns, u64 time_ns)
 	unsigned long flags;
 	u32 time_ms;
 	if (sysinfo != NULL) {
-		time_ms = time_ns >> 20;
+		time_ms = time_ns / 1000000;
 		if (!spin_trylock_irqsave(&mm_slowpath_lock, flags))
 			return;
 		sysinfo->mm_slowpath.count++;
@@ -109,17 +109,18 @@ static int __init misysinfofreader_init(void)
 	local_sysinfo->version = MI_SYSINFO_VERSION;
 	local_sysinfo->config_hz = CONFIG_HZ;
 
+	sysinfo = local_sysinfo;
+	misysinfo_jiffies = &sysinfo->jiffies;
+	spin_lock_init(&mm_slowpath_lock);
+
 	ret = misc_register(&misysinfofreader_misc);
 	if (unlikely(ret)) {
+		sysinfo = NULL;
+		misysinfo_jiffies = NULL;
 		free_page((unsigned long)local_sysinfo);
 		pr_err("failed to register misc device!\n");
 		return ret;
 	}
-
-	sysinfo = local_sysinfo;
-	misysinfo_jiffies = &sysinfo->jiffies;
-
-	spin_lock_init(&mm_slowpath_lock);
 
 	pr_info("initialized\n");
 

@@ -14,6 +14,8 @@
 
 #include <linux/mm.h>
 #include <linux/highmem.h>
+#include <linux/sched.h>
+#include <linux/pid.h>
 
 #include "kgsl.h"
 #include "kgsl_mm_dump.h"
@@ -91,13 +93,13 @@ print_mem_entry(struct kgsl_mem_entry *entry)
 		kgsl_get_egl_counts(entry, &egl_surface_count,
 						&egl_image_count);
 
-	pr_err("%p %p %16llu %5d %9s %10s %16s %5d %16llu %6d %6d",
+	pr_err("%p %p %16llu %5u %9s %10s %16s %5u %16u %6d %6d",
 			(uint64_t *)(uintptr_t) m->gpuaddr,
 			/*
 			 * Show zero for the useraddr - we can't reliably track
 			 * that value for multiple vmas anyway
 			 */
-			0, m->size, entry->id, flags,
+			(void *)0, m->size, entry->id, flags,
 			memtype_str(usermem_type),
 			usage, (m->sgt ? m->sgt->nents : 0),
 			atomic_read(&entry->map_count),
@@ -119,7 +121,7 @@ kgsl_dump_memory_entry(struct kgsl_process_private *private)
 	if (!private)
 		return;
 
-	sprintf(pMemFile, "/d/kgsl/proc/%d/mem", private->pid);
+	snprintf(pMemFile, sizeof(pMemFile), "/d/kgsl/proc/%d/mem", pid_nr(private->pid));
 	pr_info("cat %s:", pMemFile);
 
 	pr_err("%16s %16s %16s %5s %9s %10s %16s %5s %16s %6s %6s\n",
@@ -128,7 +130,12 @@ kgsl_dump_memory_entry(struct kgsl_process_private *private)
 
 	spin_lock(&private->mem_lock);
 	idr_for_each_entry(&private->mem_idr, entry, id) {
-		print_mem_entry(entry);
+		if (kgsl_mem_entry_get(entry)) {
+			spin_unlock(&private->mem_lock);
+			print_mem_entry(entry);
+			kgsl_mem_entry_put(entry);
+			spin_lock(&private->mem_lock);
+		}
 	}
 	spin_unlock(&private->mem_lock);
 
@@ -168,7 +175,8 @@ file_path_name(const struct path *path, char *buf, size_t size)
 }
 
 static void
-print_vma_name(struct vm_area_struct *vma, char *buf, size_t size)
+print_vma_name(struct vm_area_struct *vma, struct task_struct *task,
+		char *buf, size_t size)
 {
 	const char __user *name = vma_get_anon_name(vma);
 	struct mm_struct *mm = vma->vm_mm;
@@ -194,7 +202,7 @@ print_vma_name(struct vm_area_struct *vma, char *buf, size_t size)
 		long pages_pinned;
 		struct page *page;
 
-		pages_pinned = get_user_pages_remote(current, mm,
+		pages_pinned = get_user_pages_remote(task, mm,
 				page_start_vaddr, 1, 0, &page, NULL);
 		if (pages_pinned < 1) {
 			strcpy(buf+len_buf, "<fault>]");
@@ -222,7 +230,7 @@ print_vma_name(struct vm_area_struct *vma, char *buf, size_t size)
 }
 
 static void
-show_map_vma(struct vm_area_struct *vma)
+show_map_vma(struct vm_area_struct *vma, struct task_struct *task)
 {
 	struct mm_struct *mm = vma->vm_mm;
 	struct file *file = vma->vm_file;
@@ -236,6 +244,12 @@ show_map_vma(struct vm_area_struct *vma)
 	char *file_name;
 	pMemTmp = (char *)kzalloc(1024, GFP_KERNEL);
 	file_name = (char *)kzalloc(1024, GFP_KERNEL);
+
+	if (!pMemTmp || !file_name) {
+		kfree(pMemTmp);
+		kfree(file_name);
+		return;
+	}
 
 	if (file) {
 		struct inode *inode = file_inode(vma->vm_file);
@@ -288,14 +302,14 @@ show_map_vma(struct vm_area_struct *vma)
 
 		if (vma_get_anon_name(vma)) {
 			//seq_pad(m, ' ');
-			print_vma_name(vma, file_name, 1024);
+			print_vma_name(vma, task, file_name, 1024);
 			name = file_name;
 		}
 	}
 
 done:
 
-	sprintf(pMemTmp, "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu %s\n",
+	snprintf(pMemTmp, 1024, "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu %s\n",
 			start,
 			end,
 			flags & VM_READ ? 'r' : '-',
@@ -322,7 +336,9 @@ kgsl_dump_mmap(struct kgsl_process_private *private)
 	*/
 
 	char pMemFile[1024] = {0};
-	sprintf(pMemFile, "/proc/%d/maps", private->pid);
+	if (!private)
+		return;
+	snprintf(pMemFile, sizeof(pMemFile), "/proc/%d/maps", pid_nr(private->pid));
 	pr_info("cat %s:", pMemFile);
 #if 0
 	filp = filp_open(pMemFile, O_RDONLY, 0);
@@ -350,11 +366,32 @@ kgsl_dump_mmap(struct kgsl_process_private *private)
 #else
 	{
 		struct vm_area_struct *vma;
-		struct mm_struct *mm = current->mm;
+		struct mm_struct *mm;
+		struct task_struct *task = NULL;
 
-		for (vma = mm->mmap; vma; vma = vma->vm_next) {
-			show_map_vma(vma);
+		rcu_read_lock();
+		task = find_task_by_vpid(pid_nr(private->pid));
+		if (task)
+			get_task_struct(task);
+		rcu_read_unlock();
+
+		if (!task) {
+			pr_err("task not found\n");
+			return;
 		}
+		mm = get_task_mm(task);
+		if (!mm) {
+			put_task_struct(task);
+			pr_err("no mm available\n");
+			return;
+		}
+		down_read(&mm->mmap_sem);
+		for (vma = mm->mmap; vma; vma = vma->vm_next) {
+			show_map_vma(vma, task);
+		}
+		up_read(&mm->mmap_sem);
+		mmput(mm);
+		put_task_struct(task);
 	}
 #endif
 	return;

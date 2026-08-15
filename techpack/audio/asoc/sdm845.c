@@ -2978,24 +2978,56 @@ static int ultrasound_power_get(struct snd_kcontrol *kcontrol,
 static int ultrasound_power_put(struct snd_kcontrol *kcontrol,
                                struct snd_ctl_elem_value *ucontrol)
 {
-       struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-       struct snd_soc_card *card = codec->component.card;
-       struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
+       struct snd_soc_codec *codec = NULL;
+       struct snd_soc_card *card = NULL;
+       struct msm_asoc_mach_data *pdata = NULL;
        int ret;
 
-       ultrasound_power_state = ucontrol->value.integer.value[0];
        pr_debug("%s: ultrasound power %d\n", __func__, ultrasound_power_state);
 
+       codec = snd_soc_kcontrol_codec(kcontrol);
+       if (codec) {
+               card = codec->component.card;
+               if (card)
+                       pdata = snd_soc_card_get_drvdata(card);
+       }
+       if (!pdata)
+               return -EINVAL;
+
+       ultrasound_power_state = ucontrol->value.integer.value[0];
+
        if (ultrasound_power_state == 1) {
-               if (pdata->us_p_power)
+               if (pdata->us_p_power) {
                        ret = regulator_enable(pdata->us_p_power);
-               if (pdata->us_n_power)
+                       if (ret < 0) {
+                               pr_err("%s: us_p_power enable failed %d\n",
+                                       __func__, ret);
+                               return ret;
+                       }
+               }
+               if (pdata->us_n_power) {
                        ret = regulator_enable(pdata->us_n_power);
+                       if (ret < 0) {
+                               pr_err("%s: us_n_power enable failed %d\n",
+                                       __func__, ret);
+                               if (pdata->us_p_power)
+                                       regulator_disable(pdata->us_p_power);
+                               return ret;
+                       }
+               }
        } else {
-               if (pdata->us_p_power)
+               if (pdata->us_p_power) {
                        ret = regulator_disable(pdata->us_p_power);
-               if (pdata->us_n_power)
+                       if (ret < 0)
+                               pr_err("%s: us_p_power disable failed %d\n",
+                                       __func__, ret);
+               }
+               if (pdata->us_n_power) {
                        ret = regulator_disable(pdata->us_n_power);
+                       if (ret < 0)
+                               pr_err("%s: us_n_power disable failed %d\n",
+                                       __func__, ret);
+               }
        }
 
        return 0;
@@ -3016,11 +3048,8 @@ static int usbhs_direction_get(struct snd_kcontrol *kcontrol,
 		if (card) {
 			pdata = snd_soc_card_get_drvdata(card);
 			if (pdata){
-				if (pdata->usbc_en2_gpio_p) {
+				if (gpio_is_valid(pdata->usbc_en2_gpio))
 					ucontrol->value.integer.value[0] = gpio_get_value_cansleep(pdata->usbc_en2_gpio);
-				} else if (pdata->usbc_en2_gpio > 0) {
-					ucontrol->value.integer.value[0] = gpio_get_value_cansleep(pdata->usbc_en2_gpio);
-				}
 			}
 		}
 	}
@@ -7413,7 +7442,6 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 	}
 	wcd_mbhc_cfg.dual_adc_gpio_node = pdata->adc2_sel_gpio_p;
 	wcd_mbhc_cfg.enable_dual_adc_gpio = external_enable_dual_adc_gpio;
-	pr_info("pdata->adc2_sel_gpio_p = %lx\n", (unsigned long)pdata->adc2_sel_gpio_p);
 
 	pdata->usbc_en2_gpio = of_get_named_gpio(card->dev->of_node,
 				    "qcom,usbc-analog-en2-gpio", 0);
@@ -7622,6 +7650,9 @@ static int msm_asoc_machine_remove(struct platform_device *pdev)
 
 	msm_release_pinctrl(pdev);
 	snd_soc_unregister_card(card);
+	if (pdata->adc2_sel_gpio_p)
+		of_node_put(pdata->adc2_sel_gpio_p);
+
 	return 0;
 }
 

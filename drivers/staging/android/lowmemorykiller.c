@@ -677,7 +677,7 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 
 	if (min_score_adj == OOM_SCORE_ADJ_MAX + 1) {
 		trace_almk_shrink(0, ret, other_free, other_file, 0);
-		lowmem_print(5, "lowmem_scan %lu, %x, return 0\n",
+		lowmem_print(5, "lowmem_scan %lu, %x, return SHRINK_STOP\n",
 			     sc->nr_to_scan, sc->gfp_mask);
 		mutex_unlock(&scan_mutex);
 		return SHRINK_STOP;

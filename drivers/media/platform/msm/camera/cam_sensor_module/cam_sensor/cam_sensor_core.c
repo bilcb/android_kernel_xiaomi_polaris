@@ -641,6 +641,7 @@ void cam_sensor_shutdown(struct cam_sensor_ctrl_t *s_ctrl)
 	power_info->power_down_setting_size = 0;
 	s_ctrl->streamon_count = 0;
 	s_ctrl->streamoff_count = 0;
+	s_ctrl->is_probe_succeed = 0;
 	s_ctrl->sensor_state = CAM_SENSOR_INIT;
 }
 
@@ -790,8 +791,9 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 		rc = copy_from_user(&sensor_acq_dev,
 			u64_to_user_ptr(cmd->handle),
 			sizeof(sensor_acq_dev));
-		if (rc < 0) {
+		if (rc) {
 			CAM_ERR(CAM_SENSOR, "Failed Copying from user");
+			rc = -EFAULT;
 			goto release_mutex;
 		}
 
@@ -993,25 +995,56 @@ int32_t cam_sensor_driver_cmd(struct cam_sensor_ctrl_t *s_ctrl,
 		break;
 	case CAM_IR_UPDATE: {
 		struct cam_sensor_i2c_reg_setting user_reg_setting;
-		struct cam_sensor_i2c_reg_array i2c_reg_setting[cmd->size];
+		struct cam_sensor_i2c_reg_array *i2c_reg_setting = NULL;
 
-		rc = copy_from_user(&user_reg_setting, (void __user *)cmd->handle, sizeof(user_reg_setting));
-		if (rc < 0) {
-			CAM_ERR(CAM_SENSOR, "Copy data from user space failed\n");
+		if (cmd->size == 0 || cmd->size > 4096) {
+			CAM_ERR(CAM_SENSOR, "Invalid IR reg setting size %u\n", cmd->size);
+			rc = -EINVAL;
 			goto release_mutex;
 		}
-
-		rc = copy_from_user(i2c_reg_setting, (void __user *)user_reg_setting.reg_setting, sizeof(i2c_reg_setting));
-		if (rc < 0) {
-			CAM_ERR(CAM_SENSOR, "Copy i2c setting from user space failed\n");
+		i2c_reg_setting = kcalloc(cmd->size, sizeof(*i2c_reg_setting),
+			GFP_KERNEL);
+		if (!i2c_reg_setting) {
+			rc = -ENOMEM;
 			goto release_mutex;
+		}
+		rc = copy_from_user(&user_reg_setting,
+			(void __user *)cmd->handle, sizeof(user_reg_setting));
+		if (rc) {
+			CAM_ERR(CAM_SENSOR,
+				"Copy data from user space failed\n");
+			rc = -EFAULT;
+			goto free_reg;
+		}
+
+		if (user_reg_setting.size == 0 ||
+				user_reg_setting.size > cmd->size) {
+			CAM_ERR(CAM_SENSOR,
+				"Invalid IR reg setting count %u\n",
+				user_reg_setting.size);
+			rc = -EINVAL;
+			goto free_reg;
+		}
+
+		rc = copy_from_user(i2c_reg_setting,
+			(void __user *)user_reg_setting.reg_setting,
+			cmd->size * sizeof(*i2c_reg_setting));
+		if (rc) {
+			CAM_ERR(CAM_SENSOR,
+				"Copy i2c setting from user space failed\n");
+			rc = -EFAULT;
+			goto free_reg;
 		}
 
 		user_reg_setting.reg_setting = i2c_reg_setting;
 
-		rc = camera_io_dev_write(&s_ctrl->io_master_info, &user_reg_setting);
+		rc = camera_io_dev_write(&s_ctrl->io_master_info,
+			&user_reg_setting);
 		if (rc < 0)
-			CAM_ERR(CAM_SENSOR, "Write setting failed, rc = %d\n", rc);
+			CAM_ERR(CAM_SENSOR,
+				"Write setting failed, rc = %d\n", rc);
+free_reg:
+		kfree(i2c_reg_setting);
 	}
 		break;
 	case CAM_IR_GET_POWER_STATE: {

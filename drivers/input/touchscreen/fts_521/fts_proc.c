@@ -195,9 +195,9 @@ static void *fts_seq_start(struct seq_file *s, loff_t *pos)
 
 	if (driver_test_buff == NULL && *pos == 0) {
 		logError(1, "%s %s: No data to print!\n", tag, __func__);
-		driver_test_buff = (u8 *) kmalloc(13 * sizeof(u8), GFP_KERNEL);
+		driver_test_buff = (u8 *) kmalloc(14 * sizeof(u8), GFP_KERNEL);
 
-		snprintf(driver_test_buff, PAGE_SIZE, "{ %08X }\n", ERROR_OP_NOT_ALLOW);
+		snprintf(driver_test_buff, 14, "{ %08X }\n", ERROR_OP_NOT_ALLOW);
 
 		limit = strlen(driver_test_buff);
 	} else {
@@ -324,38 +324,38 @@ static ssize_t fts_driver_test_write(struct file *file, const char __user *buf,
 	int numberParam = 0;
 	struct fts_ts_info *info = dev_get_drvdata(getDev());
 	char *p = NULL;
-	char pbuf[count];
-	char path[100] = { 0 };
+	char pbuf[(count > CHUNK_PROC * 2) ? CHUNK_PROC * 2 : count];
+	char path[101] = { 0 };
 	int res = -1, j, index = 0;
 	int size = 6;
 	int temp, byte_call = 0;
 	u16 byteToRead = 0;
 	u32 fileSize = 0;
 	u8 *readData = NULL;
-	u8 cmd[count];
-	u32 funcToTest[((count + 1) / 3)];
+	u8 cmd[(count > CHUNK_PROC * 2) ? CHUNK_PROC * 2 : count];
+	u32 funcToTest[(((count > CHUNK_PROC * 2) ? CHUNK_PROC * 2 : count) + 1) / 3];
 	u64 addr = 0;
 	MutualSenseFrame frameMS;
 	SelfSenseFrame frameSS;
-
 	DataHeader dataHead;
 	MutualSenseData compData;
 	SelfSenseData comData;
 	TotMutualSenseData totCompData;
 	TotSelfSenseData totComData;
-
 	u64 address;
 	u16 fw_version;
 	u16 config_id;
-
 	Firmware fw;
 	LimitFile lim;
+
+	if (count > CHUNK_PROC * 2)
+		count = CHUNK_PROC * 2;
 
 	mess.dummy = 0;
 	mess.action = 0;
 	mess.msg_size = 0;
 
-	if (access_ok(VERIFY_READ, buf, count) < OK
+	if (!access_ok(VERIFY_READ, buf, count)
 	    || copy_from_user(pbuf, buf, count) != 0) {
 		res = ERROR_ALLOC;
 		goto END;
@@ -439,7 +439,7 @@ static ssize_t fts_driver_test_write(struct file *file, const char __user *buf,
 				goto END;
 			}
 
-			if (numberParam - 1 != 0)
+			if (numberParam - 1 > 0)
 				memcpy(&cmd[1], &p[7], numberParam - 1);
 		}
 	} else {
@@ -1560,6 +1560,7 @@ static ssize_t fts_driver_test_write(struct file *file, const char __user *buf,
 						 "%s Limits dimension expected by Host is less than actual size: expected = %d, real = %d \n",
 						 tag, byteToRead, fileSize);
 					res = ERROR_OP_NOT_ALLOW;
+					fileSize = addr;
 				}
 
 				size += (addr * sizeof(u8));
@@ -1607,6 +1608,7 @@ static ssize_t fts_driver_test_write(struct file *file, const char __user *buf,
 						 "%s FW dimension expected by Host is less than actual size: expected = %d, real = %d \n",
 						 tag, byteToRead, fileSize);
 					res = ERROR_OP_NOT_ALLOW;
+					fileSize = addr;
 				}
 
 				size += (addr * sizeof(u8));
@@ -1960,9 +1962,9 @@ END:
 	} else {
 		if (bin_output != 1) {
 			size *= 2;
-			size -= 1;
+			size += 7;
 		} else
-			size += 1;
+			size += 5;
 	}
 
 	logError(0, "%s Size = %d\n", tag, size);
@@ -2414,7 +2416,7 @@ int fts_proc_init(void)
 
 	int retval = 0;
 
-	fts_dir = proc_mkdir_data("fts", 0777, NULL, NULL);
+	fts_dir = proc_mkdir_data("fts", 0750, NULL, NULL);
 	if (fts_dir == NULL) {
 		retval = -ENOMEM;
 		goto out;
@@ -2446,5 +2448,9 @@ int fts_proc_remove(void)
 {
 	remove_proc_entry(DRIVER_TEST_FILE_NODE, fts_dir);
 	remove_proc_entry("fts", NULL);
+	remove_proc_entry("tp_lockdown_info", NULL);
+	remove_proc_entry("tp_selftest", NULL);
+	remove_proc_entry("tp_data_dump", NULL);
+	remove_proc_entry("tp_fw_version", NULL);
 	return OK;
 }

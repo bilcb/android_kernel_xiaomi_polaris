@@ -31,16 +31,16 @@ static long sl_eeprom_subdev_ioctl(struct file *filp,
 	mutex_lock(&(e_ctrl->eeprom_mutex));
 	switch (cmd) {
 	case DL_IOC_PWR_UP:
-		sl_eeprom_power_up_wrapper(e_ctrl,  (void*)arg);
+		rc = sl_eeprom_power_up_wrapper(e_ctrl,  (void*)arg);
 		break;
 	case DL_IOC_READ_DATA:
-		sl_eeprom_read_eeprom_wrapper(e_ctrl, (void*)arg);
+		rc = sl_eeprom_read_eeprom_wrapper(e_ctrl, (void*)arg);
 		break;
 	case DL_IOC_WRITE_DATA:
-		sl_eeprom_write_eeprom_wrapper(e_ctrl,  (void*)arg);
+		rc = sl_eeprom_write_eeprom_wrapper(e_ctrl,  (void*)arg);
 		break;
 	case DL_IOC_PWR_DOWN:
-		sl_eeprom_power_down_wrapper(e_ctrl,  (void*)arg);
+		rc = sl_eeprom_power_down_wrapper(e_ctrl,  (void*)arg);
 		break;
 	default:
 		rc = -ENOIOCTLCMD;
@@ -58,9 +58,6 @@ static const struct file_operations dl_eeprom_fops =
 	.read = NULL,
 	.write = NULL,
 	.unlocked_ioctl = sl_eeprom_subdev_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl = sl_eeprom_subdev_ioctl,
-#endif
 };
 
 /**
@@ -106,31 +103,42 @@ static int sl_eeprom_init_subdev(struct sl_eeprom_ctrl_t *e_ctrl)
 	strlcpy(e_ctrl->dev_info.class_name, DL_CLASS_NAME,
 		sizeof(e_ctrl->dev_info.class_name));
 	e_ctrl->dev_info.chr_class = class_create(THIS_MODULE, DL_CLASS_NAME);
-	if (e_ctrl->dev_info.chr_class == NULL) {
+	if (IS_ERR(e_ctrl->dev_info.chr_class)) {
 		CAM_ERR(CAM_SL_EEPROM,  "Failed to create class.\n");
-		rc = -EINVAL;
+		rc = PTR_ERR(e_ctrl->dev_info.chr_class);
+		e_ctrl->dev_info.chr_class = NULL;
+		return rc;
 	}
 	rc = alloc_chrdev_region(&e_ctrl->dev_info.dev_num, 0, 1, CAM_SL_EEPROM_NAME);
 	if (rc < 0) {
 		CAM_ERR(CAM_SL_EEPROM,  "Failed to allocate chrdev region\n");
-		rc = -EINVAL;
+		goto err_class;
 	}
 	e_ctrl->dev_info.chr_dev = device_create(e_ctrl->dev_info.chr_class, NULL,
 					e_ctrl->dev_info.dev_num, e_ctrl, CAM_SL_EEPROM_NAME);
 	if (IS_ERR(e_ctrl->dev_info.chr_dev)) {
 		CAM_ERR(CAM_SL_EEPROM, "Failed to create char device\n");
 		rc = -ENODEV;
+		goto err_region;
 	}
 
 	cdev_init(&(e_ctrl->dev_info.cdev), &dl_eeprom_fops);
 	e_ctrl->dev_info.cdev.owner = THIS_MODULE;
 
 	rc = cdev_add(&(e_ctrl->dev_info.cdev), e_ctrl->dev_info.dev_num, 1);
-	dev_set_drvdata(e_ctrl->dev_info.chr_dev, (void*)e_ctrl);
 	if (rc < 0) {
 		CAM_ERR(CAM_SL_EEPROM,  "Failed to add cdev\n");
 		rc = -ENODEV;
+		goto err_device;
 	}
+	dev_set_drvdata(e_ctrl->dev_info.chr_dev, (void*)e_ctrl);
+	return 0;
+err_device:
+	device_destroy(e_ctrl->dev_info.chr_class, e_ctrl->dev_info.dev_num);
+err_region:
+	unregister_chrdev_region(e_ctrl->dev_info.dev_num, 1);
+err_class:
+	class_destroy(e_ctrl->dev_info.chr_class);
 	return rc;
 }
 
@@ -203,7 +211,13 @@ static int32_t sl_eeprom_platform_driver_probe(
 	g_e_ctrl = e_ctrl;
 	return rc;
 free_soc:
+	if (soc_private) {
+		kfree(soc_private->power_info.power_setting);
+		kfree(soc_private->power_info.power_down_setting);
+		kfree(soc_private->power_info.gpio_num_info);
+	}
 	kfree(soc_private);
+	mutex_destroy(&(e_ctrl->eeprom_mutex));
 free_cci_client:
 	kfree(e_ctrl->io_master_info.cci_client);
 free_e_ctrl:
@@ -230,11 +244,30 @@ free_e_ctrl:
 
 	soc_info = &e_ctrl->soc_info;
 
+	if (e_ctrl->dev_info.chr_class) {
+		device_destroy(e_ctrl->dev_info.chr_class,
+			e_ctrl->dev_info.dev_num);
+		cdev_del(&e_ctrl->dev_info.cdev);
+		class_destroy(e_ctrl->dev_info.chr_class);
+	}
+	unregister_chrdev_region(e_ctrl->dev_info.dev_num, 1);
+
+	g_e_ctrl = NULL;
+
 	for (i = 0; i < soc_info->num_clk; i++)
 		devm_clk_put(soc_info->dev, soc_info->clk[i]);
 
+	if (soc_info->soc_private) {
+		struct sl_eeprom_soc_private *soc_priv =
+			(struct sl_eeprom_soc_private *)soc_info->soc_private;
+
+		kfree(soc_priv->power_info.power_setting);
+		kfree(soc_priv->power_info.power_down_setting);
+		kfree(soc_priv->power_info.gpio_num_info);
+	}
 	kfree(soc_info->soc_private);
 	kfree(e_ctrl->io_master_info.cci_client);
+	mutex_destroy(&(e_ctrl->eeprom_mutex));
 	kfree(e_ctrl);
 	return 0;
 }

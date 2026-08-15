@@ -52,7 +52,7 @@ char *printHex(char *label, u8 *buff, int count, u8 *result)
 
 	offset = strlen(label);
 
-	strlcpy(result, label, offset);
+	strlcpy(result, label, offset + 1);
 
 	for (i = 0; i < count; i++) {
 		snprintf(&result[offset], 4, "%02X ", buff[i]);
@@ -72,7 +72,7 @@ char *printHex_data(char *label, u8 *buff, int count)
 	    (char *)kmalloc(((offset + 4 * count) + 1) * sizeof(char),
 			    GFP_KERNEL);
 	if (result != NULL) {
-		strlcpy(result, label, offset);
+		strlcpy(result, label, offset + 1);
 
 		for (i = 0; i < count; i++) {
 			snprintf(&result[offset], 4, "%02X ", buff[i]);
@@ -121,6 +121,8 @@ int u8ToU16n(u8 *src, int src_length, u16 *dst)
 		j = 0;
 		dst =
 		    (u16 *) kmalloc((src_length / 2) * sizeof(u16), GFP_KERNEL);
+		if (dst == NULL)
+			return ERROR_ALLOC;
 		for (i = 0; i < src_length; i += 2) {
 			dst[j] =
 			    ((src[i + 1] & 0x00FF) << 8) + (src[i] & 0x00FF);
@@ -166,6 +168,8 @@ int u16ToU8n_be(u16 *src, int src_length, u8 *dst)
 {
 	int i, j;
 	dst = (u8 *) kmalloc((2 * src_length) * sizeof(u8), GFP_KERNEL);
+	if (dst == NULL)
+		return ERROR_ALLOC;
 	j = 0;
 	for (i = 0; i < src_length; i++) {
 		dst[j] = (u8) (src[i] & 0xFF00) >> 8;
@@ -265,7 +269,7 @@ int attempt_function(int (*code) (void), unsigned long wait_before_retry,
 		mdelay(wait_before_retry);
 	} while (count < retry_count && result < 0);
 
-	if (count == retry_count)
+	if (result < 0)
 		return (result | ERROR_TIMEOUT);
 	else
 		return result;
@@ -345,15 +349,24 @@ int cleanUp(int enableTouch)
 short **array1dTo2d_short(short *data, int size, int columns)
 {
 
-	int i;
-	short **matrix =
-	    (short **)kmalloc(((int)(size / columns)) * sizeof(short *),
-			      GFP_KERNEL);
+	int i, rows;
+	short **matrix;
+
+	if (columns <= 0 || data == NULL)
+		return NULL;
+
+	rows = (size + columns - 1) / columns;
+	matrix = (short **) kmalloc(rows * sizeof(short *), GFP_KERNEL);
 	if (matrix != NULL) {
-		for (i = 0; i < (int)(size / columns); i++) {
+		for (i = 0; i < rows; i++) {
 			matrix[i] =
-			    (short *)kmalloc(columns * sizeof(short),
-					     GFP_KERNEL);
+			    (short *) kmalloc(columns * sizeof(short), GFP_KERNEL);
+			if (matrix[i] == NULL) {
+				while (i-- > 0)
+					kfree(matrix[i]);
+				kfree(matrix);
+				return NULL;
+			}
 		}
 
 		for (i = 0; i < size; i++) {
@@ -374,13 +387,24 @@ short **array1dTo2d_short(short *data, int size, int columns)
 u16 **array1dTo2d_u16(u16 *data, int size, int columns)
 {
 
-	int i;
-	u16 **matrix = (u16 **) kmalloc(((int)(size / columns)) * sizeof(u16 *),
-					GFP_KERNEL);
+	int i, rows;
+	u16 **matrix;
+
+	if (columns <= 0 || data == NULL)
+		return NULL;
+
+	rows = (size + columns - 1) / columns;
+	matrix = (u16 **) kmalloc(rows * sizeof(u16 *), GFP_KERNEL);
 	if (matrix != NULL) {
-		for (i = 0; i < (int)(size / columns); i++) {
+		for (i = 0; i < rows; i++) {
 			matrix[i] =
 			    (u16 *) kmalloc(columns * sizeof(u16), GFP_KERNEL);
+			if (matrix[i] == NULL) {
+				while (i-- > 0)
+					kfree(matrix[i]);
+				kfree(matrix);
+				return NULL;
+			}
 		}
 
 		for (i = 0; i < size; i++) {
@@ -401,13 +425,24 @@ u16 **array1dTo2d_u16(u16 *data, int size, int columns)
 u8 **array1dTo2d_u8(u8 *data, int size, int columns)
 {
 
-	int i;
-	u8 **matrix =
-	    (u8 **) kmalloc(((int)(size / columns)) * sizeof(u8 *), GFP_KERNEL);
+	int i, rows;
+	u8 **matrix;
+
+	if (columns <= 0 || data == NULL)
+		return NULL;
+
+	rows = (size + columns - 1) / columns;
+	matrix = (u8 **) kmalloc(rows * sizeof(u8 *), GFP_KERNEL);
 	if (matrix != NULL) {
-		for (i = 0; i < (int)(size / columns); i++) {
+		for (i = 0; i < rows; i++) {
 			matrix[i] =
 			    (u8 *) kmalloc(columns * sizeof(u8), GFP_KERNEL);
+			if (matrix[i] == NULL) {
+				while (i-- > 0)
+					kfree(matrix[i]);
+				kfree(matrix);
+				return NULL;
+			}
 		}
 
 		for (i = 0; i < size; i++) {
@@ -428,13 +463,24 @@ u8 **array1dTo2d_u8(u8 *data, int size, int columns)
 i8 **array1dTo2d_i8(i8 *data, int size, int columns)
 {
 
-	int i;
-	i8 **matrix =
-	    (i8 **) kmalloc(((int)(size / columns)) * sizeof(i8 *), GFP_KERNEL);
+	int i, rows;
+	i8 **matrix;
+
+	if (columns <= 0 || data == NULL)
+		return NULL;
+
+	rows = (size + columns - 1) / columns;
+	matrix = (i8 **) kmalloc(rows * sizeof(i8 *), GFP_KERNEL);
 	if (matrix != NULL) {
-		for (i = 0; i < (int)(size / columns); i++) {
+		for (i = 0; i < rows; i++) {
 			matrix[i] =
 			    (i8 *) kmalloc(columns * sizeof(i8), GFP_KERNEL);
+			if (matrix[i] == NULL) {
+				while (i-- > 0)
+					kfree(matrix[i]);
+				kfree(matrix);
+				return NULL;
+			}
 		}
 
 		for (i = 0; i < size; i++) {

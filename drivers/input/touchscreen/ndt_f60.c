@@ -133,11 +133,13 @@ static int ndt_read_register(unsigned char reg, unsigned char *datbuf, int byten
 		return -EINVAL;
 	do {
 		ret = i2c_transfer(g_ndt_client->adapter, msg, 2);
-		if (ret >= 0)
+		if (ret == 2)
 			break;
 		if (ret < 0)
 			pr_err("ndt:i2c_transfer Error ! err_code:%d, retry:%d\n", ret, retry);
 	} while (retry++ < 5);
+	if (ret != 2)
+		ret = -EIO;
 	return ret;
 }
 
@@ -167,12 +169,14 @@ static int ndt_write_register(unsigned char reg, unsigned char *datbuf, int byte
 	msg.buf = buf;
 	do {
 		ret = i2c_transfer(g_ndt_client->adapter, &msg, 1);
-		if (ret >= 0)
+		if (ret == 1)
 			break;
 		if (ret < 0) {
 			pr_err("ndt:i2c_transfer Error ! err_code:%d, retry:%d\n", ret, retry);
 		}
 	} while (retry++ < 5);
+	if (ret != 1)
+		ret = -EIO;
 
 	kfree(buf);
 	return ret;
@@ -267,6 +271,10 @@ static int ndt_burn_fw(unsigned char *buf, unsigned int len, int retry)
 	ndt_reset();
 	/*erase flash*/
 	read_buf = (unsigned char *)kmalloc(len, GFP_KERNEL);
+	if (!read_buf) {
+		pr_err("ndt: failed to allocate read buffer\n");
+		return -ENOMEM;
+	}
 
 	do {
 		pr_info("ndt:burn eeprom number: %d\n", number + 1);
@@ -299,6 +307,8 @@ static int ndt_burn_fw(unsigned char *buf, unsigned int len, int retry)
 		byteno = 256;
 
 		while (i2c_ok_flag && pos < len) {
+			if (len - pos < byteno)
+				byteno = len - pos;
 			if (ndt_read_eeprom(reg, read_buf + pos, byteno) > 0) {
 				pr_debug("ndt:reg=0x%02x,byteno=%d\n", reg, byteno);
 			} else {
@@ -363,6 +373,13 @@ static ssize_t pressure_update_fw_show(struct device *dev, struct device_attribu
 		return -EINVAL;
 	}
 	memcpy(data, fw_entry->data, fw_size);
+
+	if (fw_size < 10) {
+		pr_err("%s fw file too small\n", __func__);
+		release_firmware(fw_entry);
+		kfree(data);
+		return -EINVAL;
+	}
 
 	reg = IIC_FW_VER;
 	byteno = 2;
@@ -491,7 +508,7 @@ static ssize_t pressure_update_fw_store(struct device *dev, struct device_attrib
 	fw_name = kzalloc(len + 1, GFP_KERNEL);
 	if (fw_name == NULL)
 		return -ENOMEM;
-	if (count > 0) {
+	if (len > 0) {
 		strlcpy(fw_name, buf, len);
 		if (fw_name[len - 1] == '\n')
 			fw_name[len - 1] = 0;
@@ -500,6 +517,7 @@ static ssize_t pressure_update_fw_store(struct device *dev, struct device_attrib
 	}
 	pr_info("ndt:fw_name%s\n", fw_name);
 	ndt_update_fw(false, fw_name, 1);
+	kfree(fw_name);
 	return count;
 }
 
@@ -566,6 +584,7 @@ static int ndt_update_fw(bool force, char *fw_name, int retry)
 	int len = 0;
 	char *fw_data = NULL;
 	char *data = NULL;
+	char *orig_data = NULL;
 	char tmpbuf[10];
 	unsigned char ic_fw_ver[2];
 	unsigned char reg = 0;
@@ -601,6 +620,12 @@ static int ndt_update_fw(bool force, char *fw_name, int retry)
 		goto FAIL;
 	}
 	memcpy(data, fw_entry->data, fw_size);
+	orig_data = data;
+	if (fw_size < 0x100) {
+		pr_err("ndt:fw file too small, size %d\n", fw_size);
+		ret = -EINVAL;
+		goto FAIL;
+	}
 	memcpy(tmpbuf, data, sizeof(tmpbuf));
 	pr_debug("ndt:file header: 0x%02x%02x\n", tmpbuf[0], tmpbuf[1]);
 	pos = 8;
@@ -627,6 +652,11 @@ static int ndt_update_fw(bool force, char *fw_name, int retry)
 	memcpy(fw_data_len, data, sizeof(fw_data_len));
 	pr_debug("ndt:read fw_data_len: 0x%02x%02x%02x%02x\n", fw_data_len[0], fw_data_len[1], fw_data_len[2], fw_data_len[3]);
 	len = (int)((unsigned int)fw_data_len[3] << 0) | ((unsigned int)fw_data_len[2] << 8) | ((unsigned int)fw_data_len[1] << 16) | (fw_data_len[0] << 24);
+	if (len == 0) {
+		pr_err("ndt:fw data len 0, reject\n");
+		ret = -EINVAL;
+		goto FAIL;
+	}
 	fw_data = (char *)kzalloc(len, GFP_KERNEL);
 	if (fw_data == NULL) {
 		pr_err("%s malloc fw_data error", __func__);
@@ -635,16 +665,21 @@ static int ndt_update_fw(bool force, char *fw_name, int retry)
 	}
 	pos = 0x100 - 0x0c;
 	data += pos;
+	if (fw_size < 0x100 + len) {
+		pr_err("ndt:fw data len %d exceed file size %d\n", len, fw_size);
+		ret = -EINVAL;
+		goto FAIL;
+	}
 	memcpy(fw_data, data, len);
 
-	if (ndt_burn_fw(fw_data, len, retry) == 0) {
+	if (ndt_burn_fw(fw_data, len, retry) != 1) {
 		pr_err("ndt:Burn FW failed!\n");
 		ret = -EINVAL;
 	}
 FAIL:
-	if (data) {
-		kfree(data);
-		data = NULL;
+	if (orig_data) {
+		kfree(orig_data);
+		orig_data = NULL;
 	}
 	if (fw_data) {
 		kfree(fw_data);
@@ -665,7 +700,7 @@ static ssize_t pressure_force_update_fw_store(struct device *dev, struct device_
 	fw_name = kzalloc(len + 1, GFP_KERNEL);
 	if (fw_name == NULL)
 		return -ENOMEM;
-	if (count > 0) {
+	if (len > 0) {
 		strlcpy(fw_name, buf, len);
 		if (fw_name[len - 1] == '\n')
 			fw_name[len - 1] = 0;
@@ -674,6 +709,7 @@ static ssize_t pressure_force_update_fw_store(struct device *dev, struct device_
 	}
 	pr_info("ndt:fw_name%s\n", fw_name);
 	ndt_update_fw(true, fw_name, 1);
+	kfree(fw_name);
 	return count;
 }
 
@@ -746,11 +782,11 @@ static ssize_t pressure_fw_info_show(struct device *dev, struct device_attribute
 	memset(s_dev_id, 0, 30);
 
 	for (i = 0; i < 10; i++) {
-		snprintf(s_dev_id + 2 * i, PAGE_SIZE, "%02x", dev_id[i]);
+		snprintf(s_dev_id + 2 * i, 30 - 2 * i, "%02x", dev_id[i]);
 	}
 
 	ret = snprintf(buf, PAGE_SIZE, "device id:%s,manu id:%02x%02x,module id:%02x%02x,fw version:%02x%02x\n", s_dev_id, manu_id[0], manu_id[1], module_id[0], module_id[1], fw_ver[0], fw_ver[1]);
-	return ret + 1;
+	return ret;
 }
 
 static ssize_t ndt_threshold_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -813,7 +849,7 @@ static int ndt_read_eeprom(unsigned short reg, unsigned char *datbuf, int byteno
 	msg[1].buf = datbuf;
 	do {
 		ret = i2c_transfer(g_ndt_client->adapter, msg, 2);
-		if (ret >= 0)
+		if (ret == 2)
 			break;
 		msleep(1);
 	} while (count++ < 5);
@@ -821,6 +857,8 @@ static int ndt_read_eeprom(unsigned short reg, unsigned char *datbuf, int byteno
 	if (ret < 0) {
 		pr_err("ndt:i2c_transfer Error ! err_code:%d\n", ret);
 	} else {
+		if (ret != 2)
+			ret = -EIO;
 		pr_debug("ndt:i2c_transfer OK !\n");
 	}
 
@@ -852,7 +890,7 @@ static int ndt_write_eeprom(unsigned short reg, unsigned char *datbuf, int byten
 	msg.buf = buf;
 	do {
 		ret = i2c_transfer(g_ndt_client->adapter, &msg, 1);
-		if (ret >= 0)
+		if (ret == 1)
 			break;
 		msleep(1);
 	} while (count++ < 5);
@@ -860,6 +898,8 @@ static int ndt_write_eeprom(unsigned short reg, unsigned char *datbuf, int byten
 	if (ret < 0) {
 		pr_err("ndt:i2c_master_send Error ! err_code:%d\n", ret);
 	} else {
+		if (ret != 1)
+			ret = -EIO;
 		pr_debug("ndt:i2c_master_send OK !\n");
 	}
 
@@ -965,6 +1005,12 @@ static ssize_t ndt_read(struct file *file, char __user *buf, size_t count, loff_
 	int err = 0;
 	char reg = 0;
 
+	if (count < 1)
+		return -EINVAL;
+
+	if (count + 1 > PAGE_SIZE)
+		count = PAGE_SIZE - 1;
+
 	kbuf = kzalloc(count, GFP_KERNEL);
 	if (!kbuf) {
 		err = -ENOMEM;
@@ -980,6 +1026,8 @@ static ssize_t ndt_read(struct file *file, char __user *buf, size_t count, loff_
 
 	if (copy_to_user(buf + 1, kbuf, count))
 		err = -EFAULT;
+	else
+		err = count;
 exit_kfree:
 	kfree(kbuf);
 
@@ -1046,7 +1094,7 @@ static int ndt_pm_suspend(struct device *dev)
 	enable_irq_wake(data->client->irq);
 #ifdef CONFIG_INPUT_NDT_INTERRUPT
 	hrtimer_cancel(&data->release_timer);
-	cancel_work(&data->release_work);
+	cancel_work_sync(&data->release_work);
 #endif
 	data->suspend_flag = 1;
 	return 0;
@@ -1095,36 +1143,39 @@ static int ndt_force_probe(struct i2c_client *client,
 	error = i2c_check_functionality(client->adapter, I2C_FUNC_I2C);
 	if (!error) {
 		dev_err(&client->dev, "I2C check functionality failed\n");
+		error = -EIO;
 		goto ndt_free_pdata;
 	}
 	/* enable power */
 	data->ndt_vdd = regulator_get(&client->dev, "ndt,vdd");
 	if (IS_ERR(data->ndt_vdd)) {
 		dev_err(&client->dev, "failed to get ndt vdd");
+		error = -EINVAL;
 		goto ndt_free_pdata;
 	}
 	error = regulator_enable(data->ndt_vdd);
 	if (error < 0) {
 		dev_err(&client->dev, "Failed to enable power regulator\n");
-		goto ndt_free_pdata;
+		goto ndt_vdd_put;
 	}
 
 	data->ndt_vddio = regulator_get(&client->dev, "ndt,vddio");
 	if (IS_ERR(data->ndt_vddio)) {
 		dev_err(&client->dev, "failed to get ndt vdd");
-		goto ndt_free_pdata;
+		error = -EINVAL;
+		goto ndt_vdd_disable_put;
 	}
 	error = regulator_enable(data->ndt_vddio);
 	if (error < 0) {
 		dev_err(&client->dev, "Failed to enable power regulator\n");
-		goto ndt_free_pdata;
+		goto ndt_vddio_put;
 	}
 
 	if (data->pdata->irq_gpio) {
 		error = gpio_request(data->pdata->irq_gpio, "ndt_force_irq_gpio");
 		if (error) {
 			dev_err(&client->dev, "Unable to request gpio [%d]\n", data->pdata->irq_gpio);
-			goto ndt_vddio_disable;
+			goto ndt_vddio_disable_put;
 		}
 		error = gpio_direction_input(data->pdata->irq_gpio);
 		if (error) {
@@ -1144,6 +1195,7 @@ static int ndt_force_probe(struct i2c_client *client,
 
 	if (!data->input_dev) {
 		dev_err(&client->dev, "Failed to allocate input device\n");
+		error = -ENOMEM;
 		goto ndt_free_irq_gpio;
 	}
 	data->input_dev->name = "ndt_force";
@@ -1205,12 +1257,26 @@ static int ndt_force_probe(struct i2c_client *client,
 	pr_info("%s,probe ok\n", __func__);
 	return 0;
 ndt_free_input_dev:
+	if (data->event_wq) {
+		destroy_workqueue(data->event_wq);
+		data->event_wq = NULL;
+	}
 	input_unregister_device(data->input_dev);
+	data->input_dev = NULL;
 	g_ndt_client = NULL;
 ndt_free_irq_gpio:
+	g_ndt_client = NULL;
+	if (data->input_dev)
+		input_free_device(data->input_dev);
 	gpio_free(data->pdata->irq_gpio);
-ndt_vddio_disable:
+ndt_vddio_disable_put:
 	regulator_disable(data->ndt_vddio);
+ndt_vddio_put:
+	regulator_put(data->ndt_vddio);
+ndt_vdd_disable_put:
+	regulator_disable(data->ndt_vdd);
+ndt_vdd_put:
+	regulator_put(data->ndt_vdd);
 ndt_free_pdata:
 	kfree(data->pdata);
 	data->pdata = NULL;
@@ -1235,12 +1301,29 @@ static int ndt_force_remove(struct i2c_client *client)
 	struct ndt_force_data *data = i2c_get_clientdata(client);
 	struct ndt_platform_data *pdata = data->pdata;
 
+#ifdef CONFIG_INPUT_NDT_FWUPDATE
+	cancel_work_sync(&data->fwupdate_work);
+#endif
 	misc_deregister(&ndt_misc);
+#ifdef CONFIG_INPUT_NDT_INTERRUPT
 	free_irq(client->irq, data);
+#endif
+	if (data->event_wq) {
+		destroy_workqueue(data->event_wq);
+		data->event_wq = NULL;
+	}
 	if (data->input_dev != NULL)
 		input_unregister_device(data->input_dev);
 
 	gpio_free(pdata->irq_gpio);
+	if (data->ndt_vddio) {
+		regulator_disable(data->ndt_vddio);
+		regulator_put(data->ndt_vddio);
+	}
+	if (data->ndt_vdd) {
+		regulator_disable(data->ndt_vdd);
+		regulator_put(data->ndt_vdd);
+	}
 	if (pdata != NULL) {
 		kfree(pdata);
 		pdata = NULL;
@@ -1249,6 +1332,7 @@ static int ndt_force_remove(struct i2c_client *client)
 		kfree(data);
 		data = NULL;
 	}
+	g_ndt_client = NULL;
 	return 0;
 }
 

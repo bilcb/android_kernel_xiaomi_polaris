@@ -1,6 +1,8 @@
 #ifndef _DRM_NOTIFIER_H_
 #define _DRM_NOTIFIER_H_
 
+#include <linux/notifier.h>
+
 /**
  * This minimalistic include file is intended for touch panel that to receive
  * blank/unblank event.

@@ -219,6 +219,7 @@ static int32_t cam_sensor_driver_get_dt_data(struct cam_sensor_ctrl_t *s_ctrl)
 
 FREE_SENSOR_DATA:
 	kfree(sensordata);
+	s_ctrl->sensordata = NULL;
 	return rc;
 }
 
@@ -271,11 +272,12 @@ int32_t cam_sensor_parse_dt(struct cam_sensor_ctrl_t *s_ctrl)
 	for (i = 0; i < soc_info->num_clk; i++) {
 		soc_info->clk[i] = devm_clk_get(soc_info->dev,
 					soc_info->clk_name[i]);
-		if (!soc_info->clk[i]) {
+		if (IS_ERR(soc_info->clk[i])) {
 			CAM_ERR(CAM_SENSOR, "get failed for %s",
 				 soc_info->clk_name[i]);
-			rc = -ENOENT;
-			return rc;
+			rc = PTR_ERR(soc_info->clk[i]);
+			soc_info->clk[i] = NULL;
+			goto FREE_DT_DATA;
 		}
 	}
 	rc = msm_sensor_init_default_params(s_ctrl);

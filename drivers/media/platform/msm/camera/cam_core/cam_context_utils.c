@@ -131,6 +131,7 @@ static int cam_context_apply_req_to_hw(struct cam_ctx_request *req,
 	struct cam_req_mgr_apply_request *apply)
 {
 	int rc = 0;
+	int32_t j = 0;
 	struct cam_context *ctx = req->ctx;
 	struct cam_hw_config_args cfg;
 
@@ -170,6 +171,12 @@ static int cam_context_apply_req_to_hw(struct cam_ctx_request *req,
 			CAM_INFO(CAM_CTXT,
 				"[%s][%d] : Moving req[%llu] from active_list to free_list",
 				ctx->dev_name, ctx->ctx_id, req->request_id);
+
+		for (j = 0; j < req->num_out_map_entries; j++) {
+			cam_sync_signal(req->out_map_entries[j].sync_id,
+				CAM_SYNC_STATE_SIGNALED_ERROR);
+			req->out_map_entries[j].sync_id = -1;
+		}
 	}
 
 end:
@@ -328,7 +335,8 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 	if ((len < sizeof(struct cam_packet)) ||
 		((size_t)cmd->offset >= len - sizeof(struct cam_packet))) {
 		CAM_ERR(CAM_CTXT, "invalid buff length: %zu or offset", len);
-		return -EINVAL;
+		rc = -EINVAL;
+		goto free_req;
 	}
 
 	remain_len -= (size_t)cmd->offset;
@@ -417,6 +425,14 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 						ctx->dev_name, ctx->ctx_id,
 						req->request_id);
 
+				while (j-- > 0) {
+					cam_sync_deregister_callback(
+						cam_context_sync_callback,
+						(void *)req,
+						req->in_map_entries[j].sync_id);
+					cam_context_putref(ctx);
+				}
+
 				cam_context_putref(ctx);
 
 				goto put_ref;
@@ -427,7 +443,11 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 		goto end;
 	}
 
-	return rc;
+	rc = -EINVAL;
+	CAM_ERR(CAM_CTXT,
+		"[%s][%d] invalid num_in_map_entries=0",
+		ctx->dev_name, ctx->ctx_id);
+	goto put_ref;
 
 put_ref:
 	for (--i; i >= 0; i--) {
@@ -438,6 +458,7 @@ put_ref:
 	}
 free_req:
 	spin_lock(&ctx->lock);
+	list_del_init(&req->list);
 	list_add_tail(&req->list, &ctx->free_req_list);
 	req->ctx = NULL;
 	spin_unlock(&ctx->lock);

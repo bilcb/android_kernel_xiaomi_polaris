@@ -6242,7 +6242,6 @@ static int _sde_crtc_event_enable(struct sde_kms *kms,
 	spin_lock_irqsave(&crtc->spin_lock, flags);
 	list_for_each_entry(node, &crtc->user_event_list, list) {
 		if (node->event == event) {
-			list_del(&node->list);
 			found = true;
 			break;
 		}
@@ -6347,7 +6346,6 @@ static int _sde_crtc_event_disable(struct sde_kms *kms,
 	 */
 	if (!crtc_drm->enabled) {
 		kfree(node);
-		node = NULL;
 		return 0;
 	}
 	priv = kms->dev->dev_private;
@@ -6355,6 +6353,7 @@ static int _sde_crtc_event_disable(struct sde_kms *kms,
 	if (ret) {
 		SDE_ERROR("failed to enable power resource %d\n", ret);
 		SDE_EVT32(ret, SDE_EVTLOG_ERROR);
+		node->func(crtc_drm, false, &node->irq);
 		kfree(node);
 		node = NULL;
 		return ret;
@@ -6362,7 +6361,6 @@ static int _sde_crtc_event_disable(struct sde_kms *kms,
 
 	ret = node->func(crtc_drm, false, &node->irq);
 	kfree(node);
-	node = NULL;
 	sde_power_resource_enable(&priv->phandle, kms->core_client, false);
 	return ret;
 }

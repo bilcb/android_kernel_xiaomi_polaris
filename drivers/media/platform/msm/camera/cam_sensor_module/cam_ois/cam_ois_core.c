@@ -12,6 +12,7 @@
 
 #include <linux/module.h>
 #include <linux/firmware.h>
+#include <linux/jiffies.h>
 #include <cam_sensor_cmn_header.h>
 #include "cam_ois_core.h"
 #include "cam_ois_soc.h"
@@ -338,7 +339,7 @@ static int cam_ois_fw_init0(struct cam_ois_ctrl_t *o_ctrl)
 
 static int cam_ois_fw_download(struct cam_ois_ctrl_t *o_ctrl)
 {
-	uint16_t                           total_bytes = 0;
+	size_t                             total_bytes = 0;
 	uint8_t                           *ptr = NULL;
 	int32_t                            rc = 0, cnt, i;
 	uint32_t                           fw_size;
@@ -365,7 +366,11 @@ static int cam_ois_fw_download(struct cam_ois_ctrl_t *o_ctrl)
 	fw_name_coeff = name_coeff;
 
 #ifdef CUSTOM_INIT_DL
-	cam_ois_fw_init0(o_ctrl);
+	rc = cam_ois_fw_init0(o_ctrl);
+	if (rc) {
+		CAM_ERR(CAM_OIS, "Failed to init OIS fw settings rc %d", rc);
+		return rc;
+	}
 #endif
 
 	/* Load FW */
@@ -404,8 +409,14 @@ static int cam_ois_fw_download(struct cam_ois_ctrl_t *o_ctrl)
 		}
 		i2c_reg_setting.size = cnt;
 
-		while (camera_io_wait_normal_write())
-			schedule();
+		{
+			unsigned long wait_time =
+				jiffies + msecs_to_jiffies(500);
+
+			while (camera_io_wait_normal_write() &&
+				time_before(jiffies, wait_time))
+				schedule();
+		}
 		rc = camera_io_dev_write_continuous(&(o_ctrl->io_master_info),
 			&i2c_reg_setting, 1);
 		if (rc < 0) {
@@ -454,12 +465,20 @@ static int cam_ois_fw_download(struct cam_ois_ctrl_t *o_ctrl)
 		}
 		i2c_reg_setting.size = cnt;
 
-		while (camera_io_wait_normal_write())
-			schedule();
+		{
+			unsigned long wait_time =
+				jiffies + msecs_to_jiffies(500);
+
+			while (camera_io_wait_normal_write() &&
+				time_before(jiffies, wait_time))
+				schedule();
+		}
 		rc = camera_io_dev_write_continuous(&(o_ctrl->io_master_info),
 			&i2c_reg_setting, 1);
-		if (rc < 0)
+		if (rc < 0) {
 			CAM_ERR(CAM_OIS, "OIS FW download failed %d", rc);
+			goto release_firmware;
+		}
 	}
 release_firmware:
 	cma_release(dev_get_cma_area((o_ctrl->soc_info.dev)),

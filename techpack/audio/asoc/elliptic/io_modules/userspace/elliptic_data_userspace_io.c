@@ -66,7 +66,8 @@ static int device_open(struct inode *inode, struct file *filp)
 	}
 
 	if (down_interruptible(&io_device.sem) != 0)
-		return -EEXIST;
+		return -EINTR;
+	filp->private_data = (void *)1;
 	EL_PRINT_I("Opened device %s", USERSPACE_IO_DEVICE_NAME);
 	return 0;
 }
@@ -79,11 +80,16 @@ static ssize_t device_write(struct file *fp, const char __user *buff,
 	push_result = elliptic_data_push(
 		ELLIPTIC_ALL_DEVICES, buff, length, ELLIPTIC_DATA_PUSH_FROM_USERSPACE);
 
-	return push_result == 0 ? (ssize_t)length : (ssize_t)(-1);
+	if (push_result < 0)
+		return push_result;
+	return (ssize_t)length;
 }
 
 static int device_close(struct inode *inode, struct file *filp)
 {
+	if (!filp->private_data)
+		return 0;
+	filp->private_data = NULL;
 	up(&io_device.sem);
 	EL_PRINT_I("Closed device %s", USERSPACE_IO_DEVICE_NAME);
 	return 0;
@@ -127,14 +133,16 @@ int elliptic_userspace_io_driver_init(void)
 
 	cdev_init(&io_device.cdev, &elliptic_userspace_fops);
 	io_device.cdev.owner = THIS_MODULE;
+	sema_init(&io_device.sem, 1);
 	err = cdev_add(&io_device.cdev, device_number, 1);
 	if (err) {
 		EL_PRINT_W("error %d while trying to add %s%d",
 			err, ELLIPTIC_DEVICENAME, 0);
+		device_destroy(elliptic_class, device_number);
+		unregister_chrdev(elliptic_userspace_major, USERSPACE_IO_DEVICE_NAME);
 		return err;
 	}
 
-	sema_init(&io_device.sem, 1);
 	return 0;
 }
 
@@ -144,5 +152,4 @@ void elliptic_userspace_io_driver_exit(void)
 	device_destroy(elliptic_class, MKDEV(elliptic_userspace_major, 0));
 	cdev_del(&io_device.cdev);
 	unregister_chrdev(elliptic_userspace_major, USERSPACE_IO_DEVICE_NAME);
-	up(&io_device.sem);
 }

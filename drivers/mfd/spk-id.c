@@ -54,14 +54,18 @@ static struct spk_id_info *spk_id_get_info(struct device_node *np)
 	if (!info)
 		dev_err(&pdev->dev, "%s: cannot find spk id info\n", __func__);
 
+	put_device(&pdev->dev);
 	return info;
 }
+
+static DEFINE_MUTEX(spk_id_mutex);
 
 int spk_id_get_pin_3state(struct device_node *np)
 {
 	struct spk_id_info *info;
 	int pu = 0;
 	int pd = 0;
+	int ret = 0;
 
 	info = spk_id_get_info(np);
 	if (!info)
@@ -77,30 +81,58 @@ int spk_id_get_pin_3state(struct device_node *np)
 		return -EINVAL;
 	}
 
-	pinctrl_select_state(info->pinctrl, info->pull_down);
+	mutex_lock(&spk_id_mutex);
+
+	ret = pinctrl_select_state(info->pinctrl, info->pull_down);
+	if (ret) {
+		pr_err("%s: pull_down state select failed:%d\n",
+			__func__, ret);
+		goto unlock;
+	}
 	msleep(3);
 	pd = gpio_get_value(info->gpio);
+	if (pd < 0) {
+		pr_err("%s: read gpio failed:%d\n", __func__, pd);
+		ret = pd;
+		goto unlock;
+	}
 
-	pinctrl_select_state(info->pinctrl, info->pull_up);
+	ret = pinctrl_select_state(info->pinctrl, info->pull_up);
+	if (ret) {
+		pr_err("%s: pull_up state select failed:%d\n",
+			__func__, ret);
+		goto unlock;
+	}
 	msleep(3);
 	pu = gpio_get_value(info->gpio);
-
+	if (pu < 0) {
+		pr_err("%s: read gpio failed:%d\n", __func__, pu);
+		ret = pu;
+		goto unlock;
+	}
 
 	if ((pd == pu) && (pd == 0)) {
 		pr_info("%s: id pin%d = %d\n", __func__, info->gpio, pd);
-		pinctrl_select_state(info->pinctrl, info->pull_down);
+		if (pinctrl_select_state(info->pinctrl, info->pull_down))
+			pr_warn("%s: set pull_down state failed\n", __func__);
 		info->state = PIN_PULL_DOWN;
 	} else if ((pd == pu) && (pd == 1)) {
 		pr_info("%s: id pin%d = %d\n", __func__, info->gpio, pd);
-		pinctrl_select_state(info->pinctrl, info->pull_up);
+		if (pinctrl_select_state(info->pinctrl, info->pull_up))
+			pr_warn("%s: set pull_up state failed\n", __func__);
 		info->state = PIN_PULL_UP;
 	} else {
 		pr_info("%s: id pin%d = 2\n", __func__, info->gpio);
-		pinctrl_select_state(info->pinctrl, info->no_pull);
+		if (pinctrl_select_state(info->pinctrl, info->no_pull))
+			pr_warn("%s: set no_pull state failed\n", __func__);
 		info->state = PIN_FLOAT;
 	}
 
-	return info->state;
+	ret = info->state;
+
+unlock:
+	mutex_unlock(&spk_id_mutex);
+	return ret;
 }
 EXPORT_SYMBOL(spk_id_get_pin_3state);
 

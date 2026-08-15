@@ -408,7 +408,7 @@ int cam_cdm_intf_register_hw_cdm(struct cam_hw_intf *hw,
 		mutex_lock(&cdm_mgr.nodes[CAM_SW_CDM_INDEX].lock);
 		cdm_mgr.nodes[CAM_SW_CDM_INDEX].device = hw;
 		cdm_mgr.nodes[CAM_SW_CDM_INDEX].data = data;
-		*index = cdm_mgr.cdm_count;
+		*index = CAM_SW_CDM_INDEX;
 		mutex_unlock(&cdm_mgr.nodes[CAM_SW_CDM_INDEX].lock);
 		cdm_mgr.cdm_count++;
 		rc = 0;
@@ -449,10 +449,10 @@ int cam_cdm_intf_deregister_hw_cdm(struct cam_hw_intf *hw,
 	if ((type == CAM_VIRTUAL_CDM) &&
 		(hw == cdm_mgr.nodes[CAM_SW_CDM_INDEX].device) &&
 		(index == CAM_SW_CDM_INDEX)) {
-		mutex_lock(&cdm_mgr.nodes[cdm_mgr.cdm_count].lock);
+		mutex_lock(&cdm_mgr.nodes[CAM_SW_CDM_INDEX].lock);
 		cdm_mgr.nodes[CAM_SW_CDM_INDEX].device = NULL;
 		cdm_mgr.nodes[CAM_SW_CDM_INDEX].data = NULL;
-		mutex_unlock(&cdm_mgr.nodes[cdm_mgr.cdm_count].lock);
+		mutex_unlock(&cdm_mgr.nodes[CAM_SW_CDM_INDEX].lock);
 		rc = 0;
 	} else if ((type == CAM_HW_CDM) &&
 		(hw == cdm_mgr.nodes[index].device)) {

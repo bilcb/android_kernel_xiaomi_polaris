@@ -198,7 +198,8 @@ reset_complete_failed:
 
 platform_enable_failed:
 	cci_dev->ref_count--;
-	cci_dev->ref_count_cci[cci_master]--;
+	if (cci_master < MASTER_MAX && cci_master >= 0)
+		cci_dev->ref_count_cci[cci_master]--;
 	cam_cpas_stop(cci_dev->cpas_handle);
 
 	return rc;
@@ -398,7 +399,8 @@ int cam_cci_parse_dt_info(struct platform_device *pdev,
 
 int cam_cci_soc_release(struct cci_device *cci_dev, struct cam_cci_ctrl *c_ctrl)
 {
-	uint8_t i = 0, rc = 0;
+	uint8_t i = 0;
+	int32_t rc = 0;
 	struct cam_hw_soc_info *soc_info =
 		&cci_dev->soc_info;
 	enum cci_i2c_master_t master = MASTER_0;
@@ -411,7 +413,8 @@ int cam_cci_soc_release(struct cci_device *cci_dev, struct cam_cci_ctrl *c_ctrl)
 	master = c_ctrl->cci_info->cci_i2c_master;
 	if (master < MASTER_MAX && master >= 0) {
 		mutex_lock(&cci_dev->cci_master_info[master].mutex);
-		cci_dev->ref_count_cci[master]--;
+		if (cci_dev->ref_count_cci[master] > 0)
+			cci_dev->ref_count_cci[master]--;
 		mutex_unlock(&cci_dev->cci_master_info[master].mutex);
 	}
 	if (--cci_dev->ref_count) {

@@ -817,6 +817,9 @@ static void sde_connector_destroy(struct drm_connector *connector)
 
 	c_conn = to_sde_connector(connector);
 
+	if (primary_c_conn == c_conn)
+		primary_c_conn = NULL;
+
 	/* cancel if any pending esd work */
 	sde_connector_schedule_status_work(connector, false);
 
@@ -837,6 +840,8 @@ static void sde_connector_destroy(struct drm_connector *connector)
 
 	if (c_conn->bl_device)
 		backlight_device_unregister(c_conn->bl_device);
+	if (c_conn->esd_irq)
+		free_irq(c_conn->esd_irq, c_conn);
 	drm_connector_unregister(connector);
 	mutex_destroy(&c_conn->lock);
 	sde_fence_deinit(&c_conn->retire_fence);
@@ -1918,7 +1923,7 @@ static void _sde_connector_report_panel_dead(struct sde_connector *conn)
 	sde_encoder_display_failure_notification(conn->encoder);
 	SDE_EVT32(SDE_EVTLOG_ERROR);
 	SDE_ERROR("esd check failed report PANEL_DEAD conn_id: %d enc_id: %d\n",
-			conn->base.base.id, conn->encoder->base.id);
+			conn->base.base.id, conn->encoder ? conn->encoder->base.id : -1);
 }
 
 int sde_connector_esd_status(struct drm_connector *conn)
@@ -1985,7 +1990,7 @@ static void sde_connector_check_status_work(struct work_struct *work)
 		u32 interval;
 
 		SDE_DEBUG("esd check status success conn_id: %d enc_id: %d\n",
-				conn->base.base.id, conn->encoder->base.id);
+				conn->base.base.id, conn->encoder ? conn->encoder->base.id : -1);
 
 		/* If debugfs property is not set then take default value */
 		interval = conn->esd_status_interval ?
@@ -2011,7 +2016,7 @@ static irqreturn_t esd_err_irq_handle(int irq, void *data)
 	struct drm_event event;
 	bool panel_on = true;
 
-	if (!c_conn && !c_conn->display) {
+	if (!c_conn || !c_conn->display) {
 		SDE_ERROR("not able to get connector object\n");
 		return IRQ_HANDLED;
 	}
@@ -2024,7 +2029,18 @@ static irqreturn_t esd_err_irq_handle(int irq, void *data)
 	}
 
 	SDE_ERROR("esd check irq report PANEL_DEAD conn_id: %d enc_id: %d, panel_status[%d]\n",
-		c_conn->base.base.id, c_conn->encoder->base.id, panel_on);
+		c_conn->base.base.id, c_conn->encoder ? c_conn->encoder->base.id : -1,
+		panel_on);
+
+	if (c_conn->panel_dead_skip) {
+		pr_err("skip because of panel_dead_skip true\n");
+		return IRQ_HANDLED;
+	}
+
+	if (c_conn->panel_dead) {
+		pr_err("panel already dead\n");
+		return IRQ_HANDLED;
+	}
 
 	if (panel_on) {
 		c_conn->panel_dead = true;
@@ -2032,7 +2048,8 @@ static irqreturn_t esd_err_irq_handle(int irq, void *data)
 		event.length = sizeof(bool);
 		msm_mode_object_event_notify(&c_conn->base.base,
 			c_conn->base.dev, &event, (u8 *)&c_conn->panel_dead);
-		sde_encoder_display_failure_notification(c_conn->encoder);
+		if (c_conn->encoder)
+			sde_encoder_display_failure_notification(c_conn->encoder);
 	}
 	return IRQ_HANDLED;
 }
@@ -2066,6 +2083,11 @@ void report_esd_panel_dead(void)
 		return;
 	}
 
+	if (c_conn->panel_dead) {
+		pr_err("panel already dead\n");
+		return;
+	}
+
 	if (c_conn->connector_type == DRM_MODE_CONNECTOR_DSI) {
 		struct dsi_display *dsi_display = (struct dsi_display *)(c_conn->display);
 		if (dsi_display && dsi_display->panel) {
@@ -2074,7 +2096,7 @@ void report_esd_panel_dead(void)
 	}
 
 	pr_err("esd check tddi report PANEL_DEAD conn_id: %d enc_id: %d, panel_status[%d]\n",
-		c_conn->base.base.id, c_conn->encoder->base.id, panel_on);
+		c_conn->base.base.id, c_conn->encoder ? c_conn->encoder->base.id : -1, panel_on);
 
 	if (panel_on) {
 		c_conn->panel_dead = true;
@@ -2082,6 +2104,8 @@ void report_esd_panel_dead(void)
 		event.length = sizeof(bool);
 		msm_mode_object_event_notify(&c_conn->base.base,
 			c_conn->base.dev, &event, (u8 *)&c_conn->panel_dead);
+		if (c_conn->encoder)
+			sde_encoder_display_failure_notification(c_conn->encoder);
 	}
 	return;
 }
@@ -2405,8 +2429,9 @@ struct drm_connector *sde_connector_init(struct drm_device *dev,
 							"esd_err_irq", c_conn);
 			if (rc < 0) {
 				pr_err("%s: request irq %d failed\n", __func__, dsi_display->panel->esd_config.esd_err_irq);
-					dsi_display->panel->esd_config.esd_err_irq = 0;
+				dsi_display->panel->esd_config.esd_err_irq = 0;
 			} else {
+				c_conn->esd_irq = dsi_display->panel->esd_config.esd_err_irq;
 				pr_info("%s: Request esd irq succeed!\n", __func__);
 			}
 		}
@@ -2517,6 +2542,8 @@ error_cleanup_fence:
 error_cleanup_conn:
 	drm_connector_cleanup(&c_conn->base);
 error_free_conn:
+	if (c_conn->esd_irq)
+		free_irq(c_conn->esd_irq, c_conn);
 	kfree(c_conn);
 
 	return ERR_PTR(rc);

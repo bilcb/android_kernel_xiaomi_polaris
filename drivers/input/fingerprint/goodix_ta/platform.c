@@ -63,6 +63,8 @@ int gf_parse_dts(struct gf_dev *gf_dev)
 void gf_cleanup(struct gf_dev *gf_dev)
 {
 	pr_info("[info] %s\n", __func__);
+	if (!gf_dev->gpio_held)
+		return;
 	if (gpio_is_valid(gf_dev->irq_gpio)) {
 		gpio_free(gf_dev->irq_gpio);
 		pr_info("remove irq_gpio success\n");
@@ -71,6 +73,7 @@ void gf_cleanup(struct gf_dev *gf_dev)
 		gpio_free(gf_dev->reset_gpio);
 		pr_info("remove reset_gpio success\n");
 	}
+	gf_dev->gpio_held = false;
 #ifdef GF_PW_CTL
 	if (gpio_is_valid(gf_dev->pwr_gpio)) {
 		gpio_free(gf_dev->pwr_gpio);
@@ -98,7 +101,7 @@ int gf_power_off(struct gf_dev *gf_dev)
 	int rc = 0;
 #ifdef GF_PW_CTL
 	if (gpio_is_valid(gf_dev->pwr_gpio)) {
-		gpio_set_value(gf_dev->pwr_gpio, 1);
+		gpio_set_value(gf_dev->pwr_gpio, 0);
 	}
 #endif
 	pr_info("---- power off ----\n");

@@ -370,7 +370,7 @@ static void get_config_work(struct work_struct *work)
 			chip->jeita_fv_config->fv_cfg[i].high_threshold,
 			chip->jeita_fv_config->fv_cfg[i].value);
 	for (i = 0; i < MAX_STEP_CHG_ENTRIES; i++)
-		pr_debug("dynamic-fv-cfg: %d(count) ~ %d(coutn), %duV\n",
+		pr_debug("dynamic-fv-cfg: %d(count) ~ %d(count), %duV\n",
 			chip->dynamic_fv_config->fv_cfg[i].low_threshold,
 			chip->dynamic_fv_config->fv_cfg[i].high_threshold,
 			chip->dynamic_fv_config->fv_cfg[i].value);
@@ -394,8 +394,10 @@ static int get_val(struct range_data *range, int hysteresis, int current_index,
 	 * If the threshold is lesser than the minimum allowed range,
 	 * return -ENODATA.
 	 */
-	if (threshold < range[0].low_threshold)
-		return -ENODATA;
+	if (threshold < range[0].low_threshold) {
+		*new_index = 0;
+		*val = range[0].value;
+	}
 
 	/* First try to find the matching index without hysteresis */
 	for (i = 0; i < MAX_STEP_CHG_ENTRIES; i++) {
@@ -427,15 +429,6 @@ static int get_val(struct range_data *range, int hysteresis, int current_index,
 
 		*new_index = (i - 1);
 		*val = range[*new_index].value;
-	}
-
-	if (threshold < range[0].low_threshold) {
-			*new_index = 0;
-			*val = range[*new_index].value;
-	}
-	else if (threshold > range[MAX_STEP_CHG_ENTRIES - 1].low_threshold) {
-			*new_index = MAX_STEP_CHG_ENTRIES - 1;
-			*val = range[*new_index].value;
 	}
 
 	/*
@@ -552,10 +545,26 @@ static int handle_dynamic_fv(struct step_chg_info *chip)
 
 	if (!chip->dynamic_fv_enable || !chip->dynamic_fv_cfg_valid) {
 		/*need recovery some setting*/
-		if (chip->fv_votable)
+		if (chip->fv_votable) {
 			vote(chip->fv_votable, DYNAMIC_FV_VOTER, false, 0);
+			if (is_bms_available(chip)) {
+				int fv_eff = get_effective_result(chip->fv_votable);
+
+				if (fv_eff > 0) {
+					pval.intval = fv_eff - 10000;
+					rc = power_supply_set_property(chip->bms_psy,
+						POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+						&pval);
+					if (rc < 0)
+						pr_err("Couldn't restore CONSTANT VOLTAGE rc=%d\n", rc);
+				}
+			}
+		}
 		return 0;
 	}
+
+	if (!is_bms_available(chip))
+		return 0;
 
 	elapsed_us = ktime_us_delta(ktime_get(), chip->dynamic_fv_last_update_time);
 	if (elapsed_us < STEP_CHG_HYSTERISIS_DELAY_US)
@@ -583,12 +592,13 @@ static int handle_dynamic_fv(struct step_chg_info *chip)
 		goto update_time;
 	}
 
-	power_supply_get_property(chip->batt_psy,
+	rc = power_supply_get_property(chip->batt_psy,
 		POWER_SUPPLY_PROP_VOLTAGE_NOW, &pval);
-	batt_vol = pval.intval;
-	if (batt_vol >= fv_uv){
+	if (rc < 0) {
+		pr_err("Couldn't read voltage_now rc=%d\n", rc);
 		goto update_time;
 	}
+	batt_vol = pval.intval;
 
 	chip->fv_votable = find_votable("FV");
 	if (!chip->fv_votable)
@@ -785,13 +795,13 @@ static void status_change_work(struct work_struct *work)
 	if (rc > 0)
 		reschedule_jeita_work_us = rc;
 	else if (rc < 0)
-		pr_err("Couldn't handle sw dynamic fv rc = %d\n", rc);
+		pr_err("Couldn't handle sw jeita rc = %d\n", rc);
 
 	rc = handle_dynamic_fv(chip);
 	if (rc > 0)
 		reschedule_dynamic_fv_work_us = rc;
 	else if (rc < 0)
-		pr_err("Couldn't handle sw  rc = %d\n", rc);
+		pr_err("Couldn't handle sw dynamic fv rc = %d\n", rc);
 
 	rc = handle_step_chg_config(chip);
 	if (rc > 0)

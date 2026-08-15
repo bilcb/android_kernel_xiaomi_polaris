@@ -1111,6 +1111,13 @@ int adm_get_params_v2(int port_id, int copp_idx, uint32_t module_id,
 					[port_idx][copp_idx]));
 		goto adm_get_param_return;
 	}
+	if ((copp_idx < 0) ||
+	    (copp_idx >= (ARRAY_SIZE(adm_get_parameters) /
+			  ADM_GET_PARAMETER_LENGTH))) {
+		pr_err("%s: Invalid copp idx: %d\n", __func__, copp_idx);
+		rc = -EINVAL;
+		goto adm_get_param_return;
+	}
 	idx = ADM_GET_PARAMETER_LENGTH * copp_idx;
 
 	if (adm_get_parameters[idx] < 0) {
@@ -1135,6 +1142,8 @@ int adm_get_params_v2(int port_id, int copp_idx, uint32_t module_id,
 		(1+adm_get_parameters[idx]+idx),
 		params_length/sizeof(int),
 		adm_get_parameters[idx]);
+		rc = -EINVAL;
+		goto adm_get_param_return;
 	}
 	rc = 0;
 adm_get_param_return:
@@ -2872,6 +2881,12 @@ int adm_matrix_map(int path, struct route_payload payload_map, int perf_mode,
 			goto fail_cmd;
 		}
 		copp_idx = payload_map.copp_idx[i];
+		if (copp_idx >= MAX_COPPS_PER_PORT) {
+			pr_err("%s: Invalid copp idx: %d\n", __func__,
+				copp_idx);
+			ret = -EINVAL;
+			goto fail_cmd;
+		}
 		copps_list[i] = atomic_read(&this_adm.copp.id[port_idx]
 							     [copp_idx]);
 	}

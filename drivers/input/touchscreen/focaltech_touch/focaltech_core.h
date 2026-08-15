@@ -93,22 +93,22 @@
 #define FTS_TOUCH_DOWN                      0
 #define FTS_TOUCH_UP                        1
 #define FTS_TOUCH_CONTACT                   2
-#define EVENT_DOWN(flag)                    ((FTS_TOUCH_DOWN == flag) || (FTS_TOUCH_CONTACT == flag))
-#define EVENT_UP(flag)                      (FTS_TOUCH_UP == flag)
-#define EVENT_NO_DOWN(data)                 (!data->point_num)
-#define KEY_EN(data)                        (data->pdata->have_key)
-#define TOUCH_IS_KEY(y, key_y)              (y == key_y)
-#define TOUCH_IN_RANGE(val, key_val, half)  ((val > (key_val - half)) && (val < (key_val + half)))
-#define TOUCH_IN_KEY(x, key_x)              TOUCH_IN_RANGE(x, key_x, FTS_KEY_WIDTH)
+#define EVENT_DOWN(flag)                    ((FTS_TOUCH_DOWN == (flag)) || (FTS_TOUCH_CONTACT == (flag)))
+#define EVENT_UP(flag)                      (FTS_TOUCH_UP == (flag))
+#define EVENT_NO_DOWN(data)                 (!((data)->point_num))
+#define KEY_EN(data)                        ((data)->pdata->have_key)
+#define TOUCH_IS_KEY(y, key_y)              ((y) == (key_y))
+#define TOUCH_IN_RANGE(val, key_val, half)  (((val) > ((key_val) - (half))) && ((val) < ((key_val) + (half))))
+#define TOUCH_IN_KEY(x, key_x)              TOUCH_IN_RANGE((x), (key_x), FTS_KEY_WIDTH)
 
 #define FTS_LOCKDOWN_INFO_SIZE				8
 /*****************************************************************************
 * Private enumerations, structures and unions using typedef
 *****************************************************************************/
 struct fts_ts_platform_data {
-	u32 irq_gpio;
+	int irq_gpio;
 	u32 irq_gpio_flags;
-	u32 reset_gpio;
+	int reset_gpio;
 	u32 reset_gpio_flags;
 	bool have_key;
 	u32 key_number;
@@ -166,6 +166,8 @@ struct fts_ts_data {
 	int pnt_buf_size;
 	int touchs;
 	bool key_down;
+	int key_down_id;
+	int key_down_index;
 	int touch_point;
 	int point_num;
 	int fw_ver_in_host;
@@ -184,6 +186,7 @@ struct fts_ts_data {
 	int is_usb_exist;
 #endif
 	struct workqueue_struct *event_wq;
+	struct workqueue_struct *mode_switch_wq;
 	struct completion dev_pm_suspend_completion;
 #if FTS_PINCTRL_EN
 	struct pinctrl *pinctrl;
@@ -241,6 +244,7 @@ void fts_gesture_recovery(struct i2c_client *client);
 int fts_gesture_readdata(struct fts_ts_data *ts_data);
 int fts_gesture_suspend(struct i2c_client *i2c_client);
 int fts_gesture_resume(struct i2c_client *client);
+void fts_gesture_enable(bool enable);
 #endif
 
 /* Apk and functions */
@@ -264,12 +268,7 @@ int fts_esdcheck_proc_busy(bool proc_debug);
 int fts_esdcheck_set_intr(bool intr);
 int fts_esdcheck_suspend(void);
 int fts_esdcheck_resume(void);
-#endif
-
-/* Production test */
-#if FTS_TEST_EN
-int fts_test_init(struct i2c_client *client);
-int fts_test_exit(struct i2c_client *client);
+void fts_remove_esd_sysfs(struct i2c_client *client);
 #endif
 
 /* Point Report Check*/
@@ -297,6 +296,5 @@ void fts_irq_enable(void);
 
 int fts_flash_read(struct i2c_client *client, u32 addr, u8 *buf, u32 len);
 int fts_flash_read_buf(struct i2c_client *client, u32 saddr, u8 *buf, u32 len);
-void fts_gesture_enable(bool enable);
 
 #endif /* __LINUX_FOCALTECH_CORE_H__ */

@@ -2665,7 +2665,7 @@ static ssize_t
 thermal_message_of_batt_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
-	if (!tm || !tm->message_ok)
+	if (!tm || !tm->message_ok || !tm->batt_array_size)
 		return -EINVAL;
 
 	return snprintf(buf, PAGE_SIZE, "array_size %s\nscreen_on %s\nscreen_off %s\n",
@@ -2714,16 +2714,20 @@ static ssize_t
 thermal_boost_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, boost_buf);
+	return snprintf(buf, PAGE_SIZE, "%s", boost_buf);
 }
 
 static ssize_t
 thermal_boost_store(struct device *dev,
 				      struct device_attribute *attr, const char *buf, size_t len)
 {
-	int ret;
-	ret = snprintf(boost_buf, PAGE_SIZE, buf);
-	return len;
+	size_t ret = len;
+
+	if (len >= sizeof(boost_buf))
+		len = sizeof(boost_buf) - 1;
+	memcpy(boost_buf, buf, len);
+	boost_buf[len] = '\0';
+	return ret;
 }
 
 static DEVICE_ATTR(boost, 0644,
@@ -2801,7 +2805,7 @@ static int screen_state_for_thermal_callback(struct notifier_block *nb, unsigned
 	struct drm_notify_data *evdata = data;
 	unsigned int blank;
 
-	if (val != DRM_EVENT_BLANK || !tm || !evdata || !evdata->data)
+	if (val != DRM_EVENT_BLANK || !evdata || !evdata->data)
 		return 0;
 
 	blank = *(int *)(evdata->data);

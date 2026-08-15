@@ -374,17 +374,27 @@ struct device_node *of_batterydata_get_best_profile(
 				}
 			}
 		}
-		rc = of_property_read_string(node, "qcom,battery-type",
-							&battery_type);
-		if (!rc && strcmp(battery_type, "itech_3000mah") == 0)
-				generic_node = node;
 	}
 
 	if (best_node == NULL) {
-		/* now that best_node is null, there is no need to
-		 * check whether generic node is null. */
+		/*
+		 * No profile matches the batt-id resistor. Fall back to
+		 * the generic profile, in a separate walk so that nodes
+		 * skipped by the continue above are still considered.
+		 */
+		for_each_child_of_node(batterydata_container_node, node) {
+			rc = of_property_read_string(node, "qcom,battery-type",
+							&battery_type);
+			if (!rc && strcmp(battery_type, "itech_3000mah") == 0) {
+				generic_node = node;
+				break;
+			}
+		}
 		best_node = generic_node;
-		pr_err("No battery data found,use generic one\n");
+		if (best_node)
+			pr_err("No battery data found,use generic one\n");
+		else
+			pr_err("No battery data found,no generic profile\n");
 		return best_node;
 	}
 

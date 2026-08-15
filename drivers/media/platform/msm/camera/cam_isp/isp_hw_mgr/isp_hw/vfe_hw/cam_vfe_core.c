@@ -76,8 +76,6 @@ int cam_vfe_put_evt_payload(void             *core_info,
 {
 	struct cam_vfe_hw_core_info        *vfe_core_info = core_info;
 	unsigned long                       flags;
-	uint32_t  *ife_irq_regs = NULL;
-	uint32_t   status_reg0, status_reg1;
 
 	if (!core_info) {
 		CAM_ERR(CAM_ISP, "Invalid param core_info NULL");
@@ -86,16 +84,6 @@ int cam_vfe_put_evt_payload(void             *core_info,
 	if (*evt_payload == NULL) {
 		CAM_ERR(CAM_ISP, "No payload to put");
 		return -EINVAL;
-	}
-
-	ife_irq_regs = (*evt_payload)->irq_reg_val;
-	status_reg0 = ife_irq_regs[CAM_IFE_IRQ_CAMIF_REG_STATUS0];
-	status_reg1 = ife_irq_regs[CAM_IFE_IRQ_CAMIF_REG_STATUS1];
-
-	if (status_reg0 || status_reg1) {
-		CAM_DBG(CAM_ISP, "status0 0x%x status1 0x%x",
-			status_reg0, status_reg1);
-		return 0;
 	}
 
 	spin_lock_irqsave(&vfe_core_info->spin_lock, flags);
@@ -370,7 +358,7 @@ int cam_vfe_reset(void *hw_priv, void *reset_core_args, uint32_t arg_size)
 	struct cam_hw_info                *vfe_hw  = hw_priv;
 	struct cam_hw_soc_info            *soc_info = NULL;
 	struct cam_vfe_hw_core_info       *core_info = NULL;
-	int rc;
+	int rc, ret;
 
 	CAM_DBG(CAM_ISP, "Enter");
 
@@ -405,14 +393,18 @@ int cam_vfe_reset(void *hw_priv, void *reset_core_args, uint32_t arg_size)
 	CAM_DBG(CAM_ISP, "waiting for vfe reset complete");
 	/* Wait for Completion or Timeout of 500ms */
 	rc = wait_for_completion_timeout(&vfe_hw->hw_complete, 500);
-	if (!rc)
+	if (!rc) {
 		CAM_ERR(CAM_ISP, "Error! Reset Timeout");
+		rc = -ETIMEDOUT;
+	} else {
+		rc = 0;
+	}
 
 	CAM_DBG(CAM_ISP, "reset complete done (%d)", rc);
 
-	rc = cam_irq_controller_unsubscribe_irq(
+	ret = cam_irq_controller_unsubscribe_irq(
 		core_info->vfe_irq_controller, core_info->irq_handle);
-	if (rc)
+	if (ret)
 		CAM_ERR(CAM_ISP, "Error! Unsubscribe failed");
 
 	CAM_DBG(CAM_ISP, "Exit");
@@ -623,7 +615,11 @@ int cam_vfe_start(void *hw_priv, void *start_args, uint32_t arg_size)
 			CAM_ERR(CAM_ISP, "Error handle subscribe failure");
 			rc = -ENOMEM;
 			core_info->irq_err_handle = 0;
+		} else {
+			core_info->err_irq_users = 1;
 		}
+	} else {
+		core_info->err_irq_users++;
 	}
 
 	mutex_unlock(&vfe_hw->hw_mutex);
@@ -662,11 +658,14 @@ int cam_vfe_stop(void *hw_priv, void *stop_args, uint32_t arg_size)
 		CAM_ERR(CAM_ISP, "Invalid res type:%d", isp_res->res_type);
 	}
 
-	if (core_info->irq_err_handle) {
-		cam_irq_controller_unsubscribe_irq(
-			core_info->vfe_irq_controller,
-			core_info->irq_err_handle);
-		core_info->irq_err_handle = 0;
+	if (core_info->irq_err_handle && core_info->err_irq_users) {
+		core_info->err_irq_users--;
+		if (!core_info->err_irq_users) {
+			cam_irq_controller_unsubscribe_irq(
+				core_info->vfe_irq_controller,
+				core_info->irq_err_handle);
+			core_info->irq_err_handle = 0;
+		}
 	}
 
 	mutex_unlock(&vfe_hw->hw_mutex);

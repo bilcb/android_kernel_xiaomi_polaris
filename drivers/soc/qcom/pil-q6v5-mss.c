@@ -45,6 +45,7 @@
 #define STOP_ACK_TIMEOUT_MS	1000
 
 static char last_modem_sfr_reason[MAX_SSR_REASON_LEN] = "none";
+static DEFINE_RAW_SPINLOCK(last_modem_sfr_lock);
 static struct proc_dir_entry *last_modem_sfr_entry;
 #define subsys_to_drv(d) container_of(d, struct modem_data, subsys_desc)
 
@@ -66,9 +67,15 @@ static struct kobj_type checknv_ktype = {
 
 static void checknv_kobj_clean(struct work_struct *work)
 {
-	kobject_uevent(checknv_kobj, KOBJ_REMOVE);
-	kobject_put(checknv_kobj);
-	kset_unregister(checknv_kset);
+	if (checknv_kobj) {
+		kobject_uevent(checknv_kobj, KOBJ_REMOVE);
+		kobject_put(checknv_kobj);
+		checknv_kobj = NULL;
+	}
+	if (checknv_kset) {
+		kset_unregister(checknv_kset);
+		checknv_kset = NULL;
+	}
 }
 
 static void checknv_kobj_create(struct work_struct *work)
@@ -77,8 +84,7 @@ static void checknv_kobj_create(struct work_struct *work)
 
 	if (checknv_kset != NULL) {
 		pr_err("checknv_kset is not NULL, should clean up.");
-		kobject_uevent(checknv_kobj, KOBJ_REMOVE);
-		kobject_put(checknv_kobj);
+		checknv_kobj_clean(NULL);
 	}
 
 	checknv_kobj = kzalloc(sizeof(struct kobject), GFP_KERNEL);
@@ -108,44 +114,61 @@ static void checknv_kobj_create(struct work_struct *work)
 
 del_kobj:
 	kobject_put(checknv_kobj);
+	checknv_kobj = NULL;
 	kset_unregister(checknv_kset);
+	checknv_kset = NULL;
+	return;
 
 free_kobj:
 	kfree(checknv_kobj);
+	checknv_kobj = NULL;
 }
 
 static DECLARE_DELAYED_WORK(create_kobj_work, checknv_kobj_create);
-static DECLARE_WORK(clean_kobj_work, checknv_kobj_clean);
 
 static void log_modem_sfr(void)
 {
 	u32 size;
 	char *smem_reason;
+	unsigned long flags;
 
 	smem_reason = smem_get_entry_no_rlock(SMEM_SSR_REASON_MSS0, &size, 0,
 							SMEM_ANY_HOST_FLAG);
 	if (!smem_reason || !size) {
 		pr_err("modem subsystem failure reason: (unknown, smem_get_entry_no_rlock failed).\n");
+		raw_spin_lock_irqsave(&last_modem_sfr_lock, flags);
 		strlcpy(last_modem_sfr_reason, "unknown", min(8u, MAX_SSR_REASON_LEN));
+		raw_spin_unlock_irqrestore(&last_modem_sfr_lock, flags);
 		return;
 	}
 	if (!smem_reason[0]) {
 		pr_err("modem subsystem failure reason: (unknown, empty string found).\n");
+		raw_spin_lock_irqsave(&last_modem_sfr_lock, flags);
 		strlcpy(last_modem_sfr_reason, "unknown", min(8u, MAX_SSR_REASON_LEN));
+		raw_spin_unlock_irqrestore(&last_modem_sfr_lock, flags);
 		return;
 	}
 
+	raw_spin_lock_irqsave(&last_modem_sfr_lock, flags);
 	strlcpy(last_modem_sfr_reason, smem_reason, min(size, MAX_SSR_REASON_LEN));
+	raw_spin_unlock_irqrestore(&last_modem_sfr_lock, flags);
 	pr_err("modem subsystem failure reason: %s.\n", last_modem_sfr_reason);
 
 }
 
 static void restart_modem(struct modem_data *drv)
 {
+	unsigned long flags;
+	bool nv_destroyed;
+
 	log_modem_sfr();
 	drv->ignore_errors = true;
 	subsystem_restart_dev(drv->subsys);
-	if (strstr(last_modem_sfr_reason, "CRITICAL_DATA_CHECK_FAILED")) {
+	raw_spin_lock_irqsave(&last_modem_sfr_lock, flags);
+	nv_destroyed = strstr(last_modem_sfr_reason,
+			"CRITICAL_DATA_CHECK_FAILED") != NULL;
+	raw_spin_unlock_irqrestore(&last_modem_sfr_lock, flags);
+	if (nv_destroyed) {
 		pr_err("errimei_dev: the NV has been destroyed, should restart to recovery\n");
 		schedule_delayed_work(&create_kobj_work, msecs_to_jiffies(1*1000));
 	}
@@ -580,7 +603,13 @@ static struct platform_driver pil_mss_driver = {
 
 static int last_modem_sfr_proc_show(struct seq_file *m, void *v)
 {
-	seq_printf(m, "%s\n", last_modem_sfr_reason);
+	unsigned long flags;
+	char buf[MAX_SSR_REASON_LEN];
+
+	raw_spin_lock_irqsave(&last_modem_sfr_lock, flags);
+	strlcpy(buf, last_modem_sfr_reason, sizeof(buf));
+	raw_spin_unlock_irqrestore(&last_modem_sfr_lock, flags);
+	seq_printf(m, "%s\n", buf);
 	return 0;
 }
 
@@ -609,13 +638,21 @@ static int __init pil_mss_init(void)
 	ret = platform_driver_register(&pil_mba_mem_driver);
 	if (!ret)
 		ret = platform_driver_register(&pil_mss_driver);
+	if (ret) {
+		platform_driver_unregister(&pil_mba_mem_driver);
+		if (last_modem_sfr_entry) {
+			remove_proc_entry("last_mcrash", NULL);
+			last_modem_sfr_entry = NULL;
+		}
+	}
 	return ret;
 }
 module_init(pil_mss_init);
 
 static void __exit pil_mss_exit(void)
 {
-	schedule_work(&clean_kobj_work);
+	cancel_delayed_work_sync(&create_kobj_work);
+	checknv_kobj_clean(NULL);
 	if (last_modem_sfr_entry) {
 		remove_proc_entry("last_mcrash", NULL);
 		last_modem_sfr_entry = NULL;

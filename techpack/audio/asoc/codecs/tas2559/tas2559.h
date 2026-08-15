@@ -453,6 +453,7 @@ struct tas2559_priv {
 	bool mbYCRCEnable;
 	bool mbIRQEnable;
 	bool mbCalibrationLoaded;
+	bool mbShutdown;
 
 	/* parameters for TAS2559 */
 	int mnDevAPGID;

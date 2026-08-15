@@ -1,6 +1,8 @@
 #ifndef __RTMV20_H__
 #define __RTMV20_H__
 
+#include <linux/ioctl.h>
+
 #define RTMV20_NAME "rtmv20"
 
 #define RTMV_IOC_MAGIC 'Q'

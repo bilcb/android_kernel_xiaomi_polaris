@@ -17,6 +17,9 @@
  *
  */
 
+#ifndef _LINUX_NVT_TOUCH_MP_CTRLRAM_H
+#define _LINUX_NVT_TOUCH_MP_CTRLRAM_H
+
 #if NVT_TOUCH_MP
 
 static uint32_t IC_X_CFG_SIZE = 18;
@@ -1115,3 +1118,5 @@ static int32_t PS_Config_Lmt_FW_Diff_N[40 * 40] = {
 static int32_t PS_Config_Diff_Test_Frame = 50;
 
 #endif /* #if NVT_TOUCH_MP */
+
+#endif /* _LINUX_NVT_TOUCH_MP_CTRLRAM_H */

@@ -783,7 +783,7 @@ static ssize_t acc_write(struct file *fp, const char __user *buf,
 		ret = wait_event_interruptible(dev->write_wq,
 			((req = req_get(dev, &dev->tx_idle)) || !dev->online));
 		if (!req) {
-			r = ret;
+			r = ret ? ret : -EIO;
 			break;
 		}
 

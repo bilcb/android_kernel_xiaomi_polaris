@@ -30,8 +30,14 @@ static int dsi_pwr_parse_supply_node(struct device_node *root,
 	u32 tmp = 0;
 	struct device_node *node = NULL;
 
-	for_each_child_of_node(root, node) {
+	for_each_available_child_of_node(root, node) {
 		const char *st = NULL;
+
+		if (i >= regs->count) {
+			pr_err("too many supply entries\n");
+			rc = -EINVAL;
+			goto error;
+		}
 
 		rc = of_property_read_string(node, "qcom,supply-name", &st);
 		if (rc) {
@@ -138,8 +144,7 @@ static int dsi_pwr_enable_vregs(struct dsi_regulator_info *regs, bool enable)
 		for (i = 0; i < regs->count; i++) {
 			vreg = &regs->vregs[i];
 			if (vreg->pre_on_sleep)
-				usleep_range(vreg->pre_on_sleep * 1000,
-						vreg->pre_on_sleep * 1000);
+				msleep(vreg->pre_on_sleep);
 
 			rc = regulator_set_load(vreg->vreg,
 						vreg->enable_load);
@@ -168,22 +173,19 @@ static int dsi_pwr_enable_vregs(struct dsi_regulator_info *regs, bool enable)
 			}
 
 			if (vreg->post_on_sleep)
-				usleep_range(vreg->post_on_sleep * 1000,
-						vreg->post_on_sleep * 1000);
+				msleep(vreg->post_on_sleep);
 		}
 	} else {
 		for (i = (regs->count - 1); i >= 0; i--) {
 			if (regs->vregs[i].pre_off_sleep)
-				usleep_range(regs->vregs[i].pre_off_sleep * 1000,
-						regs->vregs[i].pre_off_sleep * 1000);
+				msleep(regs->vregs[i].pre_off_sleep);
 
 			(void)regulator_set_load(regs->vregs[i].vreg,
 						regs->vregs[i].disable_load);
 			(void)regulator_disable(regs->vregs[i].vreg);
 
 			if (regs->vregs[i].post_off_sleep)
-				usleep_range(regs->vregs[i].post_off_sleep * 1000,
-						regs->vregs[i].post_off_sleep * 1000);
+				msleep(regs->vregs[i].post_off_sleep);
 		}
 	}
 
@@ -199,8 +201,7 @@ error_disable_voltage:
 error:
 	for (i--; i >= 0; i--) {
 		if (regs->vregs[i].pre_off_sleep)
-			usleep_range(regs->vregs[i].pre_off_sleep * 1000,
-						regs->vregs[i].pre_off_sleep * 1000);
+			msleep(regs->vregs[i].pre_off_sleep);
 
 		(void)regulator_set_load(regs->vregs[i].vreg,
 					 regs->vregs[i].disable_load);
@@ -213,8 +214,7 @@ error:
 		(void)regulator_disable(regs->vregs[i].vreg);
 
 		if (regs->vregs[i].post_off_sleep)
-			usleep_range(regs->vregs[i].post_off_sleep * 1000,
-						regs->vregs[i].post_off_sleep * 1000);
+			msleep(regs->vregs[i].post_off_sleep);
 	}
 
 	return rc;
@@ -290,7 +290,6 @@ int dsi_pwr_get_dt_vreg_data(struct device *dev,
 {
 	int rc = 0;
 	struct device_node *of_node = NULL;
-	struct device_node *supply_node = NULL;
 	struct device_node *supply_root_node = NULL;
 
 	if (!dev || !regs) {
@@ -310,8 +309,7 @@ int dsi_pwr_get_dt_vreg_data(struct device *dev,
 		}
 	}
 
-	for_each_child_of_node(supply_root_node, supply_node)
-		regs->count++;
+	regs->count = of_get_available_child_count(supply_root_node);
 
 	if (regs->count == 0) {
 		pr_err("No vregs defined for %s\n", supply_name);
@@ -356,8 +354,10 @@ int dsi_pwr_enable_regulator(struct dsi_regulator_info *regs, bool enable)
 	if (enable) {
 		if (regs->refcount == 0) {
 			rc = dsi_pwr_enable_vregs(regs, true);
-			if (rc)
+			if (rc) {
 				pr_err("failed to enable regulators\n");
+				return rc;
+			}
 		}
 		regs->refcount++;
 	} else {

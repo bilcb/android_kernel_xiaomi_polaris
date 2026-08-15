@@ -139,6 +139,7 @@ struct gf_dev {
 	char device_available;
 	char fb_black;
 	char wait_finger_down;
+	bool gpio_held;
 	struct work_struct work;
 #ifdef CONFIG_FINGERPRINT_FP_VREG_CONTROL
 	struct regulator *vreg;

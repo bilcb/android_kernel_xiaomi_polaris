@@ -1,7 +1,9 @@
+#ifndef __NDT_CORE_H__
+#define __NDT_CORE_H__
 
 extern int ndt_get_pressure_f60(int touch_flag, int x, int y);
 extern int ndt_get_pressure_m65(int touch_flag, int x, int y);
-inline int ndt_get_pressure(int touch_flag, int x, int y)
+static inline int ndt_get_pressure(int touch_flag, int x, int y)
 {
 	int pressure = 1;
 #ifdef CONFIG_INPUT_PRESS_NDT_F60
@@ -13,3 +15,5 @@ inline int ndt_get_pressure(int touch_flag, int x, int y)
 #endif
 	return pressure;
 }
+
+#endif /* __NDT_CORE_H__ */

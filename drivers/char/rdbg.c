@@ -1011,10 +1011,18 @@ static int register_smp2p(char *node_name, struct gpio_info *gpio_info_ptr)
 		cnt = of_gpio_count(node);
 		if (cnt && gpio_info_ptr) {
 			id = of_get_gpio(node, 0);
+			if (id < 0) {
+				pr_debug("rdbg: GPIO not available for %s: %d\n",
+					node_name, id);
+				of_node_put(node);
+				return id;
+			}
 			gpio_info_ptr->gpio_base_id = id;
 			gpio_info_ptr->irq_base_id = gpio_to_irq(id);
+			of_node_put(node);
 			return 0;
 		}
+		of_node_put(node);
 	}
 	return -EINVAL;
 }

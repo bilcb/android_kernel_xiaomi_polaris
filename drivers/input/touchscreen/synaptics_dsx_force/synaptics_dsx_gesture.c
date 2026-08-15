@@ -364,6 +364,7 @@ struct synaptics_rmi4_udg_handle {
 	unsigned char *ctrl_buf;
 	unsigned char *trace_data_buf;
 	unsigned char *template_data_buf;
+	struct mutex sysfs_mutex;
 #ifdef STORE_GESTURES
 	unsigned char gestures_to_store;
 	unsigned char *storage_buf;
@@ -709,13 +710,17 @@ static ssize_t udg_sysfs_template_detection_show(struct device *dev,
 
 	switch (detection_status) {
 	case DETECTION:
+		mutex_lock(&udg->sysfs_mutex);
 		udg->detection_score = rmi4_data->gesture_detection[1];
 		udg->detection_index = rmi4_data->gesture_detection[4];
 		udg->trace_size = rmi4_data->gesture_detection[3];
+		mutex_unlock(&udg->sysfs_mutex);
 		break;
 	case REGISTRATION:
+		mutex_lock(&udg->sysfs_mutex);
 		udg->registration_status = rmi4_data->gesture_detection[1];
 		udg->trace_size = rmi4_data->gesture_detection[3];
+		mutex_unlock(&udg->sysfs_mutex);
 		break;
 	default:
 		return snprintf(buf, PAGE_SIZE, "0\n");
@@ -870,16 +875,21 @@ static ssize_t udg_sysfs_trace_data_show(struct file *data_file,
 	unsigned short trace_data_size;
 	struct synaptics_rmi4_data *rmi4_data = udg->rmi4_data;
 
+	mutex_lock(&udg->sysfs_mutex);
+
 	trace_data_size = udg->trace_size * 5;
 
-	if (trace_data_size == 0)
-		return -EINVAL;
+	if (trace_data_size == 0) {
+		retval = -EINVAL;
+		goto exit;
+	}
 
 	if (count < trace_data_size) {
 //		dev_err(rmi4_data->pdev->dev.parent,
 //				"%s: Not enough space (%d bytes) in buffer\n",
 //				__func__, count);
-		return -EINVAL;
+		retval = -EINVAL;
+		goto exit;
 	}
 
 	if (udg->trace_data_buf_size < trace_data_size) {
@@ -891,7 +901,8 @@ static ssize_t udg_sysfs_trace_data_show(struct file *data_file,
 					"%s: Failed to alloc mem for trace data buffer\n",
 					__func__);
 			udg->trace_data_buf_size = 0;
-			return -ENOMEM;
+			retval = -ENOMEM;
+			goto exit;
 		}
 		udg->trace_data_buf_size = trace_data_size;
 	}
@@ -904,7 +915,7 @@ static ssize_t udg_sysfs_trace_data_show(struct file *data_file,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read trace X data\n",
 				__func__);
-		return retval;
+		goto exit;
 	} else {
 		index += udg->trace_size * 2;
 	}
@@ -917,7 +928,7 @@ static ssize_t udg_sysfs_trace_data_show(struct file *data_file,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read trace Y data\n",
 				__func__);
-		return retval;
+		goto exit;
 	} else {
 		index += udg->trace_size * 2;
 	}
@@ -930,7 +941,7 @@ static ssize_t udg_sysfs_trace_data_show(struct file *data_file,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to read trace segment data\n",
 				__func__);
-		return retval;
+		goto exit;
 	}
 
 	retval = secure_memcpy(buf, count, udg->trace_data_buf,
@@ -939,10 +950,15 @@ static ssize_t udg_sysfs_trace_data_show(struct file *data_file,
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Failed to copy trace data\n",
 				__func__);
-		return retval;
+		goto exit;
 	}
 
-	return trace_data_size;
+	retval = trace_data_size;
+
+exit:
+	mutex_unlock(&udg->sysfs_mutex);
+
+	return retval;
 }
 
 static ssize_t udg_sysfs_template_data_show(struct file *data_file,
@@ -1324,32 +1340,40 @@ static int udg_ctrl_subpacket(unsigned char ctrlreg,
 		if ((query_5->data[q5_index] & (1 << bitnum)) == 0x00)
 			continue;
 
+		if (q6_index >= query_5->size_of_query6)
+			goto exit;
 		if (query_6[q6_index] == 0x00)
 			q6_index += 3;
 		else
 			q6_index++;
 
-		while (query_6[q6_index] & ~MASK_7BIT)
+		while (q6_index < query_5->size_of_query6 && (query_6[q6_index] & ~MASK_7BIT))
 			q6_index++;
 
+		if (q6_index >= query_5->size_of_query6)
+			goto exit;
 		q6_index++;
 	}
 
 	cnt = 0;
+	if (q6_index >= query_5->size_of_query6)
+		goto exit;
 	q6_index++;
 	offset = subpacket / 7;
 	bitnum = subpacket % 7;
 
 	do {
 		if (cnt == offset) {
-			if (query_6[q6_index + cnt] & (1 << bitnum))
+			if ((q6_index + cnt) < query_5->size_of_query6 &&
+			    (query_6[q6_index + cnt] & (1 << bitnum)))
 				retval = 1;
 			else
 				retval = 0;
 			goto exit;
 		}
 		cnt++;
-	} while (query_6[q6_index + cnt - 1] & ~MASK_7BIT);
+	} while ((q6_index + cnt - 1) < query_5->size_of_query6 &&
+		 (query_6[q6_index + cnt - 1] & ~MASK_7BIT));
 
 	retval = 0;
 
@@ -1501,7 +1525,6 @@ static void udg_report(void)
 			input_sync(udg->udg_dev);
 			input_report_key(udg->udg_dev, KEY_WAKEUP, 0);
 			input_sync(udg->udg_dev);
-			rmi4_data->suspend = false;
 		}
 	}
 
@@ -1576,6 +1599,12 @@ static int udg_read_template_data(unsigned char index)
 	struct synaptics_rmi4_data *rmi4_data = udg->rmi4_data;
 
 	udg_set_index(index);
+	if (index >= udg->gestures_to_store) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: index %u >= gestures_to_store %u\n",
+				__func__, index, udg->gestures_to_store);
+		return -EINVAL;
+	}
 	storage = &(udg->storage_buf[index * udg->template_data_size]);
 
 	retval = synaptics_rmi4_reg_read(rmi4_data,
@@ -1829,6 +1858,13 @@ static int udg_reg_init(void)
 	udg->template_size =
 			((unsigned short)query_0.template_size_lsb << 0) |
 			((unsigned short)query_0.template_size_msb << 8);
+	if (udg->template_size > 8191) {
+		dev_err(rmi4_data->pdev->dev.parent,
+				"%s: template_size %u too large (would overflow template_data_size)\n",
+				__func__, udg->template_size);
+		retval = -EINVAL;
+		return retval;
+	}
 	udg->template_data_size = udg->template_size * 4 * 2 + 4 + 1;
 
 #ifdef STORE_GESTURES
@@ -1925,7 +1961,7 @@ f12_found:
 	intr_src = fd.intr_src_count;
 	intr_off = intr_count % 8;
 	for (ii = intr_off;
-			ii < (intr_src + intr_off);
+			ii < (intr_src + intr_off) && ii < 8;
 			ii++) {
 		udg->intr_mask |= 1 << ii;
 	}
@@ -1965,8 +2001,8 @@ static int synaptics_rmi4_udg_init(struct synaptics_rmi4_data *rmi4_data)
 	int retval;
 	unsigned char ii;
 	unsigned char size;
-	unsigned char attr_count;
-	unsigned char param_count;
+	int attr_count;
+	int param_count;
 
 	if (udg) {
 		dev_dbg(rmi4_data->pdev->dev.parent,
@@ -1999,6 +2035,8 @@ static int synaptics_rmi4_udg_init(struct synaptics_rmi4_data *rmi4_data)
 
 	udg->rmi4_data = rmi4_data;
 
+	mutex_init(&udg->sysfs_mutex);
+
 	retval = udg_scan_pdt();
 	if (retval < 0)
 		goto exit_free_ctrl_buf;
@@ -2021,6 +2059,7 @@ static int synaptics_rmi4_udg_init(struct synaptics_rmi4_data *rmi4_data)
 				"%s: Failed to alloc mem for storage_buf\n",
 				__func__);
 		kfree(udg->template_data_buf);
+		udg->template_data_buf = NULL;
 		retval = -ENOMEM;
 		goto exit_free_ctrl_buf;
 	}
@@ -2227,6 +2266,9 @@ static void synaptics_rmi4_udg_e_suspend(struct synaptics_rmi4_data *rmi4_data)
 	if (!udg)
 		return;
 
+	if (!rmi4_data->enable_wakeup_gesture)
+		return;
+
 	rmi4_data->sleep_enable(rmi4_data, false);
 	rmi4_data->irq_enable(rmi4_data, true, false);
 	enable_irq_wake(rmi4_data->irq);
@@ -2240,6 +2282,9 @@ static void synaptics_rmi4_udg_e_suspend(struct synaptics_rmi4_data *rmi4_data)
 static void synaptics_rmi4_udg_suspend(struct synaptics_rmi4_data *rmi4_data)
 {
 	if (!udg)
+		return;
+
+	if (!rmi4_data->enable_wakeup_gesture)
 		return;
 
 	rmi4_data->sleep_enable(rmi4_data, false);

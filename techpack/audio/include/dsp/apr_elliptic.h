@@ -32,7 +32,7 @@ struct afe_ultrasound_config_command {
 int32_t ultrasound_apr_set_parameter(int32_t port_id, uint32_t param_id,
 	u8 *user_params, int32_t length);
 
-int32_t elliptic_process_apr_payload(uint32_t *payload);
+int32_t elliptic_process_apr_payload(uint32_t *payload, uint32_t actual_size);
 
 int elliptic_notify_gain_change_msg(int component_id, int gaindb);
 

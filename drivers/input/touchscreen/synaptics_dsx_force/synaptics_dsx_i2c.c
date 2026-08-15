@@ -50,6 +50,7 @@
 #define MAX_WRITE_SIZE 4096
 
 static unsigned char *wr_buf;
+static unsigned int buf_size;
 
 static struct synaptics_dsx_hw_interface hw_if;
 
@@ -400,6 +401,13 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 
 	config_info = bdata->config_array;
 	for_each_child_of_node(np, temp) {
+		if (config_info - bdata->config_array >=
+				bdata->config_array_size) {
+			dev_err(dev, "Too many child nodes for config array\n");
+			of_node_put(temp);
+			return -EINVAL;
+		}
+
 		retval = of_property_read_u32(temp, "synaptics,chip-id",
 				&value);
 		if (retval < 0)
@@ -411,6 +419,7 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 			&config_info->chip_id_name);
 		if (retval && (retval != -EINVAL)) {
 			dev_err(dev, "Unable to read chip id name\n");
+			of_node_put(temp);
 			return retval;
 		}
 
@@ -420,10 +429,12 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 		config_info->is_factory_param = of_property_read_bool(temp, "synaptics,factory-param");
 
 		if (config_info->is_factory_param) {
-			factory_param = devm_kzalloc(dev, bdata->config_array_size *
-						sizeof(struct synaptics_dsx_factory_param), GFP_KERNEL);
+			factory_param = devm_kzalloc(dev,
+					sizeof(struct synaptics_dsx_factory_param),
+					GFP_KERNEL);
 			if (!factory_param) {
 				dev_err(dev, "Unable to allocate memory\n");
+				of_node_put(temp);
 				return -ENOMEM;
 			}
 
@@ -724,19 +735,23 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 		if (prop && prop->length) {
 			if (bdata->tp_id_num != prop->length / sizeof(u8)) {
 				dev_err(dev, "Invalid TP id length\n");
+				of_node_put(temp);
 				return -EINVAL;
 			}
 			config_info->tp_ids = devm_kzalloc(dev,
 					prop->length,
 					GFP_KERNEL);
-			if (!config_info->tp_ids)
+			if (!config_info->tp_ids) {
+				of_node_put(temp);
 				return -ENOMEM;
+			}
 			retval = of_property_read_u8_array(temp,
 					"synaptics,tp-id",
 					config_info->tp_ids,
 					bdata->tp_id_num);
 			if (retval < 0) {
 				dev_err(dev, "Error reading TP id\n");
+				of_node_put(temp);
 				return -EINVAL;
 			}
 		} else if (bdata->tp_id_num == 0) {
@@ -744,6 +759,7 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 			config_info->tp_ids = NULL;
 		} else {
 			dev_err(dev, "Cannot find TP id\n");
+			of_node_put(temp);
 			return -EINVAL;
 		}
 
@@ -751,6 +767,7 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 			&config_info->fw_name);
 		if (retval && (retval != -EINVAL)) {
 			dev_err(dev, "Unable to read firmware name\n");
+			of_node_put(temp);
 			return retval;
 		}
 		config_info++;
@@ -764,8 +781,6 @@ static int parse_dt(struct device *dev, struct synaptics_dsx_board_data *bdata)
 static int synaptics_rmi4_i2c_alloc_buf(struct synaptics_rmi4_data *rmi4_data,
 		unsigned int count)
 {
-	static unsigned int buf_size;
-
 	if (count > buf_size) {
 		if (buf_size)
 			kfree(wr_buf);
@@ -786,7 +801,7 @@ static int synaptics_rmi4_i2c_alloc_buf(struct synaptics_rmi4_data *rmi4_data,
 static void synaptics_rmi4_i2c_check_addr(struct synaptics_rmi4_data *rmi4_data,
 		struct i2c_client *i2c)
 {
-	if (hw_if.board_data->ub_i2c_addr == -1)
+	if (hw_if.board_data->ub_i2c_addr == (unsigned short)-1)
 		return;
 
 	if (hw_if.board_data->i2c_addr == i2c->addr)
@@ -800,7 +815,7 @@ static void synaptics_rmi4_i2c_check_addr(struct synaptics_rmi4_data *rmi4_data,
 static int synaptics_rmi4_i2c_set_page(struct synaptics_rmi4_data *rmi4_data,
 		unsigned short addr)
 {
-	int retval;
+	int retval = -EIO;
 	unsigned char retry;
 	unsigned char buf[PAGE_SELECT_LEN];
 	unsigned char page;
@@ -827,7 +842,7 @@ static int synaptics_rmi4_i2c_set_page(struct synaptics_rmi4_data *rmi4_data,
 					"%s: I2C retry %d\n",
 					__func__, retry + 1);
 
-			if (retry != SYN_I2C_RETRY_TIMES)
+			if (retry != SYN_I2C_RETRY_TIMES - 1)
 				msleep(5);
 
 			if (retry == SYN_I2C_RETRY_TIMES / 2) {
@@ -953,11 +968,11 @@ static int synaptics_rmi4_i2c_write(struct synaptics_rmi4_data *rmi4_data,
 	max_write_size = length;
 #endif
 
+	mutex_lock(&rmi4_data->rmi4_io_ctrl_mutex);
+
 	retval = synaptics_rmi4_i2c_alloc_buf(rmi4_data, max_write_size + 1);
 	if (retval < 0)
-		return retval;
-
-	mutex_lock(&rmi4_data->rmi4_io_ctrl_mutex);
+		goto exit;
 
 	retval = synaptics_rmi4_i2c_set_page(rmi4_data, addr);
 	if (retval != PAGE_SELECT_LEN) {
@@ -971,12 +986,18 @@ static int synaptics_rmi4_i2c_write(struct synaptics_rmi4_data *rmi4_data,
 		else
 			write_size = left_bytes;
 
+		retval = synaptics_rmi4_i2c_set_page(rmi4_data, addr + index);
+		if (retval != PAGE_SELECT_LEN) {
+			retval = -EIO;
+			goto exit;
+		}
+
 		msg[0].addr = hw_if.board_data->i2c_addr;
 		msg[0].flags = 0;
 		msg[0].len = write_size + 1;
 		msg[0].buf = wr_buf;
 
-		wr_buf[0] = addr & MASK_8BIT;
+		wr_buf[0] = (addr + index) & MASK_8BIT;
 		retval = secure_memcpy(&wr_buf[1], write_size, &data[index], write_size, write_size);
 		if (retval < 0) {
 			dev_err(rmi4_data->pdev->dev.parent,
@@ -1006,6 +1027,7 @@ static int synaptics_rmi4_i2c_write(struct synaptics_rmi4_data *rmi4_data,
 					"%s: I2C write over retry limit\n",
 					__func__);
 			retval = -EIO;
+			goto exit;
 		}
 
 		index += write_size;
@@ -1063,6 +1085,7 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 			dev_err(&client->dev,
 					"%s: Failed to allocate memory for board data\n",
 					__func__);
+			kfree(synaptics_dsx_i2c_device);
 			return -ENOMEM;
 		}
 		hw_if.board_data->cap_button_map = devm_kzalloc(&client->dev,
@@ -1072,6 +1095,7 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 			dev_err(&client->dev,
 					"%s: Failed to allocate memory for 0D button map\n",
 					__func__);
+			kfree(synaptics_dsx_i2c_device);
 			return -ENOMEM;
 		}
 		hw_if.board_data->vir_button_map = devm_kzalloc(&client->dev,
@@ -1081,9 +1105,17 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 			dev_err(&client->dev,
 					"%s: Failed to allocate memory for virtual button map\n",
 					__func__);
+			kfree(synaptics_dsx_i2c_device);
 			return -ENOMEM;
 		}
-		parse_dt(&client->dev, hw_if.board_data);
+		retval = parse_dt(&client->dev, hw_if.board_data);
+		if (retval < 0) {
+			dev_err(&client->dev,
+					"%s: Failed to parse device tree\n",
+					__func__);
+			kfree(synaptics_dsx_i2c_device);
+			return retval;
+		}
 	}
 #else
 	hw_if.board_data = client->dev.platform_data;
@@ -1104,6 +1136,7 @@ static int synaptics_rmi4_i2c_probe(struct i2c_client *client,
 		dev_err(&client->dev,
 				"%s: Failed to register platform device\n",
 				__func__);
+		kfree(synaptics_dsx_i2c_device);
 		return -ENODEV;
 	}
 
@@ -1153,9 +1186,11 @@ int synaptics_rmi4_bus_init_force(void)
 
 void synaptics_rmi4_bus_exit_force(void)
 {
-	kfree(wr_buf);
-
 	i2c_del_driver(&synaptics_rmi4_i2c_driver);
+
+	kfree(wr_buf);
+	wr_buf = NULL;
+	buf_size = 0;
 
 	return;
 }

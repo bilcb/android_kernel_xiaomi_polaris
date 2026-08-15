@@ -129,6 +129,8 @@ int fts_point_report_check_exit(struct fts_ts_data *ts_data)
 {
 	FTS_FUNC_ENTER();
 
+	cancel_delayed_work_sync(&ts_data->prc_work);
+
 	FTS_FUNC_EXIT();
 	return 0;
 }

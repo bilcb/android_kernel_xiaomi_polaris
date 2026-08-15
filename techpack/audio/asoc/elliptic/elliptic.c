@@ -211,12 +211,11 @@ int elliptic_data_initialize(struct elliptic_data
 
 int elliptic_data_cleanup(struct elliptic_data *elliptic_data)
 {
-	spin_unlock(&elliptic_data->fifo_isr_spinlock);
 	kfifo_free(&elliptic_data->fifo_isr);
 	return 0;
 }
 
-size_t elliptic_data_pop(struct elliptic_data
+ssize_t elliptic_data_pop(struct elliptic_data
 	*elliptic_data, char __user *user_buffer, size_t buffer_size)
 {
 	int result;
@@ -227,7 +226,7 @@ size_t elliptic_data_pop(struct elliptic_data
 	if (buffer_size < ELLIPTIC_MSG_BUF_SIZE) {
 		EL_PRINT_E("buffer_size : %lu smaller than %lu",
 			buffer_size, (size_t)ELLIPTIC_MSG_BUF_SIZE);
-		return 0;
+		return -EINVAL;
 	}
 
 	result = wait_event_interruptible(elliptic_data->fifo_isr_not_empty,
@@ -241,6 +240,8 @@ size_t elliptic_data_pop(struct elliptic_data
 	}
 
 	if (result == 0) {
+		mutex_lock(&elliptic_data->user_buffer_lock);
+
 		spin_lock_irqsave(&elliptic_data->fifo_isr_spinlock, flags);
 
 		fifo_result = kfifo_out(&elliptic_data->fifo_isr,
@@ -250,12 +251,11 @@ size_t elliptic_data_pop(struct elliptic_data
 			flags);
 
 		if (fifo_result == 0) {
+			mutex_unlock(&elliptic_data->user_buffer_lock);
 			EL_PRINT_E("failed to copy: fifo isr -> swap buffer %u",
 				fifo_result);
 			return 0;
 		}
-
-		mutex_lock(&elliptic_data->user_buffer_lock);
 
 		num_copied = copy_to_user(user_buffer,
 						elliptic_data->isr_swap_buffer,
@@ -265,7 +265,7 @@ size_t elliptic_data_pop(struct elliptic_data
 
 		if (num_copied != 0) {
 			EL_PRINT_E("failed copy to user");
-			return 0;
+			return -EFAULT;
 		}
 		++elliptic_data->userspace_read_total;
 	} else {
@@ -274,10 +274,10 @@ size_t elliptic_data_pop(struct elliptic_data
 		else
 			EL_PRINT_E("wait error = %d", result);
 
-		return 0;
+		return result;
 	}
 
-	return (size_t)ELLIPTIC_MSG_BUF_SIZE;
+	return (ssize_t)ELLIPTIC_MSG_BUF_SIZE;
 }
 
 
@@ -291,8 +291,6 @@ int elliptic_data_push(int deviceid,
 	size_t available_space;
 	size_t space_required;
 	size_t zeros_to_pad;
-	unsigned int copied_from_user;
-	int copy_from_user_result;
 	int err;
 	int i;
 	int i_max;
@@ -301,14 +299,20 @@ int elliptic_data_push(int deviceid,
 	struct elliptic_device *device;
 	struct elliptic_data *elliptic_data;
 	unsigned int fifo_result;
+	uint8_t kernel_buf[ELLIPTIC_MSG_BUF_SIZE];
 	static uint8_t zero_pad_buffer[ELLIPTIC_MSG_BUF_SIZE];
 
 	err = 0;
 	fifo_result = 0;
-	copied_from_user = 0;
-	copy_from_user_result = 0;
 	if (buffer_size > ELLIPTIC_MSG_BUF_SIZE)
 		return -EINVAL;
+
+	if (data_source == ELLIPTIC_DATA_PUSH_FROM_USERSPACE) {
+		if (copy_from_user(kernel_buf, buffer, buffer_size))
+			return -EFAULT;
+		buffer = kernel_buf;
+		data_source = ELLIPTIC_DATA_PUSH_FROM_KERNEL;
+	}
 
 	zeros_to_pad = ELLIPTIC_MSG_BUF_SIZE - buffer_size;
 
@@ -316,6 +320,8 @@ int elliptic_data_push(int deviceid,
 	i_max = ELLIPTIC_NUM_DEVICES;
 
 	if (deviceid != ELLIPTIC_ALL_DEVICES) {
+		if (deviceid < 0 || deviceid >= ELLIPTIC_NUM_DEVICES)
+			return -EINVAL;
 		/* Copy to specific device */
 		i = deviceid;
 		i_max = i + 1;
@@ -328,10 +334,11 @@ int elliptic_data_push(int deviceid,
 		if ((!device->opened))
 			continue;
 
-		available_space = kfifo_avail(&elliptic_data->fifo_isr);
 		space_required = ELLIPTIC_MSG_BUF_SIZE;
 
 		spin_lock_irqsave(&elliptic_data->fifo_isr_spinlock, flags);
+
+		available_space = kfifo_avail(&elliptic_data->fifo_isr);
 
 		if (available_space < space_required) {
 
@@ -345,17 +352,7 @@ int elliptic_data_push(int deviceid,
 				buffer, buffer_size);
 
 			if (fifo_result == 0) {
-				spin_unlock_irqrestore(
-					&elliptic_data->fifo_isr_spinlock,
-					flags);
-				continue;
-			}
-		} else if (data_source == ELLIPTIC_DATA_PUSH_FROM_USERSPACE) {
-			copy_from_user_result = kfifo_from_user(
-				&elliptic_data->fifo_isr, buffer,
-				buffer_size, &copied_from_user);
-
-			if (-EFAULT == copy_from_user_result) {
+				err = -EIO;
 				spin_unlock_irqrestore(
 					&elliptic_data->fifo_isr_spinlock,
 					flags);
@@ -454,13 +451,19 @@ static ssize_t device_write(struct file *fp, const char *buff,
 	size_t length, loff_t *ppos)
 {
 	ssize_t ret_val;
+	unsigned char payload[ELLIPTIC_SET_PARAMS_SIZE * 4];
 
 	ret_val = 0;
-	if ((buff != NULL) && (length != 0))
+	if ((buff != NULL) && (length != 0)) {
+		if (length > sizeof(payload))
+			return -EINVAL;
+		if (copy_from_user(payload, buff, length))
+			return -EFAULT;
 		ret_val = elliptic_data_io_write(ELLIPTIC_ULTRASOUND_SET_PARAMS,
-			buff, length);
+			payload, length);
+	}
 
-	return ret_val >= 0 ? (ssize_t)length : 0;
+	return ret_val >= 0 ? (ssize_t)length : ret_val;
 }
 
 
@@ -471,7 +474,7 @@ static long device_ioctl(struct file *fp, unsigned int number,
 	struct elliptic_data *elliptic_data;
 	int err;
 	unsigned int mirror_tag, mirror_payload_size;
-	unsigned char *data_ptr;
+	unsigned char mirror_payload[ELLIPTIC_SET_PARAMS_SIZE * 4];
 
 	device = (struct elliptic_device *)(fp->private_data);
 	elliptic_data = &device->el_data;
@@ -484,18 +487,24 @@ static long device_ioctl(struct file *fp, unsigned int number,
 		break;
 
 	case IOCTL_ELLIPTIC_DATA_IO_MIRROR:
-		data_ptr = (unsigned char *)param;
-		mirror_tag = *(unsigned int *)data_ptr;
-		mirror_payload_size = *((unsigned int *)data_ptr + 1);
+		if (copy_from_user(&mirror_tag, (void __user *)param, sizeof(mirror_tag)))
+			return -EFAULT;
+		if (copy_from_user(&mirror_payload_size, (void __user *)param + sizeof(mirror_tag), sizeof(mirror_payload_size)))
+			return -EFAULT;
 
 		if ((mirror_tag == MIRROR_TAG) &&
 			(mirror_payload_size != 0) &&
 			(mirror_payload_size <=
 			(ELLIPTIC_SET_PARAMS_SIZE * 4))) {
 
+			if (copy_from_user(mirror_payload,
+					(void __user *)param + 8,
+					mirror_payload_size))
+				return -EFAULT;
+
 			err = elliptic_data_io_write(
 				ELLIPTIC_ULTRASOUND_SET_PARAMS,
-				(data_ptr + 8), mirror_payload_size);
+				mirror_payload, mirror_payload_size);
 
 			if (err != 0) {
 				EL_PRINT_E("elliptic_data_io_write failed");
@@ -545,12 +554,12 @@ static int device_close(struct inode *inode, struct file *filp)
 	unsigned int minor;
 
 	device = filp->private_data;
-	elliptic_data = &device->el_data;
-	minor = iminor(inode);
 	if (device == NULL) {
 		EL_PRINT_E("device not found");
 		return -ENODEV;
 	}
+	elliptic_data = &device->el_data;
+	minor = iminor(inode);
 
 	device->opened = 0;
 	elliptic_data_update_debug_counters(elliptic_data);
@@ -611,11 +620,6 @@ static int elliptic_device_initialize(struct elliptic_device
 		return err;
 	}
 
-	if (err) {
-		EL_PRINT_E("failed device initialize");
-		return err;
-	}
-
 	return 0;
 }
 
@@ -626,7 +630,6 @@ static void elliptic_device_cleanup(struct elliptic_device *dev, int minor,
 	BUG_ON(dev == NULL || class == NULL);
 	device_destroy(class, MKDEV(elliptic_major, minor));
 	cdev_del(&dev->cdev);
-	up(&dev->sem);
 }
 
 static void elliptic_driver_cleanup(int devices_to_destroy)
@@ -662,6 +665,7 @@ static char *calibration_filename = "/persist/audio/elliptic_calibration";
 
 /* function to load the calibration from a file (if possible) */
 static size_t load_calibration_data(char *filename)
+{
     size_t ret = 0;
     int fd;
 
@@ -696,12 +700,14 @@ static int __init elliptic_driver_init(void)
 	int err;
 	int i;
 	int devices_to_destroy;
+	bool io_driver_initialized = false;
+	bool ctrl_driver_initialized = false;
 	dev_t device_number;
 
 	err = alloc_chrdev_region(&device_number, 0, ELLIPTIC_NUM_DEVICES,
 		ELLIPTIC_DEVICENAME);
 
-	devices_to_destroy = 0;
+	devices_to_destroy = ELLIPTIC_NUM_DEVICES;
 
 	if (err < 0) {
 		EL_PRINT_E("Failed to allocate cdev region");
@@ -711,8 +717,10 @@ static int __init elliptic_driver_init(void)
 	elliptic_major = MAJOR(device_number);
 	elliptic_class = class_create(THIS_MODULE, "chardev");
 
-	if (elliptic_class == NULL) {
+	if (IS_ERR(elliptic_class)) {
 		EL_PRINT_E("Class creation failed");
+		err = PTR_ERR(elliptic_class);
+		elliptic_class = NULL;
 		goto fail;
 	}
 
@@ -732,33 +740,41 @@ static int __init elliptic_driver_init(void)
 
 
 	for (i = 0; i < ELLIPTIC_NUM_DEVICES; ++i) {
-		if (elliptic_device_initialize(&elliptic_devices[i], i,
-			elliptic_class)) {
+		err = elliptic_device_initialize(&elliptic_devices[i], i,
+			elliptic_class);
+		if (err) {
 			devices_to_destroy = i;
 			goto fail;
 		}
 
-		if (elliptic_data_initialize(&elliptic_devices[i].el_data,
-			ELLIPTIC_DATA_FIFO_SIZE, ELLIPTIC_WAKEUP_TIMEOUT, i)) {
+		err = elliptic_data_initialize(&elliptic_devices[i].el_data,
+			ELLIPTIC_DATA_FIFO_SIZE, ELLIPTIC_WAKEUP_TIMEOUT, i);
+		if (err) {
+			devices_to_destroy = i + 1;
 			goto fail;
 		}
 	}
 
-	if (elliptic_data_io_initialize())
+	err = elliptic_data_io_initialize();
+	if (err)
 		goto fail;
 
-	if (elliptic_userspace_io_driver_init())
+	err = elliptic_userspace_io_driver_init();
+	if (err)
 		goto fail;
+	io_driver_initialized = true;
 
-
-	if (elliptic_userspace_ctrl_driver_init())
+	err = elliptic_userspace_ctrl_driver_init();
+	if (err)
 		goto fail;
+	ctrl_driver_initialized = true;
 
 	wake_source = kmalloc(sizeof(struct wakeup_source), GFP_KERNEL);
 
 	if (!wake_source) {
 		EL_PRINT_E("failed to allocate wake source");
-		return -ENOMEM;
+		err = -ENOMEM;
+		goto fail;
 	}
 
 	wakeup_source_init(wake_source, "elliptic_wake_source");
@@ -774,6 +790,10 @@ static int __init elliptic_driver_init(void)
 	return 0;
 
 fail:
+	if (ctrl_driver_initialized)
+		elliptic_userspace_ctrl_driver_exit();
+	if (io_driver_initialized)
+		elliptic_userspace_io_driver_exit();
 	elliptic_driver_cleanup(devices_to_destroy);
 	return err;
 }
@@ -786,9 +806,9 @@ static void elliptic_driver_exit(void)
 	}
 
 	elliptic_cleanup_sysfs();
-	elliptic_driver_cleanup(ELLIPTIC_NUM_DEVICES);
 	elliptic_userspace_io_driver_exit();
 	elliptic_userspace_ctrl_driver_exit();
+	elliptic_driver_cleanup(ELLIPTIC_NUM_DEVICES);
 }
 
 MODULE_AUTHOR("Elliptic Labs");

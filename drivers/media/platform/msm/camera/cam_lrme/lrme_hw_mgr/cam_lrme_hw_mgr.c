@@ -913,6 +913,11 @@ static int cam_lrme_mgr_hw_prepare_update(void *hw_mgr_priv,
 	frame_req->ctxt_to_hw_map = args->ctxt_to_hw_map;
 	frame_req->req_id = args->packet->header.request_id;
 	frame_req->hw_device = hw_device;
+	if (args->num_hw_update_entries > CAM_LRME_MAX_HW_ENTRIES) {
+		CAM_ERR(CAM_LRME, "too many hw update entries %d",
+			args->num_hw_update_entries);
+		return -EINVAL;
+	}
 	frame_req->num_hw_update_entries = args->num_hw_update_entries;
 	for (i = 0; i < args->num_hw_update_entries; i++)
 		frame_req->hw_update_entries[i] = args->hw_update_entries[i];

@@ -283,7 +283,7 @@ int cam_hw_cdm_wait_for_bl_fifo(struct cam_hw_info *cdm_hw,
 				(available_bl_slots - 1), bl_count);
 				rc = bl_count;
 				break;
-		} else if (0 == (available_bl_slots - 1)) {
+		} else if (available_bl_slots <= 1) {
 			rc = cam_hw_cdm_enable_bl_done_irq(cdm_hw, true);
 			if (rc) {
 				CAM_ERR(CAM_CDM, "Enable BL done irq failed");
@@ -425,7 +425,7 @@ int cam_hw_cdm_submit_bl(struct cam_hw_info *cdm_hw,
 		dma_addr_t hw_vaddr_ptr = 0;
 		size_t len = 0;
 
-		if ((!cdm_cmd->cmd[i].len) &&
+		if ((!cdm_cmd->cmd[i].len) ||
 			(cdm_cmd->cmd[i].len > 0x100000)) {
 			CAM_ERR(CAM_CDM,
 				"cmd len(%d) is invalid cnt=%d total cnt=%d",
@@ -481,7 +481,9 @@ int cam_hw_cdm_submit_bl(struct cam_hw_info *cdm_hw,
 		}
 
 		if ((!rc) && (hw_vaddr_ptr) && (len) &&
-			(len >= cdm_cmd->cmd[i].offset)) {
+			(len >= cdm_cmd->cmd[i].offset) &&
+			((len - cdm_cmd->cmd[i].offset) >=
+				cdm_cmd->cmd[i].len)) {
 			CAM_DBG(CAM_CDM, "Got the HW VA");
 			if (core->bl_tag >=
 				(CAM_CDM_HWFIFO_SIZE - 1))

@@ -901,7 +901,9 @@ static int __cam_req_mgr_process_req(struct cam_req_mgr_core_link *link,
 	}
 
 	if (link->sync_link && link->sync_link->sync_link == link) {
-		if (link->sync_link->sync_trigger_frame_id == 0 && link->sync_trigger_frame_id > 1) {
+		if (link->sync_link->sync_trigger_frame_id == 0 &&
+			link->sync_trigger_frame_id > 1 &&
+			link->sync_trigger_frame_id < 8) {
 			rc = 0;
 			CAM_DBG(CAM_CRM, "Waiting another sensor");
 			goto error;
@@ -2069,8 +2071,8 @@ static int cam_req_mgr_cb_notify_err(
 		rc = -EPERM;
 		goto end;
 	}
-	spin_unlock_bh(&link->link_state_spin_lock);
 	crm_timer_reset(link->watchdog);
+	spin_unlock_bh(&link->link_state_spin_lock);
 
 	task = cam_req_mgr_workq_get_task(link->workq);
 	if (!task) {
@@ -2132,8 +2134,8 @@ static int cam_req_mgr_cb_notify_trigger(
 		rc = -EPERM;
 		goto end;
 	}
-	spin_unlock_bh(&link->link_state_spin_lock);
 	crm_timer_reset(link->watchdog);
+	spin_unlock_bh(&link->link_state_spin_lock);
 
 	task = cam_req_mgr_workq_get_task(link->workq);
 	if (!task) {
@@ -2359,6 +2361,7 @@ end:
 static int __cam_req_mgr_unlink(struct cam_req_mgr_core_link *link)
 {
 	int rc;
+	void *payload = NULL;
 
 	mutex_lock(&link->lock);
 	spin_lock_bh(&link->link_state_spin_lock);
@@ -2369,12 +2372,12 @@ static int __cam_req_mgr_unlink(struct cam_req_mgr_core_link *link)
 	spin_unlock_bh(&link->link_state_spin_lock);
 	__cam_req_mgr_print_req_tbl(&link->req);
 
-	/* Destroy workq payload data */
-	kfree(link->workq->task.pool[0].payload);
-	link->workq->task.pool[0].payload = NULL;
-
 	/* Destroy workq of link */
+	payload = link->workq->task.pool[0].payload;
 	cam_req_mgr_workq_destroy(&link->workq);
+
+	/* Destroy workq payload data */
+	kfree(payload);
 
 	/* Cleanup request tables and unlink devices */
 	rc = __cam_req_mgr_destroy_link_info(link);

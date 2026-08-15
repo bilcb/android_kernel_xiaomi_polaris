@@ -55,7 +55,8 @@ struct fts_esdcheck_st {
 	u8 suspend:1;
 	u8 proc_debug:1;	/* apk or adb is accessing I2C */
 	u8 intr:1;		/* 1- Interrupt trigger */
-	u8 unused:4;
+	u8 user_disable:1;	/* 1- user disabled via sysfs, keep across suspend/resume */
+	u8 unused:3;
 	u8 flow_work_hold_cnt;	/* Flow Work Cnt(reg0x91) keep a same value for x times. >=5 times is ESD, need reset */
 	u8 flow_work_cnt_last;	/* Save Flow Work Cnt(reg0x91) value */
 	u32 hardware_reset_cnt;
@@ -168,7 +169,7 @@ static bool get_chip_id(struct fts_ts_data *ts_data)
 			FTS_ERROR("[ESD]: Read Reg 0xA3 failed ret = %d!!", ret);
 			fts_esdcheck_data.i2c_nack_cnt++;
 		} else {
-			if (reg_value == chip_id) {
+			if ((reg_value == chip_id) || (reg_value == 0xEF)) {
 				break;
 			} else {
 				fts_esdcheck_data.i2c_dataerror_cnt++;
@@ -385,11 +386,11 @@ int fts_esdcheck_switch(bool enable)
 					   msecs_to_jiffies(ESDCHECK_WAIT_TIME));
 		} else {
 			FTS_DEBUG("[ESD]: ESD check stop!!");
-			cancel_delayed_work(&ts_data->esdcheck_work);
+			cancel_delayed_work_sync(&ts_data->esdcheck_work);
 		}
 	} else {
 		FTS_DEBUG("[ESD]: ESD should disable!!");
-		cancel_delayed_work(&ts_data->esdcheck_work);
+		cancel_delayed_work_sync(&ts_data->esdcheck_work);
 	}
 
 	FTS_FUNC_EXIT();
@@ -406,8 +407,9 @@ int fts_esdcheck_switch(bool enable)
 int fts_esdcheck_suspend(void)
 {
 	FTS_FUNC_ENTER();
-	fts_esdcheck_switch(DISABLE);
 	fts_esdcheck_data.suspend = 1;
+	cancel_delayed_work_sync(&fts_data->esdcheck_work);
+	fts_esdcheck_data.mode = DISABLE;
 	FTS_FUNC_EXIT();
 	return 0;
 }
@@ -422,8 +424,13 @@ int fts_esdcheck_suspend(void)
 int fts_esdcheck_resume(void)
 {
 	FTS_FUNC_ENTER();
-	fts_esdcheck_switch(ENABLE);
-	fts_esdcheck_data.suspend = 0;
+	if (!fts_esdcheck_data.user_disable) {
+		fts_esdcheck_data.mode = ENABLE;
+		fts_esdcheck_data.suspend = 0;
+		fts_esdcheck_switch(ENABLE);
+	} else {
+		fts_esdcheck_data.suspend = 0;
+	}
 	FTS_FUNC_EXIT();
 	return 0;
 }
@@ -442,10 +449,12 @@ static ssize_t fts_esdcheck_store(struct device *dev, struct device_attribute *a
 	mutex_lock(&input_dev->mutex);
 	if (FTS_SYSFS_ECHO_ON(buf)) {
 		FTS_DEBUG("enable esdcheck");
+		fts_esdcheck_data.user_disable = 0;
 		fts_esdcheck_data.mode = ENABLE;
 		fts_esdcheck_switch(ENABLE);
 	} else if (FTS_SYSFS_ECHO_OFF(buf)) {
 		FTS_DEBUG("disable esdcheck");
+		fts_esdcheck_data.user_disable = 1;
 		fts_esdcheck_data.mode = DISABLE;
 		fts_esdcheck_switch(DISABLE);
 	}
@@ -504,10 +513,14 @@ int fts_create_esd_sysfs(struct i2c_client *client)
 	ret = sysfs_create_group(&client->dev.kobj, &fts_esd_group);
 	if (ret != 0) {
 		FTS_ERROR("fts_create_esd_sysfs(sysfs) create failed!");
-		sysfs_remove_group(&client->dev.kobj, &fts_esd_group);
 		return ret;
 	}
 	return 0;
+}
+
+void fts_remove_esd_sysfs(struct i2c_client *client)
+{
+	sysfs_remove_group(&client->dev.kobj, &fts_esd_group);
 }
 
 /*****************************************************************************
@@ -547,6 +560,10 @@ int fts_esdcheck_init(struct fts_ts_data *ts_data)
 int fts_esdcheck_exit(struct fts_ts_data *ts_data)
 {
 	FTS_FUNC_ENTER();
+
+	fts_esdcheck_switch(DISABLE);
+	cancel_delayed_work_sync(&ts_data->esdcheck_work);
+	fts_remove_esd_sysfs(ts_data->client);
 
 	FTS_FUNC_EXIT();
 	return 0;

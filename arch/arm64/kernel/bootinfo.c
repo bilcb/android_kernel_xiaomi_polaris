@@ -30,9 +30,9 @@ static const char * const poweroff_reasons[POFF_REASON_MAX] = {
 	[POFF_REASON_EVENT_KPDPWR_AND_RESIN]	= "kpdpwr_resin",
 	[POFF_REASON_EVENT_RESIN_N]		= "resin_n",
 	[POFF_REASON_EVENT_KPDPWR_N]		= "kpdpwr_n",
-	[POFF_REASON_EVENT_RESEVER1]		= "resever1",
-	[POFF_REASON_EVENT_RESEVER2]		= "resever2",
-	[POFF_REASON_EVENT_RESEVER3]		= "resever3",
+	[POFF_REASON_EVENT_RESERVED1]		= "resever1",
+	[POFF_REASON_EVENT_RESERVED2]		= "resever2",
+	[POFF_REASON_EVENT_RESERVED3]		= "resever3",
 	[POFF_REASON_EVENT_CHARGER]		= "charger",
 	[POFF_REASON_EVENT_TFT]			= "tft",
 	[POFF_REASON_EVENT_UVLO]		= "uvlo",
@@ -46,22 +46,22 @@ static const char * const poweroff_reasons[POFF_REASON_MAX] = {
 	[POFF_REASON_EVENT_OVLO]		= "ovlo",
 	[POFF_REASON_EVENT_GEN2_UVLO]		= "gen2_uvlo",
 	[POFF_REASON_EVENT_AVDD_RB]		= "avdd_rb",
-	[POFF_REASON_EVENT_RESEVER4]		= "resever4",
-	[POFF_REASON_EVENT_RESEVER5]		= "resever5",
-	[POFF_REASON_EVENT_RESEVER6]		= "resever6",
+	[POFF_REASON_EVENT_RESERVED4]		= "resever4",
+	[POFF_REASON_EVENT_RESERVED5]		= "resever5",
+	[POFF_REASON_EVENT_RESERVED6]		= "resever6",
 	[POFF_REASON_EVENT_FAULT_FAULT_N]	= "fault_n",
 	[POFF_REASON_EVENT_FAULT_PBS_WATCHDOG_TO] = "fault_pbs_watchdog",
 	[POFF_REASON_EVENT_FAULT_PBS_NACK]	= "fault_pbs_nack",
 	[POFF_REASON_EVENT_FAULT_RESTART_PON]	= "fault_restart_pon",
 	[POFF_REASON_EVENT_GEN2_OTST3]		= "otst3",
-	[POFF_REASON_EVENT_RESEVER7]		= "resever7",
-	[POFF_REASON_EVENT_RESEVER8]		= "resever8",
-	[POFF_REASON_EVENT_RESEVER9]		= "resever9",
-	[POFF_REASON_EVENT_RESEVER10]		= "resever10",
+	[POFF_REASON_EVENT_RESERVED7]		= "resever7",
+	[POFF_REASON_EVENT_RESERVED8]		= "resever8",
+	[POFF_REASON_EVENT_RESERVED9]		= "resever9",
+	[POFF_REASON_EVENT_RESERVED10]		= "resever10",
 	[POFF_REASON_EVENT_S3_RESET_FAULT_N]	= "s3_reset_fault_n",
 	[POFF_REASON_EVENT_S3_RESET_PBS_WATCHDOG_TO] = "s3_reset_pbs_watchdog",
 	[POFF_REASON_EVENT_S3_RESET_PBS_NACK]	= "s3_reset_pbs_nack",
-	[POFF_REASON_EVENT_S3_RESET_KPDPWR_ANDOR_RESIN] = "s3_reset_kpdpwr_andor_resin",
+	[POFF_REASON_EVENT_S3_RESET_KPDPWR_AND_OR_RESIN] = "s3_reset_kpdpwr_andor_resin",
 };
 
 static const char * const powerup_reasons[PU_REASON_MAX] = {
@@ -73,6 +73,7 @@ static const char * const powerup_reasons[PU_REASON_MAX] = {
 	[PU_REASON_EVENT_USB_CHG]	= "usb_chg",
 	[PU_REASON_EVENT_DC_CHG]	= "dc_chg",
 	[PU_REASON_EVENT_HWRST]		= "hw_reset",
+	[PU_REASON_EVENT_WARMRST]	= "warm_reset",
 	[PU_REASON_EVENT_LPK]		= "long_power_key",
 };
 
@@ -84,7 +85,6 @@ static const char * const reset_reasons[RS_REASON_MAX] = {
 };
 
 static struct kobject *bootinfo_kobj;
-static powerup_reason_t powerup_reason;
 
 #define bootinfo_attr(_name) \
 static struct kobj_attribute _name##_attr = {	\
@@ -112,7 +112,8 @@ int is_abnormal_powerup(void)
 	u32 pu_reason = get_powerup_reason();
 
 	return (pu_reason & (RESTART_EVENT_KPANIC | RESTART_EVENT_WDOG)) |
-		(pu_reason & BIT(PU_REASON_EVENT_HWRST) & RESTART_EVENT_OTHER);
+		((pu_reason & BIT(PU_REASON_EVENT_HWRST)) &&
+		(pu_reason & RESTART_EVENT_OTHER));
 }
 
 static ssize_t powerup_reason_show(struct kobject *kobj,
@@ -121,25 +122,25 @@ static ssize_t powerup_reason_show(struct kobject *kobj,
 	char *s = buf;
 	u32 pu_reason;
 	int pu_reason_index = PU_REASON_MAX;
-	u32 reset_reason;
+	unsigned long reset_reason;
 	int reset_reason_index = RS_REASON_MAX;
 
 	pu_reason = get_powerup_reason();
 	if (((pu_reason & BIT(PU_REASON_EVENT_HWRST))
-		&& qpnp_pon_is_ps_hold_reset()) ||
+		&& qpnp_pon_is_ps_hold_reset() == 1) ||
 		(pu_reason & BIT(PU_REASON_EVENT_WARMRST))) {
 		reset_reason = pu_reason >> 16;
-		reset_reason_index = find_first_bit((unsigned long *)&reset_reason,
-				sizeof(reset_reason)*BITS_PER_BYTE);
+		reset_reason_index = find_first_bit(&reset_reason,
+				sizeof(reset_reason) * BITS_PER_BYTE);
 		if (reset_reason_index < RS_REASON_MAX && reset_reason_index >= 0) {
 			s += snprintf(s, strlen(reset_reasons[reset_reason_index]) + 2,
 					"%s\n", reset_reasons[reset_reason_index]);
-			pr_debug("%s: rs_reason [0x%x], first non-zero bit %d\n",
+			pr_debug("%s: rs_reason [0x%lx], first non-zero bit %d\n",
 				__func__, reset_reason, reset_reason_index);
 			goto out;
-		};
+		}
 	}
-	if (qpnp_pon_is_lpk() &&
+	if (qpnp_pon_is_lpk() == 1 &&
 		(pu_reason & BIT(PU_REASON_EVENT_HWRST)))
 		pu_reason_index = PU_REASON_EVENT_LPK;
 	else if (pu_reason & BIT(PU_REASON_EVENT_HWRST))
@@ -154,8 +155,12 @@ static ssize_t powerup_reason_show(struct kobject *kobj,
 		pu_reason_index = PU_REASON_EVENT_DC_CHG;
 	else if (pu_reason & BIT(PU_REASON_EVENT_KPD))
 		pu_reason_index = PU_REASON_EVENT_KPD;
+	else if (pu_reason & BIT(PU_REASON_EVENT_CABLE))
+		pu_reason_index = PU_REASON_EVENT_CABLE;
 	else if (pu_reason & BIT(PU_REASON_EVENT_PON1))
 		pu_reason_index = PU_REASON_EVENT_PON1;
+	else if (pu_reason & BIT(PU_REASON_EVENT_WARMRST))
+		pu_reason_index = PU_REASON_EVENT_WARMRST;
 	if (pu_reason_index < PU_REASON_MAX && pu_reason_index >= 0) {
 		s += snprintf(s, strlen(powerup_reasons[pu_reason_index]) + 2,
 				"%s\n", powerup_reasons[pu_reason_index]);
@@ -163,7 +168,7 @@ static ssize_t powerup_reason_show(struct kobject *kobj,
 			__func__, pu_reason, pu_reason_index);
 		goto out;
 	}
-	s += snprintf(s, 15, "unknown reboot\n");
+	s += snprintf(s, 17, "unknown reboot\n");
 out:
 	return (s - buf);
 }
@@ -175,7 +180,7 @@ static ssize_t powerup_reason_details_show(struct kobject *kobj,
 
 	pu_reason = get_powerup_reason();
 
-	return snprintf(buf, 11, "0x%x\n", pu_reason);
+	return snprintf(buf, 13, "0x%x\n", pu_reason);
 }
 
 void set_poweroff_reason(int pmicv)
@@ -200,19 +205,19 @@ static ssize_t poweroff_reason_show(struct kobject *kobj,
 	int v = pmic_v[0];
 
 	if (v == -1)
-		return snprintf(buf, 10, " unknown \n");
+		return snprintf(buf, 11, " unknown \n");
 
 	while ((i < PMIC_NUM) && (pmic_v[i] != -1)) {
 		v = pmic_v[i];
 		i++;
 		if (v >= 0 && v < POFF_REASON_MAX)
-			l += snprintf(buf + l,
-				(strlen(poweroff_reasons[v]) + 10),
+			l += scnprintf(buf + l, PAGE_SIZE - l,
 				" PNo.%d-%s ", i - 1, poweroff_reasons[v]);
 		else
-			l += snprintf(buf + l, 17, " PNo.%d-%s ", i - 1, "unknown");
+			l += scnprintf(buf + l, PAGE_SIZE - l,
+				" PNo.%d-%s ", i - 1, "unknown");
 	}
-	l += snprintf(buf + l, 2, "\n");
+	l += scnprintf(buf + l, PAGE_SIZE - l, "\n");
 
 	return l;
 }
@@ -239,21 +244,21 @@ static int __init bootinfo_init(void)
 
 	bootinfo_kobj = kobject_create_and_add("bootinfo", NULL);
 	if (bootinfo_kobj == NULL) {
-		pr_err("bootinfo_init: subsystem_register failed\n");
+		pr_err("bootinfo_init: kobject_create_and_add failed\n");
 		goto fail;
 	}
 
 	memset(pmic_v, -1, sizeof(pmic_v));
 	ret = sysfs_create_group(bootinfo_kobj, &attr_group);
 	if (ret) {
-		pr_err("bootinfo_init: subsystem_register failed\n");
+		pr_err("bootinfo_init: sysfs_create_group failed\n");
 		goto sys_fail;
 	}
 
 	return ret;
 
 sys_fail:
-	kobject_del(bootinfo_kobj);
+	kobject_put(bootinfo_kobj);
 fail:
 	return ret;
 
@@ -263,7 +268,7 @@ static void __exit bootinfo_exit(void)
 {
 	if (bootinfo_kobj) {
 		sysfs_remove_group(bootinfo_kobj, &attr_group);
-		kobject_del(bootinfo_kobj);
+		kobject_put(bootinfo_kobj);
 	}
 }
 

@@ -668,10 +668,9 @@ static int rndis_qc_set_alt(struct usb_function *f, unsigned int intf,
 	struct f_rndis_qc	 *rndis = func_to_rndis_qc(f);
 	struct f_rndis_qc_opts *opts;
 	struct usb_composite_dev *cdev = f->config->cdev;
-	u8 src_connection_idx;
-	u8 dst_connection_idx;
+	int src_connection_idx;
+	int dst_connection_idx;
 	enum usb_ctrl usb_bam_type;
-	int ret;
 
 	/* we know alt == 0 */
 
@@ -743,7 +742,7 @@ static int rndis_qc_set_alt(struct usb_function *f, unsigned int intf,
 		if (src_connection_idx < 0 || dst_connection_idx < 0) {
 			pr_err("%s: usb_bam_get_connection_idx failed\n",
 				__func__);
-			return ret;
+			return -EINVAL;
 		}
 		if (ipa_data_connect(&rndis->bam_port, USB_IPA_FUNC_RNDIS,
 				src_connection_idx, dst_connection_idx))
@@ -1075,9 +1074,9 @@ fail:
 	/* we might as well release our claims on endpoints */
 	if (rndis->notify)
 		rndis->notify->driver_data = NULL;
-	if (rndis->bam_port.out->desc)
+	if (rndis->bam_port.out && rndis->bam_port.out->desc)
 		rndis->bam_port.out->driver_data = NULL;
-	if (rndis->bam_port.in->desc)
+	if (rndis->bam_port.in && rndis->bam_port.in->desc)
 		rndis->bam_port.in->driver_data = NULL;
 
 	pr_err("%s: can't bind, err %d\n", f->name, status);

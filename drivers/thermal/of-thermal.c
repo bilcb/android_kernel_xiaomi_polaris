@@ -1517,6 +1517,7 @@ int __init of_parse_thermal_message(void)
 	if (!tm) {
 		pr_err("unable alloc memory for thermal message\n");
 		ret = -ENOMEM;
+		of_node_put(np);
 		goto out;
 	}
 
@@ -1537,6 +1538,7 @@ int __init of_parse_thermal_message(void)
 		pr_err("Unable to read batt message screen off\n");
 		tm->batt_level_screen_off = NULL;
 	}
+	of_node_put(np);
 out:
 	if (!ret && tm && tm->batt_level_screen_on && tm->batt_level_screen_off)
 		tm->message_ok = true;

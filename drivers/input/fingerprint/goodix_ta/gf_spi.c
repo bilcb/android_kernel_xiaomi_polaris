@@ -543,35 +543,40 @@ static int gf_open(struct inode *inode, struct file *filp)
 		}
 	}
 
+	if (status == 0) {
 #ifdef CONFIG_FINGERPRINT_FP_VREG_CONTROL
-	pr_info("Try to enable fp_vdd_vreg\n");
-	gf_dev->vreg = regulator_get(&gf_dev->spi->dev, "fp_vdd_vreg");
-	if (gf_dev->vreg == NULL) {
-		dev_err(&gf_dev->spi->dev, "fp_vdd_vreg regulator get failed!\n");
-		mutex_unlock(&device_list_lock);
-		return -EPERM;
-	}
-
-	if (regulator_is_enabled(gf_dev->vreg)) {
-		pr_info("fp_vdd_vreg is already enabled!\n");
-	} else {
-		rc = regulator_enable(gf_dev->vreg);
-		if (rc) {
-			dev_err(&gf_dev->spi->dev, "error enabling fp_vdd_vreg!\n");
-			regulator_put(gf_dev->vreg);
+		pr_info("Try to enable fp_vdd_vreg\n");
+		gf_dev->vreg = regulator_get(&gf_dev->spi->dev, "fp_vdd_vreg");
+		if (IS_ERR_OR_NULL(gf_dev->vreg)) {
+			dev_err(&gf_dev->spi->dev, "fp_vdd_vreg regulator get failed!\n");
 			gf_dev->vreg = NULL;
 			mutex_unlock(&device_list_lock);
 			return -EPERM;
 		}
-	}
-	pr_info("fp_vdd_vreg is enabled!\n");
+
+		if (regulator_is_enabled(gf_dev->vreg)) {
+			pr_info("fp_vdd_vreg is already enabled!\n");
+		} else {
+			rc = regulator_enable(gf_dev->vreg);
+			if (rc) {
+				dev_err(&gf_dev->spi->dev, "error enabling fp_vdd_vreg!\n");
+				regulator_put(gf_dev->vreg);
+				gf_dev->vreg = NULL;
+				mutex_unlock(&device_list_lock);
+				return -EPERM;
+			}
+		}
+		pr_info("fp_vdd_vreg is enabled!\n");
 #endif
 
-	if (status == 0) {
-		if (status == 0) {
+		{
 			rc = gpio_request(gf_dev->reset_gpio, "goodix_reset");
 			if (rc) {
 				dev_err(&gf_dev->spi->dev, "Failed to request RESET GPIO. rc = %d\n", rc);
+#ifdef CONFIG_FINGERPRINT_FP_VREG_CONTROL
+				regulator_put(gf_dev->vreg);
+				gf_dev->vreg = NULL;
+#endif
 				mutex_unlock(&device_list_lock);
 				return -EPERM;
 			}
@@ -581,20 +586,39 @@ static int gf_open(struct inode *inode, struct file *filp)
 			rc = gpio_request(gf_dev->irq_gpio, "goodix_irq");
 			if (rc) {
 				dev_err(&gf_dev->spi->dev, "Failed to request IRQ GPIO. rc = %d\n", rc);
+				gpio_free(gf_dev->reset_gpio);
+#ifdef CONFIG_FINGERPRINT_FP_VREG_CONTROL
+				regulator_put(gf_dev->vreg);
+				gf_dev->vreg = NULL;
+#endif
 				mutex_unlock(&device_list_lock);
 				return -EPERM;
 			}
 			gpio_direction_input(gf_dev->irq_gpio);
+			gf_dev->gpio_held = true;
+
+			gf_dev->irq = gf_irq_num(gf_dev);
 
 			rc = request_threaded_irq(gf_dev->irq, NULL, gf_irq,
 					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
 					"gf", gf_dev);
 
-			if (!rc) {
-				enable_irq_wake(gf_dev->irq);
-				gf_dev->irq_enabled = 1;
-				gf_disable_irq(gf_dev);
+			if (rc) {
+				dev_err(&gf_dev->spi->dev, "Failed to request IRQ. rc = %d\n", rc);
+				gpio_free(gf_dev->irq_gpio);
+				gpio_free(gf_dev->reset_gpio);
+				gf_dev->gpio_held = false;
+#ifdef CONFIG_FINGERPRINT_FP_VREG_CONTROL
+				regulator_put(gf_dev->vreg);
+				gf_dev->vreg = NULL;
+#endif
+				mutex_unlock(&device_list_lock);
+				return rc;
 			}
+
+			enable_irq_wake(gf_dev->irq);
+			gf_dev->irq_enabled = 1;
+			gf_disable_irq(gf_dev);
 
 			gf_dev->users++;
 			filp->private_data = gf_dev;
@@ -639,8 +663,9 @@ static int gf_release(struct inode *inode, struct file *filp)
 	 */
 #ifdef CONFIG_FINGERPRINT_FP_VREG_CONTROL
 	pr_info("disable fp_vdd_vreg!\n");
-	if (regulator_is_enabled(gf_dev->vreg)) {
-		regulator_disable(gf_dev->vreg);
+	if (gf_dev->vreg) {
+		if (regulator_is_enabled(gf_dev->vreg))
+			regulator_disable(gf_dev->vreg);
 		regulator_put(gf_dev->vreg);
 		gf_dev->vreg = NULL;
 	}
@@ -651,13 +676,19 @@ static int gf_release(struct inode *inode, struct file *filp)
 	if (!gf_dev->users) {
 
 		pr_debug("disble_irq. irq = %d\n", gf_dev->irq);
-		gf_disable_irq(gf_dev);
+		if (gf_dev->irq)
+			gf_disable_irq(gf_dev);
 		/*power off the sensor*/
 		gf_dev->device_available = 0;
-		free_irq(gf_dev->irq, gf_dev);
+		if (gf_dev->irq) {
+			disable_irq_wake(gf_dev->irq);
+			free_irq(gf_dev->irq, gf_dev);
+			gf_dev->irq = 0;
+		}
+		gf_power_off(gf_dev);
 		gpio_free(gf_dev->irq_gpio);
 		gpio_free(gf_dev->reset_gpio);
-		gf_power_off(gf_dev);
+		gf_dev->gpio_held = false;
 	}
 	mutex_unlock(&device_list_lock);
 	return status;
@@ -865,23 +896,29 @@ static int gf_remove(struct platform_device *pdev)
 {
 	struct gf_dev *gf_dev = &gf;
 
-	wakeup_source_trash(&fp_wakelock);
-	/* make sure ops on existing fds can abort cleanly */
-	if (gf_dev->irq)
-		free_irq(gf_dev->irq, gf_dev);
+	cancel_work_sync(&gf_dev->work);
 
-	if (gf_dev->input != NULL)
+	wakeup_source_trash(&fp_wakelock);
+
+	if (gf_dev->input != NULL) {
 		input_unregister_device(gf_dev->input);
-	input_free_device(gf_dev->input);
+	}
 
 	/* prevent new opens */
 	mutex_lock(&device_list_lock);
+
+	/* make sure ops on existing fds can abort cleanly */
+	if (gf_dev->irq && gf_dev->users) {
+		disable_irq_wake(gf_dev->irq);
+		free_irq(gf_dev->irq, gf_dev);
+		gf_dev->irq = 0;
+	}
+
 	list_del(&gf_dev->device_entry);
 	device_destroy(gf_class, gf_dev->devt);
 	clear_bit(MINOR(gf_dev->devt), minors);
 	if (gf_dev->users == 0)
 		gf_cleanup(gf_dev);
-
 
 	drm_unregister_client(&gf_dev->notifier);
 	mutex_unlock(&device_list_lock);
@@ -939,6 +976,7 @@ static int __init gf_init(void)
 		class_destroy(gf_class);
 		unregister_chrdev(SPIDEV_MAJOR, gf_driver.driver.name);
 		pr_warn("Failed to register SPI driver.\n");
+		return status;
 	}
 
 #ifdef GF_NETLINK_ENABLE

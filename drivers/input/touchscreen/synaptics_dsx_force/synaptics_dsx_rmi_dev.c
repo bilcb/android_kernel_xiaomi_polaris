@@ -107,12 +107,23 @@ struct rmidev_handle {
 };
 
 struct rmidev_data {
+	struct kref ref;
 	int ref_count;
 	struct cdev main_dev;
 	struct class *device_class;
 	struct mutex file_mutex;
 	struct rmidev_handle *rmi_dev;
 };
+
+static void rmidev_data_release(struct kref *ref)
+{
+	struct rmidev_data *dev_data =
+			container_of(ref, struct rmidev_data, ref);
+
+	kfree(dev_data->rmi_dev->tmpbuf);
+	kfree(dev_data->rmi_dev);
+	kfree(dev_data);
+}
 
 static struct bin_attribute attr_data = {
 	.attr = {
@@ -395,12 +406,22 @@ static ssize_t rmidev_sysfs_pid_store(struct device *dev,
 
 	rmidev->pid = input;
 
+	if (rmidev->task) {
+		put_task_struct(rmidev->task);
+		rmidev->task = NULL;
+	}
+
 	if (rmidev->pid) {
+		rcu_read_lock();
 		rmidev->task = pid_task(find_vpid(rmidev->pid), PIDTYPE_PID);
+		if (rmidev->task)
+			get_task_struct(rmidev->task);
+		rcu_read_unlock();
 		if (!rmidev->task) {
 			dev_err(rmi4_data->pdev->dev.parent,
 					"%s: Failed to locate PID of data logging tool\n",
 					__func__);
+			rmidev->pid = 0;
 			return -EINVAL;
 		}
 	}
@@ -419,7 +440,7 @@ static ssize_t rmidev_sysfs_term_store(struct device *dev,
 	if (input != 1)
 		return -EINVAL;
 
-	if (rmidev->pid)
+	if (rmidev->pid && rmidev->task)
 		send_sig_info(SIGTERM, &rmidev->terminate_signal, rmidev->task);
 
 	return count;
@@ -463,20 +484,20 @@ static ssize_t rmidev_sysfs_concurrent_store(struct device *dev,
 	return count;
 }
 
-static int rmidev_allocate_buffer(int count)
+static int rmidev_allocate_buffer(struct rmidev_handle *rmi_dev, int count)
 {
-	if (count + 1 > rmidev->tmpbuf_size) {
-		if (rmidev->tmpbuf_size)
-			kfree(rmidev->tmpbuf);
-		rmidev->tmpbuf = kzalloc(count + 1, GFP_KERNEL);
-		if (!rmidev->tmpbuf) {
-			dev_err(rmidev->rmi4_data->pdev->dev.parent,
+	if (count + 1 > rmi_dev->tmpbuf_size) {
+		if (rmi_dev->tmpbuf_size)
+			kfree(rmi_dev->tmpbuf);
+		rmi_dev->tmpbuf = kzalloc(count + 1, GFP_KERNEL);
+		if (!rmi_dev->tmpbuf) {
+			dev_err(rmi_dev->rmi4_data->pdev->dev.parent,
 					"%s: Failed to alloc mem for buffer\n",
 					__func__);
-			rmidev->tmpbuf_size = 0;
+			rmi_dev->tmpbuf_size = 0;
 			return -ENOMEM;
 		}
-		rmidev->tmpbuf_size = count + 1;
+		rmi_dev->tmpbuf_size = count + 1;
 	}
 
 	return 0;
@@ -499,7 +520,7 @@ static loff_t rmidev_llseek(struct file *filp, loff_t off, int whence)
 {
 	loff_t newpos;
 	struct rmidev_data *dev_data = filp->private_data;
-	struct synaptics_rmi4_data *rmi4_data = rmidev->rmi4_data;
+	struct synaptics_rmi4_data *rmi4_data = dev_data->rmi_dev->rmi4_data;
 
 	if (IS_ERR(dev_data)) {
 		pr_err("%s: Pointer of char device data is invalid", __func__);
@@ -556,7 +577,7 @@ static ssize_t rmidev_read(struct file *filp, char __user *buf,
 	struct rmidev_data *dev_data = filp->private_data;
 	struct synaptics_rmi4_fn *fhandler;
 	struct synaptics_rmi4_device_info *rmi;
-	struct synaptics_rmi4_data *rmi4_data = rmidev->rmi4_data;
+	struct synaptics_rmi4_data *rmi4_data = dev_data->rmi_dev->rmi4_data;
 
 	rmi = &(rmi4_data->rmi4_mod_info);
 
@@ -575,21 +596,23 @@ static ssize_t rmidev_read(struct file *filp, char __user *buf,
 
 	mutex_lock(&(dev_data->file_mutex));
 
-	rmidev_allocate_buffer(count);
+	retval = rmidev_allocate_buffer(dev_data->rmi_dev, count);
+	if (retval < 0)
+		goto clean_up;
 
-	retval = synaptics_rmi4_reg_read(rmidev->rmi4_data,
+	retval = synaptics_rmi4_reg_read(dev_data->rmi_dev->rmi4_data,
 			*f_pos,
-			rmidev->tmpbuf,
+			dev_data->rmi_dev->tmpbuf,
 			count);
 	if (retval < 0)
 		goto clean_up;
 
-	if (copy_to_user(buf, rmidev->tmpbuf, count))
+	if (copy_to_user(buf, dev_data->rmi_dev->tmpbuf, count))
 		retval = -EFAULT;
 	else
 		*f_pos += retval;
 
-	if (!rmidev->concurrent)
+	if (!dev_data->rmi_dev->concurrent)
 		goto clean_up;
 
 	if (address != rmi4_data->f01_data_base_addr)
@@ -598,7 +621,7 @@ static ssize_t rmidev_read(struct file *filp, char __user *buf,
 	if (count <= 1)
 		goto clean_up;
 
-	intr_status = rmidev->tmpbuf[1];
+	intr_status = dev_data->rmi_dev->tmpbuf[1];
 
 	if (!list_empty(&rmi->support_fn_list)) {
 		list_for_each_entry(fhandler, &rmi->support_fn_list, link) {
@@ -644,16 +667,20 @@ static ssize_t rmidev_write(struct file *filp, const char __user *buf,
 
 	mutex_lock(&(dev_data->file_mutex));
 
-	rmidev_allocate_buffer(count);
+	retval = rmidev_allocate_buffer(dev_data->rmi_dev, count);
+	if (retval < 0) {
+		mutex_unlock(&(dev_data->file_mutex));
+		return retval;
+	}
 
-	if (copy_from_user(rmidev->tmpbuf, buf, count)) {
+	if (copy_from_user(dev_data->rmi_dev->tmpbuf, buf, count)) {
 		mutex_unlock(&(dev_data->file_mutex));
 		return -EFAULT;
 	}
 
-	retval = synaptics_rmi4_reg_write(rmidev->rmi4_data,
+	retval = synaptics_rmi4_reg_write(dev_data->rmi_dev->rmi4_data,
 			*f_pos,
-			rmidev->tmpbuf,
+			dev_data->rmi_dev->tmpbuf,
 			count);
 	if (retval >= 0)
 		*f_pos += retval;
@@ -666,17 +693,21 @@ static ssize_t rmidev_write(struct file *filp, const char __user *buf,
 static int rmidev_open(struct inode *inp, struct file *filp)
 {
 	int retval = 0;
-	struct synaptics_rmi4_data *rmi4_data = rmidev->rmi4_data;
+	struct synaptics_rmi4_data *rmi4_data;
 	struct rmidev_data *dev_data =
 			container_of(inp->i_cdev, struct rmidev_data, main_dev);
 
 	if (!dev_data)
 		return -EACCES;
 
+	kref_get(&dev_data->ref);
+	rmi4_data = dev_data->rmi_dev->rmi4_data;
+
 	if (rmi4_data->sensor_sleep) {
 		dev_err(rmi4_data->pdev->dev.parent,
 				"%s: Sensor sleeping\n",
 				__func__);
+		kref_put(&dev_data->ref, rmidev_data_release);
 		return -ENODEV;
 	}
 
@@ -698,17 +729,22 @@ static int rmidev_open(struct inode *inp, struct file *filp)
 
 	mutex_unlock(&(dev_data->file_mutex));
 
+	if (retval)
+		kref_put(&dev_data->ref, rmidev_data_release);
+
 	return retval;
 }
 
 static int rmidev_release(struct inode *inp, struct file *filp)
 {
-	struct synaptics_rmi4_data *rmi4_data = rmidev->rmi4_data;
+	struct synaptics_rmi4_data *rmi4_data;
 	struct rmidev_data *dev_data =
 			container_of(inp->i_cdev, struct rmidev_data, main_dev);
 
 	if (!dev_data)
 		return -EACCES;
+
+	rmi4_data = dev_data->rmi_dev->rmi4_data;
 
 	mutex_lock(&(dev_data->file_mutex));
 
@@ -722,6 +758,8 @@ static int rmidev_release(struct inode *inp, struct file *filp)
 	rmi4_data->stay_awake = false;
 
 	mutex_unlock(&(dev_data->file_mutex));
+
+	kref_put(&dev_data->ref, rmidev_data_release);
 
 	return 0;
 }
@@ -763,7 +801,7 @@ static char *rmi_char_devnode(struct device *dev, umode_t *mode)
 	if (!mode)
 		return NULL;
 
-	*mode = (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+	*mode = (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 
 	return kasprintf(GFP_KERNEL, "rmi/%s", dev_name(dev));
 }
@@ -792,7 +830,8 @@ static void rmidev_attn(struct synaptics_rmi4_data *rmi4_data,
 	if (!rmidev)
 		return;
 
-	if (rmidev->pid && (rmidev->intr_mask & intr_mask))
+	if (rmidev->pid && rmidev->task &&
+			(rmidev->intr_mask & intr_mask))
 		send_sig_info(SIGIO, &rmidev->interrupt_signal, rmidev->task);
 
 	return;
@@ -802,7 +841,7 @@ static int rmidev_init_device(struct synaptics_rmi4_data *rmi4_data)
 {
 	int retval;
 	dev_t dev_no;
-	unsigned char attr_count;
+	int attr_count;
 	struct rmidev_data *dev_data;
 	struct device *device_ptr;
 	const struct synaptics_dsx_board_data *bdata =
@@ -860,6 +899,8 @@ static int rmidev_init_device(struct synaptics_rmi4_data *rmi4_data)
 				__func__, rmidev_major_num);
 	}
 
+	rmidev->dev_no = dev_no;
+
 	dev_data = kzalloc(sizeof(*dev_data), GFP_KERNEL);
 	if (!dev_data) {
 		dev_err(rmi4_data->pdev->dev.parent,
@@ -870,6 +911,7 @@ static int rmidev_init_device(struct synaptics_rmi4_data *rmi4_data)
 	}
 
 	mutex_init(&dev_data->file_mutex);
+	kref_init(&dev_data->ref);
 	dev_data->rmi_dev = rmidev;
 	rmidev->data = dev_data;
 
@@ -958,6 +1000,9 @@ err_sysfs_bin:
 	kobject_put(rmidev->sysfs_dir);
 
 err_sysfs_dir:
+	sysfs_remove_link(&(rmi4_data->input_dev->dev.kobj), "attn");
+	gpio_unexport(bdata->irq_gpio);
+
 err_char_device:
 	rmidev_device_cleanup(dev_data);
 	kfree(dev_data);
@@ -996,13 +1041,12 @@ static void rmidev_remove_device(struct synaptics_rmi4_data *rmi4_data)
 
 	kobject_put(rmidev->sysfs_dir);
 
+	sysfs_remove_link(&(rmi4_data->input_dev->dev.kobj), "attn");
 	gpio_unexport(bdata->irq_gpio);
 
 	dev_data = rmidev->data;
-	if (dev_data) {
+	if (dev_data)
 		rmidev_device_cleanup(dev_data);
-		kfree(dev_data);
-	}
 
 	unregister_chrdev_region(rmidev->dev_no, 1);
 
@@ -1011,9 +1055,14 @@ static void rmidev_remove_device(struct synaptics_rmi4_data *rmi4_data)
 		rmidev_device_class = NULL;
 	}
 
-	kfree(rmidev->tmpbuf);
+	if (rmidev->task) {
+		put_task_struct(rmidev->task);
+		rmidev->task = NULL;
+	}
 
-	kfree(rmidev);
+	if (dev_data)
+		kref_put(&dev_data->ref, rmidev_data_release);
+
 	rmidev = NULL;
 
 exit:

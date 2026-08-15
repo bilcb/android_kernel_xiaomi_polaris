@@ -162,7 +162,7 @@ static int32_t cam_spi_tx_helper(struct camera_io_master *client,
 
 	ctx[0] = inst->opcode;
 	cam_set_addr(addr, inst->addr_len, addr_type, ctx + 1);
-	while ((rc = cam_spi_txfr(spi, ctx, crx, len)) && retries) {
+	while ((rc = cam_spi_txfr(spi, ctx, crx, len)) < 0 && retries) {
 		retries--;
 		msleep(client->spi_client->retry_delay);
 	}
@@ -221,7 +221,7 @@ static int32_t cam_spi_tx_read(struct camera_io_master *client,
 	CAM_DBG(CAM_EEPROM, "tx(%u): %02x %02x %02x %02x", hlen, ctx[0],
 		ctx[1], ctx[2],	ctx[3]);
 	while ((rc = cam_spi_txfr_read(spi, ctx, crx, hlen, num_byte))
-			&& retries) {
+			< 0 && retries) {
 		retries--;
 		msleep(client->spi_client->retry_delay);
 	}

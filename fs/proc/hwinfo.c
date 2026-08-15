@@ -19,7 +19,7 @@
 struct {
 	unsigned int touch_info:4;
 	unsigned int soc_info:4;
-	unsigned int ddr_info:4;
+	unsigned int ddr_info:8;
 	unsigned int emmc_info:16;
 	unsigned int cpu_info:2;
 	unsigned int pmic_info:2;
@@ -63,6 +63,9 @@ static int hwinfo_proc_show(struct seq_file *m, void *v)
 		break;
 	case HWINFO_DDRID_INTEL:
 		seq_printf(m, "DDR: Intel\n"); /* 0000 1110B */
+		break;
+	case HWINFO_DDRID_MICRON:
+		seq_printf(m, "DDR: Micron\n"); /* 1111 1111B */
 		break;
 	default:
 		seq_printf(m, "DDR: Unknown %x\n", hw_info.ddr_info);
@@ -232,10 +235,16 @@ static int hwinfo_get_ddr_info_from_smem(void)
 
 	ddr_table_ptr = smem_get_entry(SMEM_ID_VENDOR2, &size, 0,
 			SMEM_ANY_HOST_FLAG);
-	if (IS_ERR(ddr_table_ptr)) {
+	if (IS_ERR_OR_NULL(ddr_table_ptr)) {
 		pr_err("Error fetching DDR manufacturer id from SMEM!\n");
 		hw_info.ddr_info = 0;
-		return PTR_ERR(ddr_table_ptr);
+		return ddr_table_ptr ? PTR_ERR(ddr_table_ptr) : -ENOENT;
+	}
+
+	if (size < sizeof(uint32_t)) {
+		pr_err("DDR manufacturer id SMEM entry too small: %u\n", size);
+		hw_info.ddr_info = 0;
+		return -EINVAL;
 	}
 
 	hw_info.ddr_info = *ddr_table_ptr;

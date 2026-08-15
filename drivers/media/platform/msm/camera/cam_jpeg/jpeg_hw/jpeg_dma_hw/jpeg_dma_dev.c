@@ -194,6 +194,7 @@ static int cam_jpeg_dma_probe(struct platform_device *pdev)
 error_reg_cpas:
 	rc = cam_soc_util_release_platform_resource(&jpeg_dma_dev->soc_info);
 error_init_soc:
+	cam_soc_util_release_platform_resource(&jpeg_dma_dev->soc_info);
 	mutex_destroy(&core_info->core_mutex);
 error_match_dev:
 	kfree(jpeg_dma_dev->core_info);

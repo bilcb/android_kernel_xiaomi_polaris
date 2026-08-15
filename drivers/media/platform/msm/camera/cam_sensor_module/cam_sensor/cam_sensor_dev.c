@@ -220,6 +220,7 @@ static int32_t cam_sensor_driver_i2c_probe(struct i2c_client *client,
 unreg_subdev:
 	cam_unregister_subdev(&(s_ctrl->v4l2_dev_str));
 free_s_ctrl:
+	kfree(s_ctrl->sensordata);
 	kfree(s_ctrl);
 	return rc;
 }
@@ -240,7 +241,10 @@ static int cam_sensor_platform_remove(struct platform_device *pdev)
 	for (i = 0; i < soc_info->num_clk; i++)
 		devm_clk_put(soc_info->dev, soc_info->clk[i]);
 
+	cam_unregister_subdev(&(s_ctrl->v4l2_dev_str));
 	kfree(s_ctrl->i2c_data.per_frame);
+	kfree(s_ctrl->sensordata);
+	kfree(s_ctrl->io_master_info.cci_client);
 	devm_kfree(&pdev->dev, s_ctrl);
 
 	return 0;
@@ -261,7 +265,10 @@ static int cam_sensor_driver_i2c_remove(struct i2c_client *client)
 	for (i = 0; i < soc_info->num_clk; i++)
 		devm_clk_put(soc_info->dev, soc_info->clk[i]);
 
+	cam_unregister_subdev(&(s_ctrl->v4l2_dev_str));
 	kfree(s_ctrl->i2c_data.per_frame);
+	kfree(s_ctrl->sensordata);
+	kfree(s_ctrl->io_master_info.cci_client);
 	kfree(s_ctrl);
 
 	return 0;
@@ -340,14 +347,23 @@ static int32_t cam_sensor_driver_platform_probe(
 	v4l2_set_subdevdata(&(s_ctrl->v4l2_dev_str.sd), s_ctrl);
 
 #if MV_TEMP_SET
-	/* Store sensor control structure in static database */
-	rc = sysfs_create_file(&(pdev->dev.kobj), &dev_attr_mv_operate_sensor_write_regs.attr);
-	if (rc < 0) {
-		CAM_ERR(CAM_SENSOR, "can note create ir write sys node rc %d", rc);
-	}
-	rc = sysfs_create_file(&(pdev->dev.kobj), &dev_attr_mv_operate_sensor_read_regs.attr);
-	if (rc < 0) {
-		CAM_ERR(CAM_SENSOR, "can note create ir read sys node rc %d", rc);
+	{
+		int rc_sysfs;
+
+		rc_sysfs = sysfs_create_file(&(pdev->dev.kobj),
+			&dev_attr_mv_operate_sensor_write_regs.attr);
+		if (rc_sysfs < 0) {
+			CAM_ERR(CAM_SENSOR,
+				"can note create ir write sys node rc %d",
+				rc_sysfs);
+		}
+		rc_sysfs = sysfs_create_file(&(pdev->dev.kobj),
+			&dev_attr_mv_operate_sensor_read_regs.attr);
+		if (rc_sysfs < 0) {
+			CAM_ERR(CAM_SENSOR,
+				"can note create ir read sys node rc %d",
+				rc_sysfs);
+		}
 	}
 #endif
 
@@ -357,6 +373,8 @@ static int32_t cam_sensor_driver_platform_probe(
 unreg_subdev:
 	cam_unregister_subdev(&(s_ctrl->v4l2_dev_str));
 free_s_ctrl:
+	kfree(s_ctrl->sensordata);
+	kfree(s_ctrl->io_master_info.cci_client);
 	devm_kfree(&pdev->dev, s_ctrl);
 	return rc;
 }

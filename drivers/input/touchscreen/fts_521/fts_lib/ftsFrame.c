@@ -82,7 +82,18 @@ int getChannelsLength(void)
 int getFrameData(u16 address, int size, short *frame)
 {
 	int i, j, ret;
-	u8 *data = (u8 *) kmalloc(size * sizeof(u8), GFP_KERNEL);
+	u8 *data;
+
+	if (!frame)
+		return ERROR_OP_NOT_ALLOW;
+
+	if (size <= 0)
+		return ERROR_OP_NOT_ALLOW;
+
+	if (size % 2)
+		return ERROR_OP_NOT_ALLOW;
+
+	data = (u8 *) kmalloc(size * sizeof(u8), GFP_KERNEL);
 	if (data == NULL) {
 		logError(1, "%s getFrameData: ERROR %08X\n", tag, ERROR_ALLOC);
 		return ERROR_ALLOC;
@@ -141,6 +152,9 @@ int getMSFrame3(MSFrameType type, MutualSenseFrame *frame)
 {
 	u16 offset;
 	int ret, force_len, sense_len;
+
+	if (!frame)
+		return ERROR_OP_NOT_ALLOW;
 
 	force_len = getForceLen();
 	sense_len = getSenseLen();
@@ -261,6 +275,9 @@ int getSSFrame3(SSFrameType type, SelfSenseFrame *frame)
 {
 	u16 offset_force, offset_sense;
 	int ret;
+
+	if (!frame)
+		return ERROR_OP_NOT_ALLOW;
 
 	frame->force_data = NULL;
 	frame->sense_data = NULL;

@@ -982,6 +982,7 @@ static int cam_soc_util_get_dt_gpio_req_tbl(struct device_node *of_node,
 
 free_gpio_req_tbl:
 	kfree(gconf->cam_gpio_req_tbl);
+	gconf->cam_gpio_req_tbl = NULL;
 free_val_array:
 	kfree(val_array);
 	gconf->cam_gpio_req_tbl_size = 0;
@@ -1025,8 +1026,10 @@ static int cam_soc_util_get_gpio_info(struct cam_hw_soc_info *soc_info)
 	}
 
 	gconf = kzalloc(sizeof(*gconf), GFP_KERNEL);
-	if (!gconf)
-		return -ENOMEM;
+	if (!gconf) {
+		rc = -ENOMEM;
+		goto free_gpio_array;
+	}
 
 	rc = cam_soc_util_get_dt_gpio_req_tbl(of_node, gconf, gpio_array,
 		gpio_array_size);
@@ -1053,6 +1056,8 @@ static int cam_soc_util_get_gpio_info(struct cam_hw_soc_info *soc_info)
 
 free_gpio_array:
 	kfree(gpio_array);
+	if (gconf)
+		kfree(gconf->cam_gpio_req_tbl);
 free_gpio_conf:
 	kfree(gconf);
 	soc_info->gpio_data = NULL;
@@ -1130,6 +1135,12 @@ static int cam_soc_util_get_dt_regulator_info
 		if (count <= 0) {
 			CAM_ERR(CAM_UTIL, "no regulators found");
 			count = 0;
+			return -EINVAL;
+		}
+
+		if (count > CAM_SOC_MAX_REGULATOR) {
+			CAM_ERR(CAM_UTIL, "Invalid regulator count %d",
+				count);
 			return -EINVAL;
 		}
 
@@ -1540,10 +1551,11 @@ int cam_soc_util_request_platform_resource(
 	for (i = 0; i < soc_info->num_clk; i++) {
 		soc_info->clk[i] = clk_get(soc_info->dev,
 			soc_info->clk_name[i]);
-		if (!soc_info->clk[i]) {
+		if (IS_ERR(soc_info->clk[i])) {
 			CAM_ERR(CAM_UTIL, "get failed for %s",
 				soc_info->clk_name[i]);
-			rc = -ENOENT;
+			rc = PTR_ERR(soc_info->clk[i]);
+			soc_info->clk[i] = NULL;
 			goto put_clk;
 		}
 	}
@@ -1584,7 +1596,6 @@ put_regulator:
 		i = soc_info->num_rgltr;
 	for (i = i - 1; i >= 0; i--) {
 		if (soc_info->rgltr[i]) {
-			regulator_disable(soc_info->rgltr[i]);
 			regulator_put(soc_info->rgltr[i]);
 			soc_info->rgltr[i] = NULL;
 		}
@@ -1668,7 +1679,7 @@ int cam_soc_util_enable_platform_resource(struct cam_hw_soc_info *soc_info,
 	if (enable_clocks) {
 		rc = cam_soc_util_clk_enable_default(soc_info, clk_level);
 		if (rc && soc_info->dev_name) {
-			if (!strncmp(soc_info->dev_name, "soc:qcom,bps", sizeof("soc:qcom,bps"))) {
+			if (!strncmp(soc_info->dev_name, "bps", 3)) {
 				CAM_ERR(CAM_UTIL, "try set clk backward for qcom,bps");
 				rc = cam_soc_util_clk_enable_backward(soc_info, clk_level);
 			}
@@ -1741,7 +1752,7 @@ int cam_soc_util_reg_dump(struct cam_hw_soc_info *soc_info,
 	CAM_DBG(CAM_UTIL, "base_idx %u size=%d", base_index, size);
 
 	if (!soc_info || base_index >= soc_info->num_reg_map ||
-		size <= 0 || (offset + size) >=
+		size <= 0 || (offset + size) >
 		CAM_SOC_GET_REG_MAP_SIZE(soc_info, base_index))
 		return -EINVAL;
 

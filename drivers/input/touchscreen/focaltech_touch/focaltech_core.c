@@ -208,9 +208,9 @@ static int fts_get_ic_information(struct fts_ts_data *ts_data)
 
 		cnt++;
 		msleep(INTERVAL_READ_REG);
-	} while ((cnt * INTERVAL_READ_REG) < fts_data->pdata->timeout_read_reg);
+	} while ((cnt * INTERVAL_READ_REG) < ts_data->pdata->timeout_read_reg);
 
-	if ((cnt * INTERVAL_READ_REG) >= fts_data->pdata->timeout_read_reg) {
+	if ((cnt * INTERVAL_READ_REG) >= ts_data->pdata->timeout_read_reg) {
 		FTS_INFO("fw is invalid, need read boot id");
 		if (ts_data->ic_info.hid_supported) {
 			fts_i2c_hid2std(client);
@@ -325,12 +325,18 @@ void fts_irq_disable(void)
 *****************************************************************************/
 void fts_irq_disable_sync(void)
 {
+	unsigned long irqflags = 0;
+
 	FTS_FUNC_ENTER();
 
+	spin_lock_irqsave(&fts_data->irq_lock, irqflags);
 	if (!fts_data->irq_disabled) {
-		disable_irq(fts_data->irq);
+		disable_irq_nosync(fts_data->irq);
 		fts_data->irq_disabled = true;
 	}
+	spin_unlock_irqrestore(&fts_data->irq_lock, irqflags);
+
+	synchronize_irq(fts_data->irq);
 
 	FTS_FUNC_EXIT();
 }
@@ -387,8 +393,8 @@ static int fts_power_source_init(struct fts_ts_data *data)
 	data->avdd = regulator_get(&data->client->dev, "avdd");
 	if (IS_ERR(data->avdd)) {
 		ret = PTR_ERR(data->avdd);
-		FTS_ERROR("get vddio regulator failed,ret=%d", ret);
-		return ret;
+		FTS_ERROR("get avdd regulator failed,ret=%d", ret);
+		goto err_set_vtg_vdd;
 	}
 
 	data->vsp = regulator_get(&data->client->dev, "lab");
@@ -411,6 +417,7 @@ static int fts_power_source_init(struct fts_ts_data *data)
 err_get_vsn:
 	regulator_put(data->vsp);
 err_get_vsp:
+	regulator_put(data->avdd);
 err_set_vtg_vdd:
 	regulator_put(data->vddio);
 
@@ -423,6 +430,8 @@ static int fts_power_source_release(struct fts_ts_data *data)
 	if (regulator_count_voltages(data->vddio) > 0)
 		regulator_set_voltage(data->vddio, 0, FTS_I2C_VTG_MAX_UV);
 	regulator_put(data->vddio);
+
+	regulator_put(data->avdd);
 
 	regulator_put(data->vsp);
 
@@ -607,9 +616,9 @@ static void fts_show_touch_buffer(u8 *buf, int point_num)
 	} else if (len == 0) {
 		len += FTS_ONE_TCH_LEN;
 	}
-	count += snprintf(g_sz_debug, PAGE_SIZE, "%02X,%02X,%02X", buf[0], buf[1], buf[2]);
+	count += snprintf(g_sz_debug, sizeof(g_sz_debug), "%02X,%02X,%02X", buf[0], buf[1], buf[2]);
 	for (i = 0; i < len; i++) {
-		count += snprintf(g_sz_debug + count, PAGE_SIZE, ",%02X", buf[i + 3]);
+		count += snprintf(g_sz_debug + count, sizeof(g_sz_debug) - count, ",%02X", buf[i + 3]);
 	}
 	FTS_DEBUG("buffer: %s", g_sz_debug);
 }
@@ -669,10 +678,14 @@ static int fts_input_report_key(struct fts_ts_data *data, int index)
 		if (TOUCH_IN_KEY(x, data->pdata->key_x_coords[ik])) {
 			if (EVENT_DOWN(flag)) {
 				data->key_down = true;
+				data->key_down_id = id;
+				data->key_down_index = ik;
 				input_report_key(data->input_dev, data->pdata->keys[ik], 1);
 				FTS_DEBUG("Key%d(%d, %d) DOWN!", ik, x, y);
 			} else {
 				data->key_down = false;
+				data->key_down_id = -1;
+				data->key_down_index = -1;
 				input_report_key(data->input_dev, data->pdata->keys[ik], 0);
 				FTS_DEBUG("Key%d(%d, %d) Up!", ik, x, y);
 			}
@@ -699,6 +712,18 @@ static int fts_input_report_b(struct fts_ts_data *data)
 		if (KEY_EN(data) && TOUCH_IS_KEY(events[i].y, key_y_coor)) {
 			fts_input_report_key(data, i);
 			continue;
+		}
+
+		if (KEY_EN(data) && data->key_down &&
+		    events[i].id == data->key_down_id) {
+			if (data->key_down_index >= 0) {
+				input_report_key(data->input_dev,
+						 data->pdata->keys[data->key_down_index], 0);
+				FTS_DEBUG("Key released after sliding out!");
+			}
+			data->key_down = false;
+			data->key_down_id = -1;
+			data->key_down_index = -1;
 		}
 
 		if (events[i].id >= max_touch_num)
@@ -779,6 +804,18 @@ static int fts_input_report_a(struct fts_ts_data *data)
 		if (KEY_EN(data) && TOUCH_IS_KEY(events[i].y, key_y_coor)) {
 			fts_input_report_key(data, i);
 			continue;
+		}
+
+		if (KEY_EN(data) && data->key_down &&
+		    events[i].id == data->key_down_id) {
+			if (data->key_down_index >= 0) {
+				input_report_key(data->input_dev,
+						 data->pdata->keys[data->key_down_index], 0);
+				FTS_DEBUG("Key released after sliding out!");
+			}
+			data->key_down = false;
+			data->key_down_id = -1;
+			data->key_down_index = -1;
 		}
 
 		va_reported = true;
@@ -1042,6 +1079,11 @@ static int fts_input_event(struct input_dev *dev, unsigned int type, unsigned in
 
 	if (type == EV_SYN && code == SYN_CONFIG) {
 		if (value >= INPUT_EVENT_START && value <= INPUT_EVENT_END) {
+			if (!ts_data->mode_switch_wq) {
+				FTS_ERROR("mode switch wq not ready");
+				return -EAGAIN;
+			}
+
 			ms = (struct fts_mode_switch *)
 			    kmalloc(sizeof(struct fts_mode_switch), GFP_ATOMIC);
 
@@ -1049,7 +1091,8 @@ static int fts_input_event(struct input_dev *dev, unsigned int type, unsigned in
 				ms->ts_data = ts_data;
 				ms->mode = (unsigned char)value;
 				INIT_WORK(&ms->switch_mode_work, fts_switch_mode_work);
-				schedule_work(&ms->switch_mode_work);
+				queue_work(ts_data->mode_switch_wq,
+						&ms->switch_mode_work);
 			} else {
 				FTS_ERROR("failed in allocating memory for switching mode");
 				return -ENOMEM;
@@ -1448,7 +1491,7 @@ static void fts_update_touchmode_data(int mode)
 static int fts_set_cur_value(int mode, int value)
 {
 
-	if (mode < Touch_Mode_NUM) {
+	if (mode >= 0 && mode < Touch_Mode_NUM) {
 
 		xiaomi_touch_interfaces.touch_mode[mode][SET_CUR_VALUE] = value;
 
@@ -1466,6 +1509,7 @@ static int fts_set_cur_value(int mode, int value)
 		}
 	} else {
 		FTS_ERROR("%s, don't support\n",  __func__);
+		return -EINVAL;
 	}
 	FTS_INFO("%s, mode:%d, value:%d\n", __func__, mode, value);
 
@@ -1478,7 +1522,7 @@ static int fts_get_mode_value(int mode, int value_type)
 {
 	int value = -1;
 
-	if (mode < Touch_Mode_NUM)
+	if (mode >= 0 && mode < Touch_Mode_NUM)
 		value = xiaomi_touch_interfaces.touch_mode[mode][value_type];
 	else
 		FTS_ERROR("%s, don't support\n", __func__);
@@ -1488,7 +1532,7 @@ static int fts_get_mode_value(int mode, int value_type)
 
 static int fts_get_mode_all(int mode, int *value)
 {
-	if (mode < Touch_Mode_NUM) {
+	if (mode >= 0 && mode < Touch_Mode_NUM) {
 		value[0] = xiaomi_touch_interfaces.touch_mode[mode][GET_CUR_VALUE];
 		value[1] = xiaomi_touch_interfaces.touch_mode[mode][GET_DEF_VALUE];
 		value[2] = xiaomi_touch_interfaces.touch_mode[mode][GET_MIN_VALUE];
@@ -1506,7 +1550,7 @@ static int fts_reset_mode(int mode)
 {
 	int i = 0;
 
-	if (mode < Touch_Mode_NUM && mode) {
+	if (mode > 0 && mode < Touch_Mode_NUM) {
 		xiaomi_touch_interfaces.touch_mode[mode][SET_CUR_VALUE] =
 			xiaomi_touch_interfaces.touch_mode[mode][GET_DEF_VALUE];
 	} else if (mode == 0) {
@@ -1516,6 +1560,7 @@ static int fts_reset_mode(int mode)
 		}
 	} else {
 		FTS_ERROR("%s, don't support\n",  __func__);
+		return -EINVAL;
 	}
 
 	FTS_ERROR("%s, mode:%d\n",  __func__, mode);
@@ -1602,12 +1647,15 @@ static int fts_parse_dt(struct device *dev, struct fts_ts_platform_data *pdata)
 		ret = of_property_read_u32(np, "focaltech,key-number", &pdata->key_number);
 		if (ret)
 			FTS_ERROR("Key number undefined!");
+		else if (pdata->key_number > FTS_MAX_KEYS) {
+			FTS_ERROR("Key number %d exceeds max %d, set to %d", pdata->key_number, FTS_MAX_KEYS,
+				  FTS_MAX_KEYS);
+			pdata->key_number = FTS_MAX_KEYS;
+		}
 
 		ret = of_property_read_u32_array(np, "focaltech,keys", pdata->keys, pdata->key_number);
 		if (ret)
 			FTS_ERROR("Keys undefined!");
-		else if (pdata->key_number > FTS_MAX_KEYS)
-			pdata->key_number = FTS_MAX_KEYS;
 
 		ret = of_property_read_u32(np, "focaltech,key-y-coord", &pdata->key_y_coord);
 		if (ret)
@@ -1647,13 +1695,13 @@ static int fts_parse_dt(struct device *dev, struct fts_ts_platform_data *pdata)
 	FTS_INFO("max touch number:%d, irq gpio:%d, reset gpio:%d", pdata->max_touch_number, pdata->irq_gpio,
 		 pdata->reset_gpio);
 	ret = of_property_read_string(np, "focaltech,project-name", &pdata->project_name);
-	if (!ret)
+	if (ret)
 		FTS_ERROR("Unable to get project name");
-	else {
+	else
 		FTS_INFO("project name:%s\n", pdata->project_name);
-	}
+
 	ret = of_property_read_u32(np, "focaltech,lockdown-info-addr", &pdata->lockdown_info_addr);
-	if (!ret)
+	if (ret)
 		FTS_ERROR("Unable to get lockdown-info-addr");
 	ret = of_property_read_u32(np, "focaltech,open-min", &pdata->open_min);
 	if (ret)
@@ -1732,7 +1780,7 @@ static const struct attribute_group fts_attr_group = {
 #define TP_INFO_MAX_LENGTH 50
 static ssize_t fts_lockdown_info_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
-	int cnt = 0, ret = 0;
+	int cnt = 0;
 	char tmp[TP_INFO_MAX_LENGTH];
 
 	if (*pos != 0)
@@ -1744,13 +1792,11 @@ static ssize_t fts_lockdown_info_read(struct file *file, char __user *buf, size_
 		     fts_data->lockdown_info[0], fts_data->lockdown_info[1],
 		     fts_data->lockdown_info[2], fts_data->lockdown_info[3], fts_data->lockdown_info[4],
 		     fts_data->lockdown_info[5], fts_data->lockdown_info[6], fts_data->lockdown_info[7]);
-	ret = copy_to_user(buf, tmp, cnt);
+	if (copy_to_user(buf, tmp, cnt))
+		return -EFAULT;
 
 	*pos += cnt;
-	if (ret != 0)
-		return 0;
-	else
-		return cnt;
+	return cnt;
 }
 
 static const struct file_operations fts_lockdown_info_ops = {
@@ -1759,19 +1805,18 @@ static const struct file_operations fts_lockdown_info_ops = {
 
 static ssize_t fts_fw_version_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
-	int cnt = 0, ret = 0;
+	int cnt = 0;
 	char tmp[TP_INFO_MAX_LENGTH];
 
 	if (*pos != 0)
 		return 0;
 
 	cnt = snprintf(tmp, TP_INFO_MAX_LENGTH, "%x\n", fts_data->fw_ver_in_host);
-	ret = copy_to_user(buf, tmp, cnt);
+	if (copy_to_user(buf, tmp, cnt))
+		return -EFAULT;
+
 	*pos += cnt;
-	if (ret != 0)
-		return 0;
-	else
-		return cnt;
+	return cnt;
 }
 
 static const struct file_operations fts_fw_version_ops = {
@@ -1809,7 +1854,11 @@ static ssize_t tpdbg_read(struct file *file, char __user *buf, size_t size, loff
 	if (pos >= len)
 		return 0;
 
-	if (copy_to_user(buf, str, len))
+	len -= pos;
+	if (len > size)
+		len = size;
+
+	if (copy_to_user(buf, str + pos, len))
 		return -EFAULT;
 
 	*ppos = pos + len;
@@ -2163,14 +2212,6 @@ static int fts_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	}
 #endif
 
-#if FTS_TEST_EN
-	ret = fts_test_init(client);
-	if (ret) {
-		FTS_ERROR("init production test fail");
-		goto err_debugfs_create;
-	}
-#endif
-
 #if FTS_ESDCHECK_EN
 	ret = fts_esdcheck_init(ts_data);
 	if (ret) {
@@ -2186,6 +2227,14 @@ static int fts_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 		FTS_ERROR("ERROR: Cannot create work thread\n");
 		goto err_debugfs_create;
 	}
+
+	ts_data->mode_switch_wq =
+	    create_singlethread_workqueue("fts-mode-switch");
+	if (!ts_data->mode_switch_wq) {
+		FTS_ERROR("Cannot create mode switch workqueue\n");
+		goto err_event_wq;
+	}
+
 	INIT_WORK(&ts_data->resume_work, fts_resume_work);
 	INIT_WORK(&ts_data->suspend_work, fts_suspend_work);
 #ifdef CONFIG_TOUCHSCREEN_FTS_POWER_SUPPLY
@@ -2248,13 +2297,35 @@ static int fts_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	return 0;
 
 err_event_wq:
+	if (ts_data->mode_switch_wq) {
+		destroy_workqueue(ts_data->mode_switch_wq);
+		ts_data->mode_switch_wq = NULL;
+	}
 	if (ts_data->event_wq)
 		destroy_workqueue(ts_data->event_wq);
 err_debugfs_create:
 	if (tp_debugfs)
 		debugfs_remove(tp_debugfs);
+	if (ts_data->debugfs) {
+		debugfs_remove(ts_data->debugfs);
+		ts_data->debugfs = NULL;
+	}
+	remove_proc_entry("tp_lockdown_info", NULL);
+	remove_proc_entry("tp_fw_version", NULL);
+#if FTS_POINT_REPORT_CHECK_EN
+	fts_point_report_check_exit(ts_data);
+#endif
+#if FTS_APK_NODE_EN
+	fts_release_apk_debug_channel(ts_data);
+#endif
 err_sysfs_create_group:
+	if (ts_data->debugfs) {
+		debugfs_remove(ts_data->debugfs);
+		ts_data->debugfs = NULL;
+	}
 	sysfs_remove_group(&client->dev.kobj, &fts_attr_group);
+	remove_proc_entry("tp_lockdown_info", NULL);
+	remove_proc_entry("tp_fw_version", NULL);
 err_irq_req:
 	if (gpio_is_valid(pdata->reset_gpio))
 		gpio_free(pdata->reset_gpio);
@@ -2297,9 +2368,17 @@ static int fts_ts_remove(struct i2c_client *client)
 
 	sysfs_remove_group(&client->dev.kobj, &fts_attr_group);
 
-#if FTS_POINT_REPORT_CHECK_EN
-	fts_point_report_check_exit(ts_data);
+#ifdef CONFIG_TOUCHSCREEN_FTS_POWER_SUPPLY
+	power_supply_unreg_notifier(&ts_data->power_supply_notifier);
 #endif
+
+	if (ts_data->tp_lockdown_info_proc)
+		remove_proc_entry("tp_lockdown_info", NULL);
+	if (ts_data->tp_fw_version_proc)
+		remove_proc_entry("tp_fw_version", NULL);
+
+	if (ts_data->debugfs)
+		debugfs_remove(ts_data->debugfs);
 
 #if FTS_APK_NODE_EN
 	fts_release_apk_debug_channel(ts_data);
@@ -2307,21 +2386,6 @@ static int fts_ts_remove(struct i2c_client *client)
 
 #if FTS_SYSFS_NODE_EN
 	fts_remove_sysfs(client);
-#endif
-	destroy_workqueue(ts_data->event_wq);
-
-	fts_ex_mode_exit(client);
-
-#if FTS_AUTO_UPGRADE_EN
-	fts_fwupg_exit(ts_data);
-#endif
-
-#if FTS_TEST_EN
-	fts_test_exit(client);
-#endif
-
-#if FTS_ESDCHECK_EN
-	fts_esdcheck_exit(ts_data);
 #endif
 
 #ifdef CONFIG_DRM
@@ -2331,8 +2395,31 @@ static int fts_ts_remove(struct i2c_client *client)
 	unregister_early_suspend(&ts_data->early_suspend);
 #endif
 
-	free_irq(client->irq, ts_data);
+	destroy_workqueue(ts_data->event_wq);
+
+	fts_ex_mode_exit(client);
+
+#if FTS_GESTURE_EN
+	fts_gesture_exit(client);
+#endif
+
+#if FTS_AUTO_UPGRADE_EN
+	fts_fwupg_exit(ts_data);
+#endif
+
+#if FTS_ESDCHECK_EN
+	fts_esdcheck_exit(ts_data);
+#endif
+
+	free_irq(ts_data->irq, ts_data);
 	input_unregister_device(ts_data->input_dev);
+#if FTS_POINT_REPORT_CHECK_EN
+	fts_point_report_check_exit(ts_data);
+#endif
+	if (ts_data->mode_switch_wq) {
+		destroy_workqueue(ts_data->mode_switch_wq);
+		ts_data->mode_switch_wq = NULL;
+	}
 
 	if (gpio_is_valid(ts_data->pdata->reset_gpio))
 		gpio_free(ts_data->pdata->reset_gpio);

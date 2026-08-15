@@ -60,7 +60,7 @@ int cam_ife_csid_init_soc_resources(struct cam_hw_soc_info *soc_info,
 
 	rc = cam_ife_csid_get_dt_properties(soc_info);
 	if (rc < 0)
-		return rc;
+		goto free_soc_private;
 
 	/* Need to see if we want post process the clock list */
 
@@ -91,6 +91,7 @@ release_soc:
 	cam_soc_util_release_platform_resource(soc_info);
 free_soc_private:
 	kfree(soc_private);
+	soc_info->soc_private = NULL;
 
 	return rc;
 }

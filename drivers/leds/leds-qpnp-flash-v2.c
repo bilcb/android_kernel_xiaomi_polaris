@@ -136,8 +136,8 @@
 #define	VPH_DROOP_HYST_MV_TO_VAL(val_mv)	(val_mv / 25)
 #define	VPH_DROOP_THRESH_VAL_TO_UV(val)		((val + 25) * 100000)
 #define	MITIGATION_THRSH_MA_TO_VAL(val_ma)	(val_ma / 100)
-#define	CURRENT_MA_TO_REG_VAL(curr_ma, ires_ua)	((curr_ma * 1000 + ires_ua/2) / ires_ua)
-#define	SAFETY_TMR_TO_REG_VAL(duration_ms)	((duration_ms / 10) - 1)
+#define	CURRENT_MA_TO_REG_VAL(curr_ma, ires_ua)	(((curr_ma) * 1000 + (ires_ua) / 2) / (ires_ua))
+#define	SAFETY_TMR_TO_REG_VAL(duration_ms)	(((duration_ms) / 10) - 1)
 #define	THERMAL_HYST_TEMP_TO_VAL(val, divisor)	(val / divisor)
 
 #define	FLASH_LED_WARMUP_DELAY_DEFAULT			2
@@ -352,9 +352,9 @@ static int max_ires_curr_ma_table[MAX_IRES_LEVELS] = {
 	FLASH_LED_IRES7P5_MAX_CURR_MA, FLASH_LED_IRES5P0_MAX_CURR_MA
 };
 
-struct flash_node_data *g_torch_0;
-struct flash_node_data *g_torch_1;
-struct flash_switch_data *g_switch_0;
+static struct flash_node_data *g_torch_0;
+static struct flash_node_data *g_torch_1;
+static struct flash_switch_data *g_switch_0;
 
 static inline int get_current_reg_code(int target_curr_ma, int ires_ua)
 {
@@ -1487,6 +1487,24 @@ static int qpnp_flash_led_switch_set(struct flash_switch_data *snode, bool on)
 	if (snode->enabled == on) {
 		pr_debug("Switch node is already %s!\n",
 			on ? "enabled" : "disabled");
+		if (on) {
+			/* Re-apply current values in case they were
+			 * updated while the switch stayed enabled
+			 */
+			for (i = 0; i < led->num_fnodes; i++) {
+				if (!led->fnode[i].led_on ||
+						!(snode->led_mask & BIT(led->fnode[i].id)))
+					continue;
+				addr_offset = led->fnode[i].id;
+				rc = qpnp_flash_led_masked_write(led,
+					FLASH_LED_REG_TGR_CURRENT(
+						led->base + addr_offset),
+					FLASH_LED_CURRENT_MASK,
+					led->fnode[i].current_reg_val);
+				if (rc < 0)
+					return rc;
+			}
+		}
 		return 0;
 	}
 
@@ -1598,6 +1616,7 @@ static int qpnp_flash_led_switch_set(struct flash_switch_data *snode, bool on)
 				FLASH_LED_LMH_MITIGATION_ENABLE);
 		if (rc < 0) {
 			pr_err("trigger lmh mitigation failed, rc=%d\n", rc);
+			led->enable++;
 			return rc;
 		}
 		/* Wait for LMH mitigation to take effect */
@@ -1611,6 +1630,7 @@ static int qpnp_flash_led_switch_set(struct flash_switch_data *snode, bool on)
 				FLASH_LED_CHGR_MITIGATION_ENABLE);
 		if (rc < 0) {
 			pr_err("trigger chgr mitigation failed, rc=%d\n", rc);
+			led->enable++;
 			return rc;
 		}
 	}
@@ -1618,8 +1638,10 @@ static int qpnp_flash_led_switch_set(struct flash_switch_data *snode, bool on)
 	rc = qpnp_flash_led_masked_write(led,
 					FLASH_LED_EN_LED_CTRL(led->base),
 					snode->led_mask, val);
-	if (rc < 0)
+	if (rc < 0) {
+		led->enable++;
 		return rc;
+	}
 
 	snode->enabled = true;
 	return 0;
@@ -1767,7 +1789,7 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 		if (!strncmp(led_cdev->name, "flashlight", strlen("flashlight")))
 		{
 			if (g_torch_0 && g_torch_1 && g_switch_0){
-				pr_err("flash light fnode %d", __LINE__);
+				pr_debug("flash light fnode %d\n", __LINE__);
 				qpnp_flash_led_node_set(g_torch_0, value);
 				qpnp_flash_led_node_set(g_torch_1, value);
 				qpnp_flash_led_switch_set(g_switch_0, value > 0);
@@ -2769,10 +2791,12 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 			}
 			#if 1
 			fnode = &led->fnode[i];
-			if (!strcmp("led:torch_0", fnode->cdev.name)){
-				g_torch_0 =fnode;
-			}else if (!strcmp("led:torch_1",  fnode->cdev.name)){
-				g_torch_1 =fnode;
+			if (fnode->cdev.name &&
+			    !strcmp("led:torch_0", fnode->cdev.name)) {
+				g_torch_0 = fnode;
+			} else if (fnode->cdev.name &&
+			    !strcmp("led:torch_1", fnode->cdev.name)) {
+				g_torch_1 = fnode;
 			}
 			#endif
 			i++;
@@ -2783,7 +2807,8 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 					&led->snode[j], temp);
 			#if 1
 			snode = &led->snode[j];
-			if (!strcmp("led:switch_0",  snode->cdev.name)){
+			if (snode->cdev.name &&
+			    !strcmp("led:switch_0", snode->cdev.name)) {
 				g_switch_0 = snode;
 			}
 			#endif

@@ -36,7 +36,7 @@ extern int elliptic_set_hall_state(int state);
 
 static int g_gpio_1_irq;
 static int g_gpio_2_irq;
-static int g_in_firedirq;
+static atomic_t g_in_firedirq = ATOMIC_INIT(0);
 static int g_in_end;
 static int g_in_flush;
 
@@ -58,7 +58,7 @@ static void hall_notify_work_func(struct work_struct *work)
 	iRet1 = gpio_get_value_cansleep(DEF_HALL_GPIO_1);
 	iRet2 = gpio_get_value_cansleep(DEF_HALL_GPIO_2);
 	HALLS_LOG(LOGTAG "g_in_firedirq %d, g_gpio_1_irq %d, g_gpio_2_irq %d",
-		  g_in_firedirq, g_gpio_1_irq, g_gpio_2_irq);
+		  atomic_read(&g_in_firedirq), g_gpio_1_irq, g_gpio_2_irq);
 	HALLS_LOG(LOGTAG " iRet1 %d	iRet2 %d", iRet1, iRet2);
 	if (iRet1 == 0 && iRet2 == 1) {
 		g_st_halls->hall_status = 1;
@@ -77,10 +77,10 @@ static irqreturn_t halls_irq_handler(int irqno, void *dev_id)
 {
 	HALLS_LOG(LOGTAG "Entered halls_irq_handler irqno %d\n", irqno);
 	__pm_wakeup_event(g_st_halls->hall_wakelock, 20);
-	g_in_firedirq = irqno;
+	atomic_set(&g_in_firedirq, irqno);
 	up(&g_st_semhallirq);
 	schedule_delayed_work(&g_st_halls->notify_work, 0);
-	return 0;
+	return IRQ_HANDLED;
 }
 
 static int halls_configurate_input(int in_GPIO, const char *ch_mark)
@@ -88,8 +88,10 @@ static int halls_configurate_input(int in_GPIO, const char *ch_mark)
 	int iRet = 0;
 
 	iRet = gpio_request(in_GPIO, ch_mark);
-	if (iRet)
+	if (iRet) {
 		pr_err("%d is being used!\n", in_GPIO);
+		return iRet;
+	}
 
 	iRet = gpio_direction_input(in_GPIO);
 	if (iRet)
@@ -109,9 +111,12 @@ static int halls_configurate_irq(int in_GPIO,
 	iRet = request_irq(in_IRQ, halls_irq_handler,
 			   IRQF_TRIGGER_RISING
 			   | IRQF_TRIGGER_FALLING | IRQF_ONESHOT, ch_mark, arg);
-	if (iRet)
+	if (iRet) {
 		pr_err("request_irq failed! iRet %d\n", iRet);
-	irq_set_irq_wake(in_IRQ, 1);
+		*out_irq = 0;
+	} else {
+		irq_set_irq_wake(in_IRQ, 1);
+	}
 
 	HALLS_LOG(LOGTAG "request_irq return %d\n", iRet);
 	return iRet;
@@ -125,25 +130,29 @@ static ssize_t halls_read(struct file *file,
 	HALLS_LOG(LOGTAG "Entereed halls_read  count  %d", (int)count);
 	if (down_interruptible(&g_st_semhallirq)) {
 		HALLS_LOG(LOGTAG "down_interruptible failed!");
+		return -EINTR;
 	}
 	if (g_in_end == 1) {
 		HALLS_LOG(LOGTAG "Ending... ");
 		return -EPERM;
 	}
 	HALLS_LOG(LOGTAG "g_in_firedirq %d, g_gpio_1_irq %d, g_gpio_2_irq %d",
-		  g_in_firedirq, g_gpio_1_irq, g_gpio_2_irq);
+		  atomic_read(&g_in_firedirq), g_gpio_1_irq, g_gpio_2_irq);
 	if (g_in_flush == 1) {
 		g_in_flush = 0;
-		iRead =
-		    copy_to_user(buf, DEF_HALL_FLUSH, strlen(DEF_HALL_FLUSH));
+		iRead = min(count, strlen(DEF_HALL_FLUSH));
+		if (copy_to_user(buf, DEF_HALL_FLUSH, iRead))
+			iRead = -EFAULT;
 		HALLS_LOG(LOGTAG "End of copy_to_user flash... ");
-	} else if (g_in_firedirq == g_gpio_1_irq) {
-		iRead = copy_to_user(buf, DEF_HALL_IRQ_1_FIRED,
-				     strlen(DEF_HALL_IRQ_1_FIRED));
+	} else if (atomic_read(&g_in_firedirq) == g_gpio_1_irq) {
+		iRead = min(count, strlen(DEF_HALL_IRQ_1_FIRED));
+		if (copy_to_user(buf, DEF_HALL_IRQ_1_FIRED, iRead))
+			iRead = -EFAULT;
 		HALLS_LOG(LOGTAG "End of copy_to_user 1... ");
-	} else if (g_in_firedirq == g_gpio_2_irq) {
-		iRead = copy_to_user(buf, DEF_HALL_IRQ_2_FIRED,
-				     strlen(DEF_HALL_IRQ_2_FIRED));
+	} else if (atomic_read(&g_in_firedirq) == g_gpio_2_irq) {
+		iRead = min(count, strlen(DEF_HALL_IRQ_2_FIRED));
+		if (copy_to_user(buf, DEF_HALL_IRQ_2_FIRED, iRead))
+			iRead = -EFAULT;
 		HALLS_LOG(LOGTAG "End of copy_to_user 2... ");
 	}
 	return iRead;
@@ -162,8 +171,10 @@ long halls_in_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			iRet = gpio_get_value_cansleep(DEF_HALL_GPIO_1);
 			HALLS_LOG(LOGTAG "Read HALL_1 %d", iRet);
 			snprintf(ch_data, sizeof(ch_data), "%d", iRet);
-			iRet =
-			    copy_to_user(p_ReadValue, ch_data, strlen(ch_data));
+			if (copy_to_user(p_ReadValue, ch_data, strlen(ch_data)))
+				iRet = -EFAULT;
+			else
+				iRet = 0;
 			break;
 		}
 	case DEF_HALLS_IOCTRL_READ_HALL_2:
@@ -171,8 +182,10 @@ long halls_in_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			iRet = gpio_get_value_cansleep(DEF_HALL_GPIO_2);
 			HALLS_LOG(LOGTAG "Read HALL_2 %d", iRet);
 			snprintf(ch_data, sizeof(ch_data), "%d", iRet);
-			iRet =
-			    copy_to_user(p_ReadValue, ch_data, strlen(ch_data));
+			if (copy_to_user(p_ReadValue, ch_data, strlen(ch_data)))
+				iRet = -EFAULT;
+			else
+				iRet = 0;
 			break;
 		}
 	case DEF_HALLS_IOCTRL_FLUSH:
@@ -196,7 +209,7 @@ long halls_in_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 					pr_err
 					    ("halls_configurate_irq failed!%d, iRet %d\n",
 					     DEF_HALL_GPIO_1, iRet);
-				g_in_firedirq = g_gpio_1_irq;
+				atomic_set(&g_in_firedirq, g_gpio_1_irq);
 
 				iRet =
 				    halls_configurate_irq(DEF_HALL_GPIO_2,
@@ -221,9 +234,11 @@ long halls_in_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			up(&g_st_semhallirq);
 			if (g_gpio_1_irq > 0)
 				free_irq(g_gpio_1_irq, g_st_halls);
+			g_gpio_1_irq = 0;
 
 			if (g_gpio_2_irq > 0)
 				free_irq(g_gpio_2_irq, g_st_halls);
+			g_gpio_2_irq = 0;
 			g_in_opencounter = 0;
 			break;
 		}
@@ -267,6 +282,7 @@ static int __init halls_init(void)
 	ret = misc_register(&g_st_halls->miscdev);
 	if (ret < 0) {
 		kfree(g_st_halls);
+		g_st_halls = NULL;
 		return ret;
 	}
 	ret = halls_configurate_input(DEF_HALL_GPIO_1, "hall-1");
@@ -274,13 +290,20 @@ static int __init halls_init(void)
 		pr_err("halls_configurate_input failed!%d, ret %d\n",
 		       DEF_HALL_GPIO_1, ret);
 		gpio_free(DEF_HALL_GPIO_1);
+		misc_deregister(&g_st_halls->miscdev);
+		kfree(g_st_halls);
+		g_st_halls = NULL;
 		return ret;
 	}
 	ret = halls_configurate_input(DEF_HALL_GPIO_2, "hall-2");
 	if (ret) {
 		pr_err("halls_configurate_input failed! %d ret %d\n",
 		       DEF_HALL_GPIO_2, ret);
+		gpio_free(DEF_HALL_GPIO_1);
 		gpio_free(DEF_HALL_GPIO_2);
+		misc_deregister(&g_st_halls->miscdev);
+		kfree(g_st_halls);
+		g_st_halls = NULL;
 		return ret;
 	}
 
@@ -290,16 +313,28 @@ static int __init halls_init(void)
 	g_st_halls->hall_wakelock = wakeup_source_register("dual_hall_ws");
 	if (!g_st_halls->hall_wakelock) {
 		pr_err("g_st_halls wakeup_source_register failed!\n");
-		return ret;
+		gpio_free(DEF_HALL_GPIO_1);
+		gpio_free(DEF_HALL_GPIO_2);
+		misc_deregister(&g_st_halls->miscdev);
+		kfree(g_st_halls);
+		g_st_halls = NULL;
+		return -ENOMEM;
 	}
 
-	return ret;
+	return 0;
 }
 
 device_initcall(halls_init);
 
 static void __exit halls_exit(void)
 {
+	if (g_st_halls) {
+		cancel_delayed_work_sync(&g_st_halls->notify_work);
+		misc_deregister(&g_st_halls->miscdev);
+		if (g_st_halls->hall_wakelock)
+			wakeup_source_unregister(g_st_halls->hall_wakelock);
+		kfree(g_st_halls);
+	}
 	gpio_free(DEF_HALL_GPIO_1);
 	gpio_free(DEF_HALL_GPIO_2);
 }
