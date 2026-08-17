@@ -59,6 +59,8 @@
 		qcom,mdss-dsi-bl-dcs-type-ss;
 		/* qcom,mdss-dsi-on-command-tuning; */
 		qcom,dispparam-enabled;
+		qcom,disp-doze-lpm-backlight = <20>;
+		qcom,disp-doze-hbm-backlight = <266>;
 		qcom,mdss-panel-on-dimming-delay = <120>;
 		qcom,disp-doze-backlight-threshold = <8>;/*2047(8), 4096(16) */
 		/* IRQF_ONESHOT | IRQF_TRIGGER_HIGH */

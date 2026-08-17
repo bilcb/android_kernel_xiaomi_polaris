@@ -49,6 +49,11 @@ enum dsi_panel_rotation {
 	DSI_PANEL_ROTATE_V_FLIP
 };
 
+enum dsi_doze_mode_type {
+	DSI_DOZE_LPM = 0,
+	DSI_DOZE_HBM,
+};
+
 enum dsi_backlight_type {
 	DSI_BACKLIGHT_PWM = 0,
 	DSI_BACKLIGHT_WLED,
@@ -114,6 +119,8 @@ struct dsi_backlight_config {
 	u32 bl_level;
 	u32 bl_scale;
 	u32 bl_scale_ad;
+	u32 bl_doze_lpm;
+	u32 bl_doze_hbm;
 
 	int en_gpio;
 	bool bl_remap_flag;
@@ -195,6 +202,12 @@ struct dsi_panel_exd_config {
 	int selab;
 };
 
+#define BRIGHTNESS_ALPHA_PAIR_LEN 2
+struct brightness_alpha_pair {
+	u32 brightness;
+	u32 alpha;
+};
+
 struct dsi_panel {
 	const char *name;
 	enum dsi_panel_type type;
@@ -272,6 +285,10 @@ struct dsi_panel {
 	u32 dc_threshold;
 	ktime_t fod_hbm_off_time;
 	bool dc_enable;
+	bool doze_enabled;
+	enum dsi_doze_mode_type doze_mode;
+	struct brightness_alpha_pair *fod_dim_lut;
+	u32 fod_dim_lut_count;
 	/* Display count */
 	u64 boottime;
 	u64 bootRTCtime;
@@ -344,11 +361,19 @@ int dsi_panel_get_dfps_caps(struct dsi_panel *panel,
 
 int dsi_panel_pre_prepare(struct dsi_panel *panel);
 
+int dsi_panel_set_doze_status(struct dsi_panel *panel, bool status);
+
+int dsi_panel_set_doze_mode(struct dsi_panel *panel, enum dsi_doze_mode_type mode);
+
 int dsi_panel_set_lp1(struct dsi_panel *panel);
 
 int dsi_panel_set_lp2(struct dsi_panel *panel);
 
 int dsi_panel_set_nolp(struct dsi_panel *panel);
+
+int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status);
+
+u32 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel);
 
 int dsi_panel_prepare(struct dsi_panel *panel);
 

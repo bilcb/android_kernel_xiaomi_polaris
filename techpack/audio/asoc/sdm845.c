@@ -3931,7 +3931,7 @@ static bool msm_usbc_swap_gnd_mic(struct snd_soc_codec *codec, bool active)
 	struct msm_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
 	struct pinctrl_state *en2_pinctrl_active;
 	struct pinctrl_state *en2_pinctrl_sleep;
-	int oldv;
+	int old_value;
 
 	if (!pdata->usbc_en2_gpio_p) {
 		if (active) {
@@ -3982,7 +3982,7 @@ static bool msm_usbc_swap_gnd_mic(struct snd_soc_codec *codec, bool active)
 	/* if active and usbc_en2_gpio_p defined, swap using usbc_en2_gpio_p */
 	if (active) {
 		dev_dbg(codec->dev, "%s: enter\n", __func__);
-		oldv = tavil_mb_pull_down(codec, true, 0);
+		old_value = tavil_mb_pull_down(codec, true, 0);
 		if (pdata->usbc_en2_gpio_p) {
 			value = gpio_get_value_cansleep(pdata->usbc_en2_gpio);
 			if (value)
@@ -3995,7 +3995,7 @@ static bool msm_usbc_swap_gnd_mic(struct snd_soc_codec *codec, bool active)
 			value = gpio_get_value_cansleep(pdata->usbc_en2_gpio);
 			gpio_set_value_cansleep(pdata->usbc_en2_gpio, !value);
 		}
-		tavil_mb_pull_down(codec, false, oldv);
+		tavil_mb_pull_down(codec, false, old_value);
 		pr_info("%s: swap select switch %d to %d\n", __func__,
 			value, !value);
 		ret = true;

@@ -943,24 +943,3 @@
 	};
 };
 
-
-
-&firmware {
-	android {
-		compatible = "android,firmware";
-		vbmeta {
-			compatible = "android,vbmeta";
-			parts = "vbmeta,boot,system,vendor,dtbo,recovery";
-		};
-
-		fstab {
-			compatible = "android,fstab";
-			system {
-				status = "disabled";
-			};
-			vendor {
-				fsmgr_flags = "wait,avb";
-			};
-		};
-	};
-};
