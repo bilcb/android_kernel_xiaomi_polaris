@@ -102,7 +102,9 @@ static void ZSTD_initCCtx(ZSTD_CCtx* cctx, ZSTD_customMem memManager)
     assert(cctx != NULL);
     ZSTD_memset(cctx, 0, sizeof(*cctx));
     cctx->customMem = memManager;
+#if DYNAMIC_BMI2
     cctx->bmi2 = ZSTD_cpuSupportsBmi2();
+#endif
     {   size_t const err = ZSTD_CCtx_reset(cctx, ZSTD_reset_parameters);
         assert(!ZSTD_isError(err));
         (void)err;
@@ -142,7 +144,9 @@ ZSTD_CCtx* ZSTD_initStaticCCtx(void* workspace, size_t workspaceSize)
     cctx->blockState.nextCBlock = (ZSTD_compressedBlockState_t*)ZSTD_cwksp_reserve_object(&cctx->workspace, sizeof(ZSTD_compressedBlockState_t));
     cctx->tmpWorkspace = ZSTD_cwksp_reserve_object(&cctx->workspace, TMP_WORKSPACE_SIZE);
     cctx->tmpWkspSize = TMP_WORKSPACE_SIZE;
-    cctx->bmi2 = ZSTD_cpuid_bmi2(ZSTD_cpuid());
+#if DYNAMIC_BMI2
+    cctx->bmi2 = ZSTD_cpuSupportsBmi2();
+#endif
     return cctx;
 }
 
@@ -1691,15 +1695,19 @@ size_t ZSTD_estimateCCtxSize_usingCCtxParams(const ZSTD_CCtx_params* params)
 {
     ZSTD_compressionParameters const cParams =
                 ZSTD_getCParamsFromCCtxParams(params, ZSTD_CONTENTSIZE_UNKNOWN, 0, ZSTD_cpm_noAttachDict);
+    ldmParams_t ldmParams = params->ldmParams;
     ZSTD_ParamSwitch_e const useRowMatchFinder = ZSTD_resolveRowMatchFinderMode(params->useRowMatchFinder,
                                                                                &cParams);
 
     RETURN_ERROR_IF(params->nbWorkers > 0, GENERIC, "Estimate CCtx size is supported for single-threaded compression only.");
+    if (ldmParams.enableLdm == ZSTD_ps_enable) {
+        ZSTD_ldm_adjustParameters(&ldmParams, &cParams);
+    }
     /* estimateCCtxSize is for one-shot compression. So no buffers should
      * be needed. However, we still allocate two 0-sized buffers, which can
      * take space under ASAN. */
     return ZSTD_estimateCCtxSize_usingCCtxParams_internal(
-        &cParams, &params->ldmParams, 1, useRowMatchFinder, 0, 0, ZSTD_CONTENTSIZE_UNKNOWN, ZSTD_hasExtSeqProd(params), params->maxBlockSize);
+        &cParams, &ldmParams, 1, useRowMatchFinder, 0, 0, ZSTD_CONTENTSIZE_UNKNOWN, ZSTD_hasExtSeqProd(params), params->maxBlockSize);
 }
 
 size_t ZSTD_estimateCCtxSize_usingCParams(ZSTD_compressionParameters cParams)
@@ -1749,6 +1757,7 @@ size_t ZSTD_estimateCStreamSize_usingCCtxParams(const ZSTD_CCtx_params* params)
     RETURN_ERROR_IF(params->nbWorkers > 0, GENERIC, "Estimate CCtx size is supported for single-threaded compression only.");
     {   ZSTD_compressionParameters const cParams =
                 ZSTD_getCParamsFromCCtxParams(params, ZSTD_CONTENTSIZE_UNKNOWN, 0, ZSTD_cpm_noAttachDict);
+        ldmParams_t ldmParams = params->ldmParams;
         size_t const blockSize = MIN(ZSTD_resolveMaxBlockSize(params->maxBlockSize), (size_t)1 << cParams.windowLog);
         size_t const inBuffSize = (params->inBufferMode == ZSTD_bm_buffered)
                 ? ((size_t)1 << cParams.windowLog) + blockSize
@@ -1758,8 +1767,11 @@ size_t ZSTD_estimateCStreamSize_usingCCtxParams(const ZSTD_CCtx_params* params)
                 : 0;
         ZSTD_ParamSwitch_e const useRowMatchFinder = ZSTD_resolveRowMatchFinderMode(params->useRowMatchFinder, &params->cParams);
 
+        if (ldmParams.enableLdm == ZSTD_ps_enable) {
+            ZSTD_ldm_adjustParameters(&ldmParams, &cParams);
+        }
         return ZSTD_estimateCCtxSize_usingCCtxParams_internal(
-            &cParams, &params->ldmParams, 1, useRowMatchFinder, inBuffSize, outBuffSize,
+            &cParams, &ldmParams, 1, useRowMatchFinder, inBuffSize, outBuffSize,
             ZSTD_CONTENTSIZE_UNKNOWN, ZSTD_hasExtSeqProd(params), params->maxBlockSize);
     }
 }
@@ -4042,7 +4054,7 @@ ZSTD_compressSeqStore_singleBlock(ZSTD_CCtx* zc,
                 op + ZSTD_blockHeaderSize, dstCapacity - ZSTD_blockHeaderSize,
                 srcSize,
                 zc->tmpWorkspace, zc->tmpWkspSize /* statically allocated in resetCCtx */,
-                zc->bmi2);
+                ZSTD_CCtx_get_bmi2(zc));
     FORWARD_IF_ERROR(cSeqsSize, "ZSTD_entropyCompressSeqStore failed!");
 
     if (!zc->isFirstBlock &&
@@ -4332,7 +4344,7 @@ ZSTD_compressBlock_internal(ZSTD_CCtx* zc,
             dst, dstCapacity,
             srcSize,
             zc->tmpWorkspace, zc->tmpWkspSize /* statically allocated in resetCCtx */,
-            zc->bmi2);
+            ZSTD_CCtx_get_bmi2(zc));
 
     if (frame &&
         /* We don't want to emit our first block as a RLE even if it qualifies because
@@ -6796,7 +6808,7 @@ ZSTD_compressSequences_internal(ZSTD_CCtx* cctx,
                                 op + ZSTD_blockHeaderSize /* Leave space for block header */, dstCapacity - ZSTD_blockHeaderSize,
                                 blockSize,
                                 cctx->tmpWorkspace, cctx->tmpWkspSize /* statically allocated in resetCCtx */,
-                                cctx->bmi2);
+                                ZSTD_CCtx_get_bmi2(cctx));
         FORWARD_IF_ERROR(compressedSeqsSize, "Compressing sequences of block failed");
         DEBUGLOG(5, "Compressed sequences size: %zu", compressedSeqsSize);
 
@@ -7321,7 +7333,7 @@ ZSTD_compressSequencesAndLiterals_internal(ZSTD_CCtx* cctx,
                                 &cctx->blockState.prevCBlock->entropy, &cctx->blockState.nextCBlock->entropy,
                                 &cctx->appliedParams,
                                 cctx->tmpWorkspace, cctx->tmpWkspSize /* statically allocated in resetCCtx */,
-                                cctx->bmi2);
+                                ZSTD_CCtx_get_bmi2(cctx));
         FORWARD_IF_ERROR(compressedSeqsSize, "Compressing sequences of block failed");
         /* note: the spec forbids for any compressed block to be larger than maximum block size */
         if (compressedSeqsSize > cctx->blockSizeMax) compressedSeqsSize = 0;
