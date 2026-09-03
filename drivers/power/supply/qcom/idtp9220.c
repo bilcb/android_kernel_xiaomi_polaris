@@ -144,13 +144,22 @@ int idtp9220_read(struct idtp9220_device_info *di, u16 reg, u8 *val) {
 
 int idtp9220_write(struct idtp9220_device_info *di, u16 reg, u8 val) {
 	int rc = 0;
+	int retry_cnt = 0;
 
 	mutex_lock(&di->write_lock);
-	rc = regmap_write(di->regmap, reg, val);
-	if (rc < 0)
-		dev_err(di->dev, "[idt] idtp9220 write error: %d\n", rc);
-
+	while (retry_cnt < MAX_RETRY_COUNT &&
+			(rc = regmap_write(di->regmap, reg, val)) < 0) {
+		dev_err(di->dev, "[idt] idtp9220 write error: %d, retry: %d\n",
+			rc, retry_cnt);
+		usleep_range(10000, 11000);
+		retry_cnt++;
+	}
 	mutex_unlock(&di->write_lock);
+
+	if (rc < 0)
+		dev_err(di->dev, "[idt] idtp9220 write failed after %d retries: %d\n",
+			retry_cnt, rc);
+
 	return rc;
 }
 

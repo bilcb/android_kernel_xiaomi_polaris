@@ -18,6 +18,7 @@
 #define IDT_I2C_ADDR         0x61
 
 #define HSCLK                60000
+#define MAX_RETRY_COUNT      5
 
 #define ADJUST_METE_MV       35
 #define IDTP9220_DELAY       2000
