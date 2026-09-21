@@ -28,6 +28,7 @@ enum msm_ion_heap_types {
 
 enum ion_heap_ids {
 	INVALID_HEAP_ID = -1,
+	ION_QSECOM_LEGACY_HEAP_ID = 7, /* Legacy QSECOM heap id (mask 128) */
 	ION_CP_MM_HEAP_ID = 8,
 	ION_SECURE_HEAP_ID = 9,
 	ION_SECURE_DISPLAY_HEAP_ID = 10,
@@ -141,6 +142,7 @@ enum cp_mem_usage {
 #define ION_PIL1_HEAP_NAME  "pil_1"
 #define ION_PIL2_HEAP_NAME  "pil_2"
 #define ION_QSECOM_HEAP_NAME	"qsecom"
+#define ION_QSECOM_LEGACY_HEAP_NAME	"qsecom_legacy"
 #define ION_QSECOM_TA_HEAP_NAME	"qsecom_ta"
 #define ION_SECURE_HEAP_NAME	"secure_heap"
 #define ION_SECURE_DISPLAY_HEAP_NAME "secure_display"

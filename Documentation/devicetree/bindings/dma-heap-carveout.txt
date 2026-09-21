@@ -1,0 +1,30 @@
+DMA-BUF carveout heap
+======================
+
+A devicetree node with compatible "dma-heap-carveout" binds one
+reusable reserved-memory region and exposes it as a dma_heap
+(visible as /dev/dma_heap/<heap-name>). This allows reserved pools
+that were previously reachable only through ION to be allocated
+from generic dma_heap clients as well; both allocators share the
+same pool.
+
+Required properties:
+- compatible: must be "dma-heap-carveout".
+- memory-region: phandle to a reusable reserved-memory region
+  (shared-dma-pool) that has a kernel mapping.
+- heap-name: string used for the dma_heap name and device node.
+
+Optional properties:
+- uncached: if present the heap allocates writecombine (uncached)
+  memory; otherwise allocations are cached.
+
+Limitations (by design):
+- Regions with "no-map" are refused by the driver; they stay ION-only.
+- Secure regions must never be described here; they stay ION-only.
+
+Example:
+	dma_heap_adsp: dma-heap-adsp {
+		compatible = "dma-heap-carveout";
+		memory-region = <&adsp_mem>;
+		heap-name = "adsp";
+	};

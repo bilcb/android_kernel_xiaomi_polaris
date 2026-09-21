@@ -29,4 +29,44 @@ config SW_SYNC
 	  WARNING: improper use of this can result in deadlocking kernel
 	  drivers from userspace. Intended for test and debug only.
 
+config DMABUF_HEAPS
+	bool "DMA-BUF Userland Memory Heaps"
+	default y
+	select DMA_SHARED_BUFFER
+	help
+	  Enables the DMA-BUF heaps framework (/dev/dma_heap/*) backported
+	  from upstream. Co-exists with ION (/dev/ion): ION stays for legacy
+	  HALs (camera/display/audio), dma_heap serves newer userspace
+	  (libdmabufheap / GKI-style Gralloc).
+	  If unsure, say Y.
+
+config DMABUF_HEAPS_SYSTEM
+	bool "DMA-BUF System Heap (cached + uncached)"
+	depends on DMABUF_HEAPS
+	default y
+	help
+	  Provides "system" and "system-uncached" heaps backed by buddy
+	  allocator pages. This is the mandatory heap for Android
+	  libdmabufheap.
+
+config DMABUF_HEAPS_CMA
+	bool "DMA-BUF CMA Heap"
+	depends on DMABUF_HEAPS && DMA_CMA
+	default y
+	help
+	  Provides "cma" heap backed by the default contiguous memory
+	  area. Useful for large contiguous buffers.
+
+config DMABUF_HEAPS_CARVEOUT
+	bool "DMA-BUF Carveout Heap (reserved memory)"
+	depends on DMABUF_HEAPS && OF && OF_RESERVED_MEM
+	default y
+	help
+	  Provides dma_heaps backed by reusable reserved-memory regions.
+	  Each heap is described by a devicetree node with compatible
+	  "dma-heap-carveout", a memory-region phandle and a heap-name.
+	  Regions without a kernel mapping (no-map) and secure regions
+	  are intentionally not supported here; those stay ION-only.
+	  See Documentation/devicetree/bindings/dma-heap-carveout.txt.
+
 endmenu

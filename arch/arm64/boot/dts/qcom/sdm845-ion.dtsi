@@ -27,6 +27,18 @@
 			qcom,ion-heap-type = "DMA";
 		};
 
+		/*
+		 * QSECOM heap with the legacy heap id 7. Prebuilt
+		 * QSEECOMAPI blobs still request heap mask 128, which
+		 * matches no heap in the current numbering. It shares
+		 * the qseecom pool with heap@27.
+		 */
+		qcom,ion-heap@7 { /* QSECOM HEAP (LEGACY ID) */
+			reg = <7>;
+			memory-region = <&qseecom_mem>;
+			qcom,ion-heap-type = "DMA";
+		};
+
 		qcom,ion-heap@27 { /* QSEECOM HEAP */
 			reg = <27>;
 			memory-region = <&qseecom_mem>;

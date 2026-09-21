@@ -1,0 +1,27 @@
+/*
+ * DMA-BUF heaps backed by reusable reserved-memory regions.
+ *
+ * These nodes expose non-secure shared pools (also reachable via ION)
+ * as dma_heaps for generic dma_heap clients. Only regions with a
+ * kernel mapping are listed here:
+ * - no-map regions (e.g. qseecom fixed region) stay ION-only,
+ *   the driver refuses them.
+ * - secure regions (SPSS / secure display) must never be added here,
+ *   they stay ION-only by design.
+ */
+
+/ {
+	dma_heap_adsp: dma-heap-adsp {
+		compatible = "dma-heap-carveout";
+		memory-region = <&adsp_mem>;
+		heap-name = "adsp";
+	};
+
+	/* HLOS-shared TA buffer pool (has kernel mapping, not secure);
+	 * restrict via sepolicy (neverallow appdomain) if exposed widely. */
+	dma_heap_qseecom_ta: dma-heap-qseecom-ta {
+		compatible = "dma-heap-carveout";
+		memory-region = <&qseecom_ta_mem>;
+		heap-name = "qseecom_ta";
+	};
+};

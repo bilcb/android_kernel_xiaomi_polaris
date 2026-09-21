@@ -4222,6 +4222,7 @@
 #include "sdm845-coresight.dtsi"
 #include "msm-arm-smmu-sdm845.dtsi"
 #include "sdm845-ion.dtsi"
+#include "sdm845-dma-heaps.dtsi"
 #include "sdm845-smp2p.dtsi"
 #include "sdm845-camera.dtsi"
 #include "sdm845-bus.dtsi"
