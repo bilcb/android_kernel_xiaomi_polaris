@@ -210,6 +210,20 @@ static void sugov_get_util(unsigned long *util, unsigned long *max, int cpu)
 	*max = cfs_max;
 
 	*util = boosted_cpu_util(cpu, &loadcpu->walt_load);
+
+	/* utilization clamping: floor/ceiling from runnable tasks
+	 * (identity when unused) */
+	if (uclamp_is_used()) {
+		unsigned long min =
+			uclamp_rq_get(rq, UCLAMP_MIN);
+		unsigned long max =
+			uclamp_rq_get(rq, UCLAMP_MAX);
+
+		if (*util < min)
+			*util = min;
+		else if (*util > max)
+			*util = max;
+	}
 }
 
 static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time,

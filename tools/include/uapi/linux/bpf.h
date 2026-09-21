@@ -75,6 +75,11 @@ enum bpf_cmd {
 	BPF_OBJ_GET,
 	BPF_PROG_ATTACH,
 	BPF_PROG_DETACH,
+	BPF_PROG_TEST_RUN,
+	/* 11-15 reserved (PROG_GET_NEXT_ID, MAP_GET_NEXT_ID,
+	 * PROG_GET_FD_BY_ID, MAP_GET_FD_BY_ID, OBJ_GET_INFO_BY_FD):
+	 * not implemented on 4.9, numbering kept for 5.x tool compat */
+	BPF_PROG_QUERY = 16,
 };
 
 enum bpf_map_type {
@@ -87,6 +92,9 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_PERCPU_ARRAY,
 	BPF_MAP_TYPE_STACK_TRACE,
 	BPF_MAP_TYPE_CGROUP_ARRAY,
+	/* 9-26 reserved for 5.x map types (LRU, trie, sockmap, ...):
+	 * numbering kept for tool compat, unimplemented here */
+	BPF_MAP_TYPE_RINGBUF = 27,
 };
 
 enum bpf_prog_type {
@@ -99,21 +107,68 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_XDP,
 	BPF_PROG_TYPE_PERF_EVENT,
 	BPF_PROG_TYPE_CGROUP_SKB,
+	/* 9-14 reserved for 5.x prog types (sock, lwt, sockops, sk_skb):
+	 * numbering kept for tool compat, unimplemented here */
+	BPF_PROG_TYPE_CGROUP_DEVICE = 15,
 };
 
 enum bpf_attach_type {
 	BPF_CGROUP_INET_INGRESS,
 	BPF_CGROUP_INET_EGRESS,
+	/* 2-5 reserved for 5.x attach types (sock_create, sock_ops,
+	 * sk_skb parser/verdict): numbering kept for tool compat */
+	BPF_CGROUP_DEVICE = 6,
 	__MAX_BPF_ATTACH_TYPE
 };
 
 #define MAX_BPF_ATTACH_TYPE __MAX_BPF_ATTACH_TYPE
 
-/* If BPF_F_ALLOW_OVERRIDE flag is used in BPF_PROG_ATTACH command
- * to the given target_fd cgroup the descendent cgroup will be able to
- * override effective bpf program that was inherited from this cgroup
+/* cgroup-bpf attach flags used in BPF_PROG_ATTACH command
+ *
+ * NONE(default): No further bpf programs allowed in the subtree.
+ *
+ * BPF_F_ALLOW_OVERRIDE: If a sub-cgroup installs some bpf program,
+ * the program in this cgroup yields to sub-cgroup program.
+ *
+ * BPF_F_ALLOW_MULTI: If a sub-cgroup installs some bpf program,
+ * that cgroup program gets run in addition to the program in this cgroup.
+ *
+ * Only one program is allowed to be attached to a cgroup with
+ * NONE or BPF_F_ALLOW_OVERRIDE flag.
+ * Attaching another program on top of NONE or BPF_F_ALLOW_OVERRIDE will
+ * release old program and attach the new one. Attach flags has to match.
+ *
+ * Multiple programs are allowed to be attached to a cgroup with
+ * BPF_F_ALLOW_MULTI flag. They are executed in FIFO order
+ * (those that were attached first, run first)
+ * The programs of sub-cgroup are executed first, then programs of
+ * this cgroup and then programs of parent cgroup.
+ * When children program makes decision (like picking TCP CA or sock bind)
+ * parent program has a chance to override it.
+ *
+ * A cgroup with MULTI or OVERRIDE flag allows any attach flags in sub-cgroups.
+ * A cgroup with NONE doesn't allow any programs in sub-cgroups.
+ * Ex1:
+ * cgrp1 (MULTI progs A, B) ->
+ *    cgrp2 (OVERRIDE prog C) ->
+ *      cgrp3 (MULTI prog D) ->
+ *        cgrp4 (OVERRIDE prog E) ->
+ *          cgrp5 (NONE prog F)
+ * the event in cgrp5 triggers execution of F,D,A,B in that order.
+ * if prog F is detached, the execution is E,D,A,B
+ * if prog F and D are detached, the execution is E,A,B
+ * if prog F, E and D are detached, the execution is C,A,B
+ *
+ * All eligible programs are executed regardless of return code from
+ * earlier programs.
  */
 #define BPF_F_ALLOW_OVERRIDE	(1U << 0)
+#define BPF_F_ALLOW_MULTI	(1U << 1)
+
+/* Flags for BPF_PROG_QUERY.  Query effective (attached + inherited)
+ * programs instead of directly attached ones; attach_flags is
+ * reported as 0 in this mode. */
+#define BPF_F_QUERY_EFFECTIVE	(1U << 0)
 
 #define BPF_PSEUDO_MAP_FD	1
 
@@ -170,6 +225,30 @@ union bpf_attr {
 		__u32		attach_type;
 		__u32		attach_flags;
 	};
+
+	struct { /* named struct for BPF_PROG_QUERY (query view) */
+		__u32		target_fd;	/* container object to query */
+		__u32		attach_type;
+		__u32		query_flags;
+		__u32		attach_flags;
+		__aligned_u64	prog_ids;
+		__u32		prog_cnt;
+	} query;
+
+	struct { /* named struct for BPF_PROG_TEST_RUN (test view) */
+		__u32		prog_fd;
+		__u32		retval;
+		__u32		data_size_in;
+		__u32		data_size_out;
+		__aligned_u64	data_in;
+		__aligned_u64	data_out;
+		__u32		repeat;
+		__u32		duration;
+		__u32		ctx_size_in;
+		__u32		ctx_size_out;
+		__aligned_u64	ctx_in;
+		__aligned_u64	ctx_out;
+	} test;
 } __attribute__((aligned(8)));
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
@@ -516,8 +595,86 @@ enum bpf_func_id {
 	 */
 	BPF_FUNC_get_socket_uid,
 
+	/**
+	 * u64 bpf_get_current_cgroup_id(void)
+	 *     Get the current cgroup id based on the cgroup within which
+	 *     the current task is running.
+	 *     Return: A 64-bit integer containing the ID of the current
+	 *     task's default-hierarchy cgroup.
+	 *
+	 * Numbering matches upstream 5.15 (intervening helpers
+	 * unimplemented here).
+	 */
+	BPF_FUNC_get_current_cgroup_id = 80,
+
+	/**
+	 * u64 bpf_ktime_get_boot_ns(void)
+	 *     Return the time elapsed since system boot, in nanoseconds.
+	 *     On a device which is constantly suspending and resuming,
+	 *     CLOCK_MONOTONIC is not useful for tracking external
+	 *     network events; this mirrors bpf_ktime_get_ns() around
+	 *     CLOCK_BOOTTIME instead.  Required by Android netd packet
+	 *     tracing.
+	 *
+	 * Numbering matches upstream 5.15 (intervening helpers
+	 * unimplemented here).
+	 */
+	BPF_FUNC_ktime_get_boot_ns = 125,
+
+	/**
+	 * long bpf_ringbuf_output(void *map, void *data, u64 size, u64 flags)
+	 *     Copy @size bytes from @data into a ring buffer @map,
+	 *     reserving and submitting in one step (see BPF_RB_* flags).
+	 *     Return: 0 on success, or a negative error.
+	 *
+	 * Numbering matches upstream 5.15.
+	 */
+	BPF_FUNC_ringbuf_output = 130,
+
+	/**
+	 * void *bpf_ringbuf_reserve(void *map, u64 size, u64 flags)
+	 *     Reserve @size bytes of payload in a ring buffer @map.
+	 *     Return: Pointer to the reserved memory, or NULL on failure.
+	 */
+	BPF_FUNC_ringbuf_reserve = 131,
+
+	/**
+	 * void bpf_ringbuf_submit(void *data, u64 flags)
+	 *     Submit reserved ring buffer sample.
+	 */
+	BPF_FUNC_ringbuf_submit = 132,
+
+	/**
+	 * void bpf_ringbuf_discard(void *data, u64 flags)
+	 *     Discard reserved ring buffer sample.
+	 */
+	BPF_FUNC_ringbuf_discard = 133,
+
+	/**
+	 * u64 bpf_ringbuf_query(void *map, u64 flags)
+	 *     Query ring buffer state (see BPF_RB_* flags).
+	 *     Return: Requested state.
+	 */
+	BPF_FUNC_ringbuf_query = 134,
+
 	__BPF_FUNC_MAX_ID,
 };
+
+/* Flags for bpf_ringbuf_submit/discard */
+#define BPF_RB_NO_WAKEUP	(1ULL << 0)
+#define BPF_RB_FORCE_WAKEUP	(1ULL << 1)
+
+/* Flags for bpf_ringbuf_query */
+#define BPF_RB_AVAIL_DATA	0
+#define BPF_RB_RING_SIZE	1
+#define BPF_RB_CONS_POS		2
+#define BPF_RB_PROD_POS		3
+
+/* Ring buffer record header (kernel-private layout documented for
+ * consumers): 8 bytes, len + page offset; top bits are status */
+#define BPF_RINGBUF_HDR_SZ	8
+#define BPF_RINGBUF_BUSY_BIT	(1U << 31)
+#define BPF_RINGBUF_DISCARD_BIT	(1U << 30)
 
 /* All flags used by eBPF helper functions, placed here. */
 
@@ -609,6 +766,19 @@ enum xdp_action {
 struct xdp_md {
 	__u32 data;
 	__u32 data_end;
+};
+
+#define BPF_DEVCG_ACC_MKNOD	(1ULL << 0)
+#define BPF_DEVCG_ACC_READ	(1ULL << 1)
+#define BPF_DEVCG_ACC_WRITE	(1ULL << 2)
+
+#define BPF_DEVCG_DEV_BLOCK	(1ULL << 0)
+#define BPF_DEVCG_DEV_CHAR	(1ULL << 1)
+
+struct bpf_cgroup_dev_ctx {
+	__u32 access_type; /* (access << 16) | type */
+	__u32 major;
+	__u32 minor;
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */

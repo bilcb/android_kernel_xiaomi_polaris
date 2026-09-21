@@ -76,6 +76,7 @@ enum mem_cgroup_events_index {
 	MEMCG_HIGH,
 	MEMCG_MAX,
 	MEMCG_OOM,
+	MEMCG_OOM_KILL,
 	MEMCG_NR_EVENTS,
 };
 
@@ -209,6 +210,14 @@ struct mem_cgroup {
 	int	swappiness;
 	/* OOM-Killer disable */
 	int		oom_kill_disable;
+
+	/*
+	 * Treat the sub-tree as an indivisible memory consumer: if the
+	 * memory cgroup (or an ancestor) is selected as OOM victim, kill
+	 * all belonging tasks. Backported from upstream 4.19
+	 * (memory.oom.group).
+	 */
+	bool		oom_group;
 
 	/* handle for "memory.events" */
 	struct cgroup_file events_file;
@@ -485,6 +494,12 @@ static inline bool task_in_memcg_oom(struct task_struct *p)
 }
 
 bool mem_cgroup_oom_synchronize(bool wait);
+struct mem_cgroup *mem_cgroup_get_oom_group(struct mem_cgroup *memcg);
+
+static inline bool mem_cgroup_oom_group(struct mem_cgroup *memcg)
+{
+	return memcg->oom_group;
+}
 
 #ifdef CONFIG_MEMCG_SWAP
 extern int do_swap_account;
@@ -591,6 +606,28 @@ static inline void mem_cgroup_count_vm_event(struct mm_struct *mm,
 out:
 	rcu_read_unlock();
 }
+
+/*
+ * Count a per-mm event against the memcg owning @mm (selected via
+ * mm->owner, as in mm_match_cgroup()).  Used for OOM_KILL so that
+ * memory.events "oom_kill" counts processes killed by any kind of
+ * OOM killer, backported from upstream 8e675f7 ("mm/oom_kill: count
+ * global and memory cgroup oom kills").
+ */
+static inline void count_memcg_event_mm(struct mm_struct *mm,
+					enum mem_cgroup_events_index idx)
+{
+	struct mem_cgroup *memcg;
+
+	if (mem_cgroup_disabled() || !mm)
+		return;
+
+	rcu_read_lock();
+	memcg = mem_cgroup_from_task(rcu_dereference(mm->owner));
+	if (likely(memcg))
+		mem_cgroup_events(memcg, idx, 1);
+	rcu_read_unlock();
+}
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 void mem_cgroup_split_huge_fixup(struct page *head);
 #endif
@@ -610,6 +647,11 @@ static inline bool mem_cgroup_disabled(void)
 static inline void mem_cgroup_events(struct mem_cgroup *memcg,
 				     enum mem_cgroup_events_index idx,
 				     unsigned int nr)
+{
+}
+
+static inline void count_memcg_event_mm(struct mm_struct *mm,
+					enum mem_cgroup_events_index idx)
 {
 }
 
@@ -772,6 +814,11 @@ static inline bool task_in_memcg_oom(struct task_struct *p)
 }
 
 static inline bool mem_cgroup_oom_synchronize(bool wait)
+{
+	return false;
+}
+
+static inline bool mem_cgroup_oom_group(struct mem_cgroup *memcg)
 {
 	return false;
 }

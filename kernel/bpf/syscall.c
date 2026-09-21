@@ -16,6 +16,7 @@
 #include <linux/mmzone.h>
 #include <linux/anon_inodes.h>
 #include <linux/file.h>
+#include <linux/ktime.h>
 #include <linux/license.h>
 #include <linux/filter.h>
 #include <linux/version.h>
@@ -163,6 +164,27 @@ static int bpf_map_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+static int bpf_map_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	struct bpf_map *map = filp->private_data;
+
+	/* preserve historic behavior (no mmap op used to mean ENODEV) */
+	if (!map->ops->map_mmap)
+		return -ENODEV;
+	return map->ops->map_mmap(map, vma);
+}
+
+static unsigned int bpf_map_poll(struct file *filp,
+				 struct poll_table_struct *pts)
+{
+	struct bpf_map *map = filp->private_data;
+
+	/* preserve historic behavior (always ready without poll op) */
+	if (!map->ops->map_poll)
+		return DEFAULT_POLLMASK;
+	return map->ops->map_poll(map, filp, pts);
+}
+
 #ifdef CONFIG_PROC_FS
 static void bpf_map_show_fdinfo(struct seq_file *m, struct file *filp)
 {
@@ -207,6 +229,8 @@ const struct file_operations bpf_map_fops = {
 	.release	= bpf_map_release,
 	.read		= bpf_dummy_read,
 	.write		= bpf_dummy_write,
+	.mmap		= bpf_map_mmap,
+	.poll		= bpf_map_poll,
 };
 
 int bpf_map_new_fd(struct bpf_map *map, int flags)
@@ -954,6 +978,25 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 		cgroup_put(cgrp);
 		break;
 
+	case BPF_CGROUP_DEVICE:
+		prog = bpf_prog_get_type(attr->attach_bpf_fd,
+					 BPF_PROG_TYPE_CGROUP_DEVICE);
+		if (IS_ERR(prog))
+			return PTR_ERR(prog);
+
+		cgrp = cgroup_get_from_fd(attr->target_fd);
+		if (IS_ERR(cgrp)) {
+			bpf_prog_put(prog);
+			return PTR_ERR(cgrp);
+		}
+
+		ret = cgroup_bpf_attach(cgrp, prog, attr->attach_type,
+					attr->attach_flags);
+		if (ret)
+			bpf_prog_put(prog);
+		cgroup_put(cgrp);
+		break;
+
 	default:
 		return -EINVAL;
 	}
@@ -962,6 +1005,197 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 }
 
 #define BPF_PROG_DETACH_LAST_FIELD attach_type
+
+#define BPF_PROG_QUERY_LAST_FIELD query.prog_cnt
+
+#define BPF_PROG_TEST_RUN_LAST_FIELD test.ctx_out
+
+/*
+ * Test-run an eBPF program from userspace.  This tree supports
+ * BPF_PROG_TYPE_CGROUP_DEVICE programs (context-only, no packet
+ * data) and BPF_PROG_TYPE_SOCKET_FILTER programs (packet data in
+ * data_in, context must be empty): it lets userspace validate
+ * programs (e.g. the Android ringbuf test program) without
+ * attaching them.  Returns the program's return value and total
+ * duration in @retval/@duration.
+ */
+static int bpf_prog_test_run(const union bpf_attr *attr,
+			     union bpf_attr __user *uattr)
+{
+	struct bpf_prog *prog;
+	u32 repeat, retval = 0, duration = 0;
+	u64 start, end;
+	int i, ret = 0;
+
+	if (CHECK_ATTR(BPF_PROG_TEST_RUN))
+		return -EINVAL;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
+	prog = bpf_prog_get(attr->test.prog_fd);
+	if (IS_ERR(prog))
+		return PTR_ERR(prog);
+
+	if (prog->type == BPF_PROG_TYPE_CGROUP_DEVICE) {
+		struct bpf_cgroup_dev_ctx ctx;
+
+		if (attr->test.data_size_in || attr->test.data_size_out) {
+			ret = -EINVAL;
+			goto out_put;
+		}
+
+		if (attr->test.ctx_size_in != sizeof(ctx) ||
+		    (attr->test.ctx_size_out &&
+		     attr->test.ctx_size_out != sizeof(ctx))) {
+			ret = -EINVAL;
+			goto out_put;
+		}
+
+		if (copy_from_user(&ctx, u64_to_user_ptr(attr->test.ctx_in),
+				   sizeof(ctx))) {
+			ret = -EFAULT;
+			goto out_put;
+		}
+
+		repeat = attr->test.repeat ? attr->test.repeat : 1;
+		start = ktime_get_ns();
+		for (i = 0; i < repeat; i++) {
+			retval = BPF_PROG_RUN(prog, (void *)&ctx);
+			cond_resched();
+		}
+		end = ktime_get_ns();
+		duration = (u32)(end - start);
+
+		if (attr->test.ctx_size_out &&
+		    copy_to_user(u64_to_user_ptr(attr->test.ctx_out), &ctx,
+				 sizeof(ctx))) {
+			ret = -EFAULT;
+			goto out_put;
+		}
+	} else if (prog->type == BPF_PROG_TYPE_SOCKET_FILTER) {
+		struct sk_buff *skb;
+		u32 size = attr->test.data_size_in;
+		void *data;
+
+		if (attr->test.ctx_size_in || attr->test.ctx_size_out) {
+			ret = -EINVAL;
+			goto out_put;
+		}
+
+		if (!size || size > PAGE_SIZE) {
+			ret = -EINVAL;
+			goto out_put;
+		}
+
+		data = kmalloc(size, GFP_USER);
+		if (!data) {
+			ret = -ENOMEM;
+			goto out_put;
+		}
+
+		if (copy_from_user(data, u64_to_user_ptr(attr->test.data_in),
+				   size)) {
+			ret = -EFAULT;
+			goto out_free;
+		}
+
+		skb = alloc_skb(size, GFP_USER);
+		if (!skb) {
+			ret = -ENOMEM;
+			goto out_free;
+		}
+
+		memcpy(__skb_put(skb, size), data, size);
+
+		repeat = attr->test.repeat ? attr->test.repeat : 1;
+		start = ktime_get_ns();
+		for (i = 0; i < repeat; i++) {
+			retval = BPF_PROG_RUN(prog, skb);
+			cond_resched();
+		}
+		end = ktime_get_ns();
+		duration = (u32)(end - start);
+
+		if (attr->test.data_size_out) {
+			u32 out_size = min(attr->test.data_size_out, skb->len);
+
+			memcpy(data, skb->data, out_size);
+			if (copy_to_user(u64_to_user_ptr(attr->test.data_out),
+					 data, out_size)) {
+				ret = -EFAULT;
+				goto out_skb;
+			}
+			if (copy_to_user(&uattr->test.data_size_out,
+					 &out_size, sizeof(out_size))) {
+				ret = -EFAULT;
+				goto out_skb;
+			}
+		}
+
+		ret = 0;
+out_skb:
+		kfree_skb(skb);
+out_free:
+		kfree(data);
+		if (ret)
+			goto out_put;
+	} else {
+		ret = -EINVAL;
+		goto out_put;
+	}
+
+	if (copy_to_user(&uattr->test.retval, &retval, sizeof(retval)) ||
+	    copy_to_user(&uattr->test.duration, &duration,
+			 sizeof(duration)))
+		ret = -EFAULT;
+out_put:
+	bpf_prog_put(prog);
+	return ret;
+}
+
+static int bpf_prog_query(const union bpf_attr *attr,
+			  union bpf_attr __user *uattr)
+{
+	__u32 __user *prog_ids = u64_to_user_ptr(attr->query.prog_ids);
+	struct cgroup *cgrp;
+	u32 prog_cnt = attr->query.prog_cnt, attach_flags = 0;
+	int ret;
+
+	if (CHECK_ATTR(BPF_PROG_QUERY))
+		return -EINVAL;
+
+	/* NOTE: the query path consistently uses the named query view
+	 * (query.attach_type @4 etc.), matching modern upstream layout.
+	 * Do NOT mix with the attach-struct view: attach.attach_type
+	 * (@8) aliases query.query_flags (@8). */
+	switch (attr->query.attach_type) {
+	case BPF_CGROUP_INET_INGRESS:
+	case BPF_CGROUP_INET_EGRESS:
+	case BPF_CGROUP_DEVICE:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	cgrp = cgroup_get_from_fd(attr->query.target_fd);
+	if (IS_ERR(cgrp))
+		return PTR_ERR(cgrp);
+
+	ret = cgroup_bpf_query(cgrp, attr->query.attach_type,
+			       attr->query.query_flags,
+			       &attach_flags, prog_ids, &prog_cnt);
+	cgroup_put(cgrp);
+	if (ret)
+		return ret;
+
+	if (copy_to_user(&uattr->query.attach_flags, &attach_flags,
+			 sizeof(attach_flags)))
+		return -EFAULT;
+	if (copy_to_user(&uattr->query.prog_cnt, &prog_cnt, sizeof(prog_cnt)))
+		return -EFAULT;
+	return 0;
+}
 
 static int bpf_prog_detach(const union bpf_attr *attr)
 {
@@ -980,6 +1214,10 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 	case BPF_CGROUP_INET_INGRESS:
 	case BPF_CGROUP_INET_EGRESS:
 		ptype = BPF_PROG_TYPE_CGROUP_SKB;
+		break;
+
+	case BPF_CGROUP_DEVICE:
+		ptype = BPF_PROG_TYPE_CGROUP_DEVICE;
 		break;
 
 	default:
@@ -1080,6 +1318,12 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		break;
 	case BPF_PROG_DETACH:
 		err = bpf_prog_detach(&attr);
+		break;
+	case BPF_PROG_QUERY:
+		err = bpf_prog_query(&attr, uattr);
+		break;
+	case BPF_PROG_TEST_RUN:
+		err = bpf_prog_test_run(&attr, uattr);
 		break;
 #endif
 

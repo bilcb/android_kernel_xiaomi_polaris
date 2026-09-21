@@ -2138,6 +2138,26 @@ static u32 __bpf_skb_min_len(const struct sk_buff *skb)
 
 #define BPF_SKB_MAX_LEN SKB_MAX_ALLOC
 
+/* ANDROID: net: bpf: permit redirect from ingress L3 to egress L2
+ * devices at near max mtu.
+ *
+ * The mtu checks in the skb-grow helpers are against the input
+ * device, but in the forwarding case the packet is bpf_redirect()'ed
+ * to a different output device at a later point.  E.g. receiving on
+ * an L3 1500 mtu cellular interface, adding a 14 byte ethernet header
+ * and forwarding to an L3-mtu-1500 wifi device (L2 1514): the input
+ * device check wrongly rejects the header push.  At tc ingress there
+ * is no meaningful device mtu yet, so allow up to SKB_MAX_ALLOC and
+ * let the egress path (is_skb_forwardable/dev_queue_xmit) enforce
+ * the real limit.
+ */
+static u32 __bpf_skb_max_len(const struct sk_buff *skb)
+{
+	if (skb_at_tc_ingress(skb) || !skb->dev)
+		return SKB_MAX_ALLOC;
+	return skb->dev->mtu + skb->dev->hard_header_len;
+}
+
 static int bpf_skb_grow_rcsum(struct sk_buff *skb, unsigned int new_len)
 {
 	unsigned int old_len = skb->len;
@@ -2205,12 +2225,56 @@ static const struct bpf_func_proto bpf_skb_change_tail_proto = {
 	.arg3_type	= ARG_ANYTHING,
 };
 
+BPF_CALL_3(bpf_skb_change_head, struct sk_buff *, skb, u32, head_room,
+	   u64, flags)
+{
+	u32 max_len = __bpf_skb_max_len(skb);
+	u32 new_len = skb->len + head_room;
+	int ret;
+
+	if (unlikely(flags || (!skb_is_gso(skb) && new_len > max_len) ||
+		     new_len < skb->len))
+		return -EINVAL;
+
+	ret = skb_cow(skb, head_room);
+	if (likely(!ret)) {
+		/* Idea for this helper is that we currently only
+		 * allow to expand on mac header. This means that
+		 * skb->protocol network header, etc, stay as is.
+		 * Compared to bpf_skb_change_tail(), we're more
+		 * flexible due to not needing to linearize or
+		 * reset GSO. Intention for this helper is to be
+		 * used by an L3 skb that needs to push mac header
+		 * for redirection into L2 device.
+		 * (upstream 3a0af8fd61, plus the mac_len fix from
+		 * upstream 84316ca4).
+		 */
+		__skb_push(skb, head_room);
+		memset(skb->data, 0, head_room);
+		skb_reset_mac_header(skb);
+		skb_reset_mac_len(skb);
+	}
+
+	bpf_compute_data_end(skb);
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_skb_change_head_proto = {
+	.func		= bpf_skb_change_head,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX,
+	.arg2_type	= ARG_ANYTHING,
+	.arg3_type	= ARG_ANYTHING,
+};
+
 bool bpf_helper_changes_skb_data(void *func)
 {
 	if (func == bpf_skb_vlan_push ||
 	    func == bpf_skb_vlan_pop ||
 	    func == bpf_skb_store_bytes ||
 	    func == bpf_skb_change_proto ||
+	    func == bpf_skb_change_head ||
 	    func == bpf_skb_change_tail ||
 	    func == bpf_skb_pull_data ||
 	    func == bpf_clone_redirect ||
@@ -2594,6 +2658,8 @@ sk_filter_func_proto(enum bpf_func_id func_id)
 		return &bpf_tail_call_proto;
 	case BPF_FUNC_ktime_get_ns:
 		return &bpf_ktime_get_ns_proto;
+	case BPF_FUNC_ktime_get_boot_ns:
+		return &bpf_ktime_get_boot_ns_proto;
 	case BPF_FUNC_trace_printk:
 		if (capable(CAP_SYS_ADMIN))
 			return bpf_get_trace_printk_proto();
@@ -2601,6 +2667,16 @@ sk_filter_func_proto(enum bpf_func_id func_id)
 		return &bpf_get_socket_cookie_proto;
 	case BPF_FUNC_get_socket_uid:
 		return &bpf_get_socket_uid_proto;
+	case BPF_FUNC_ringbuf_reserve:
+		return &bpf_ringbuf_reserve_proto;
+	case BPF_FUNC_ringbuf_submit:
+		return &bpf_ringbuf_submit_proto;
+	case BPF_FUNC_ringbuf_discard:
+		return &bpf_ringbuf_discard_proto;
+	case BPF_FUNC_ringbuf_query:
+		return &bpf_ringbuf_query_proto;
+	case BPF_FUNC_ringbuf_output:
+		return &bpf_ringbuf_output_proto;
 	default:
 		return NULL;
 	}
@@ -2638,6 +2714,8 @@ tc_cls_act_func_proto(enum bpf_func_id func_id)
 		return &bpf_skb_change_type_proto;
 	case BPF_FUNC_skb_change_tail:
 		return &bpf_skb_change_tail_proto;
+	case BPF_FUNC_skb_change_head:
+		return &bpf_skb_change_head_proto;
 	case BPF_FUNC_skb_get_tunnel_key:
 		return &bpf_skb_get_tunnel_key_proto;
 	case BPF_FUNC_skb_set_tunnel_key:

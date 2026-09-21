@@ -15,6 +15,8 @@
 
 struct perf_event;
 struct bpf_map;
+struct vm_area_struct;
+struct poll_table_struct;
 
 /* map is generic key/value storage optionally accesible by eBPF programs */
 struct bpf_map_ops {
@@ -33,6 +35,11 @@ struct bpf_map_ops {
 	void *(*map_fd_get_ptr)(struct bpf_map *map, struct file *map_file,
 				int fd);
 	void (*map_fd_put_ptr)(void *ptr);
+
+	/* funcs called on map fd mmap/poll (e.g. ring buffer consumer) */
+	int (*map_mmap)(struct bpf_map *map, struct vm_area_struct *vma);
+	unsigned int (*map_poll)(struct bpf_map *map, struct file *filp,
+				 struct poll_table_struct *pts);
 };
 
 struct bpf_map {
@@ -92,6 +99,8 @@ enum bpf_arg_type {
 
 	ARG_PTR_TO_CTX,		/* pointer to context */
 	ARG_ANYTHING,		/* any (initialized) argument is ok */
+	ARG_PTR_TO_MEM,		/* pointer to reserved ringbuf memory */
+	ARG_CONST_ALLOC_SIZE_OR_ZERO, /* number of bytes to reserve */
 };
 
 /* type of values returned from helper functions */
@@ -99,6 +108,7 @@ enum bpf_return_type {
 	RET_INTEGER,			/* function returns integer */
 	RET_VOID,			/* function doesn't return anything */
 	RET_PTR_TO_MAP_VALUE_OR_NULL,	/* returns a pointer to map elem value or NULL */
+	RET_PTR_TO_MEM_OR_NULL,		/* returns reserved ringbuf mem or NULL */
 };
 
 /* eBPF function prototype used by verifier to allow BPF_CALLs from eBPF programs
@@ -158,6 +168,15 @@ enum bpf_reg_type {
 	 * map element.
 	 */
 	PTR_TO_MAP_VALUE_ADJ,
+
+	/* PTR_TO_MEM is a pointer to ring buffer reserved memory with
+	 * known size (mem_size).  Only direct accesses inside [ptr,
+	 * ptr + mem_size) are allowed, no pointer arithmetic.  OR_NULL
+	 * variant is produced by reserving helpers and narrowed by
+	 * NULL checks.  Backported for BPF ring buffer (5.8).
+	 */
+	PTR_TO_MEM,
+	PTR_TO_MEM_OR_NULL,
 };
 
 struct bpf_prog;
@@ -192,6 +211,8 @@ struct bpf_prog_aux {
 	struct bpf_map **used_maps;
 	struct bpf_prog *prog;
 	struct user_struct *user;
+	/* unique id, never reused (query support predates GET_FD_BY_ID) */
+	u64 id;
 #ifdef CONFIG_SECURITY
 	void *security;
 #endif
@@ -425,14 +446,21 @@ static inline bool unprivileged_ebpf_enabled(void)
 extern const struct bpf_func_proto bpf_map_lookup_elem_proto;
 extern const struct bpf_func_proto bpf_map_update_elem_proto;
 extern const struct bpf_func_proto bpf_map_delete_elem_proto;
+extern const struct bpf_func_proto bpf_ringbuf_reserve_proto;
+extern const struct bpf_func_proto bpf_ringbuf_submit_proto;
+extern const struct bpf_func_proto bpf_ringbuf_discard_proto;
+extern const struct bpf_func_proto bpf_ringbuf_query_proto;
+extern const struct bpf_func_proto bpf_ringbuf_output_proto;
 
 extern const struct bpf_func_proto bpf_get_prandom_u32_proto;
 extern const struct bpf_func_proto bpf_get_smp_processor_id_proto;
 extern const struct bpf_func_proto bpf_tail_call_proto;
 extern const struct bpf_func_proto bpf_ktime_get_ns_proto;
+extern const struct bpf_func_proto bpf_ktime_get_boot_ns_proto;
 extern const struct bpf_func_proto bpf_get_current_pid_tgid_proto;
 extern const struct bpf_func_proto bpf_get_current_uid_gid_proto;
 extern const struct bpf_func_proto bpf_get_current_comm_proto;
+extern const struct bpf_func_proto bpf_get_current_cgroup_id_proto;
 extern const struct bpf_func_proto bpf_skb_vlan_push_proto;
 extern const struct bpf_func_proto bpf_skb_vlan_pop_proto;
 extern const struct bpf_func_proto bpf_get_stackid_proto;

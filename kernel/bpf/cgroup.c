@@ -14,6 +14,9 @@
 #include <linux/slab.h>
 #include <linux/bpf.h>
 #include <linux/bpf-cgroup.h>
+#include <linux/capability.h>
+#include <linux/init.h>
+#include <linux/uaccess.h>
 #include <net/sock.h>
 
 DEFINE_STATIC_KEY_FALSE(cgroup_bpf_enabled_key);
@@ -424,3 +427,224 @@ int __cgroup_bpf_run_filter(struct sock *sk,
 	return ret == 1 ? 0 : -EPERM;
 }
 EXPORT_SYMBOL(__cgroup_bpf_run_filter);
+
+/*
+ * eBPF-based device controller for cgroup v2.  Backported from upstream
+ * 4.15 (commit ebc614f, "bpf, cgroup: implement eBPF-based device
+ * controller for cgroup v2").  4.9 adaptations:
+ * - prog type registered via bpf_register_prog_type() list (4.9 has no
+ *   bpf_types.h macro table)
+ * - is_valid_access() uses the 4.9 verifier signature (no aux info);
+ *   narrow (u16/u8) loads of access_type are explicitly allowed so that
+ *   masking it works with newer compilers (cf. upstream follow-up fix)
+ * - no check_return_code() in the 4.9 verifier; verdict semantics are
+ *   enforced at run time (0 -> -EPERM, non-zero -> allow)
+ */
+int __cgroup_bpf_check_dev_permission(short dev_type, u32 major, u32 minor,
+				      short access, enum bpf_attach_type type)
+{
+	struct cgroup *cgrp;
+	struct bpf_cgroup_dev_ctx ctx = {
+		.access_type = (access << 16) | dev_type,
+		.major = major,
+		.minor = minor,
+	};
+	int allow = 1;
+
+	rcu_read_lock();
+	cgrp = task_dfl_cgroup(current);
+	/* void * cast: 4.9 bpf_func is typed for sk_buff, same as
+	 * trace_call_bpf() passing void * ctx */
+	allow = BPF_PROG_RUN_ARRAY(cgrp->bpf.effective[type], (void *)&ctx,
+				   BPF_PROG_RUN);
+	rcu_read_unlock();
+
+	return !allow;
+}
+EXPORT_SYMBOL(__cgroup_bpf_check_dev_permission);
+
+BPF_CALL_0(bpf_get_current_task)
+{
+	return (u64)(long)current;
+}
+
+static const struct bpf_func_proto bpf_get_current_task_proto = {
+	.func		= bpf_get_current_task,
+	.gpl_only	= true,
+	.ret_type	= RET_INTEGER,
+};
+
+BPF_CALL_0(bpf_get_current_cgroup_id)
+{
+	struct cgroup *cgrp;
+	u64 id = 0;
+
+	rcu_read_lock();
+	cgrp = task_dfl_cgroup(current);
+	if (cgrp && cgrp->kn)
+		id = cgrp->kn->ino;
+	rcu_read_unlock();
+
+	return id;
+}
+
+const struct bpf_func_proto bpf_get_current_cgroup_id_proto = {
+	.func		= bpf_get_current_cgroup_id,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+};
+
+static const struct bpf_func_proto *
+cgroup_dev_func_proto(enum bpf_func_id func_id)
+{
+	switch (func_id) {
+	case BPF_FUNC_map_lookup_elem:
+		return &bpf_map_lookup_elem_proto;
+	case BPF_FUNC_map_update_elem:
+		return &bpf_map_update_elem_proto;
+	case BPF_FUNC_map_delete_elem:
+		return &bpf_map_delete_elem_proto;
+	case BPF_FUNC_get_current_uid_gid:
+		return &bpf_get_current_uid_gid_proto;
+	case BPF_FUNC_get_current_task:
+		return &bpf_get_current_task_proto;
+	case BPF_FUNC_get_current_cgroup_id:
+		return &bpf_get_current_cgroup_id_proto;
+	case BPF_FUNC_ringbuf_reserve:
+		return &bpf_ringbuf_reserve_proto;
+	case BPF_FUNC_ringbuf_submit:
+		return &bpf_ringbuf_submit_proto;
+	case BPF_FUNC_ringbuf_discard:
+		return &bpf_ringbuf_discard_proto;
+	case BPF_FUNC_ringbuf_query:
+		return &bpf_ringbuf_query_proto;
+	case BPF_FUNC_ringbuf_output:
+		return &bpf_ringbuf_output_proto;
+	case BPF_FUNC_trace_printk:
+		if (capable(CAP_SYS_ADMIN))
+			return bpf_get_trace_printk_proto();
+	default:
+		return NULL;
+	}
+}
+
+static bool cgroup_dev_is_valid_access(int off, int size,
+				       enum bpf_access_type type,
+				       enum bpf_reg_type *reg_type)
+{
+	if (type == BPF_WRITE)
+		return false;
+
+	if (off < 0 || off + size > sizeof(struct bpf_cgroup_dev_ctx))
+		return false;
+	/* The verifier guarantees that size > 0. */
+	if (off % size != 0)
+		return false;
+
+	switch (off) {
+	case offsetof(struct bpf_cgroup_dev_ctx, access_type):
+		/* allow narrow loads for masking access_type */
+		return size == sizeof(__u32) || size == sizeof(__u16) ||
+			size == sizeof(__u8);
+	default:
+		return size == sizeof(__u32);
+	}
+}
+
+static const struct bpf_verifier_ops cg_dev_verifier_ops = {
+	.get_func_proto		= cgroup_dev_func_proto,
+	.is_valid_access	= cgroup_dev_is_valid_access,
+};
+
+static struct bpf_prog_type_list cg_dev_type __read_mostly = {
+	.ops	= &cg_dev_verifier_ops,
+	.type	= BPF_PROG_TYPE_CGROUP_DEVICE,
+};
+
+static int __init register_cg_dev_ops(void)
+{
+	bpf_register_prog_type(&cg_dev_type);
+	return 0;
+}
+late_initcall(register_cg_dev_ops);
+
+/**
+ * __cgroup_bpf_query() - query attached programs of a cgroup
+ * @cgrp: the cgroup of interest
+ * @type: attach type to query
+ * @query_flags: must be 0 (reserved)
+ * @attach_flags: returns the attach flags of the cgroup
+ * @prog_ids: user buffer for program ids (may be NULL if @prog_cnt is 0)
+ * @prog_cnt: in: capacity of @prog_ids, out: total number of attached progs
+ *
+ * Must be called with cgroup_mutex held.  Fills ids up to the input
+ * capacity and always reports the total, so userspace can size its
+ * buffer with a prog_cnt == 0 probe first.
+ */
+int __cgroup_bpf_query(struct cgroup *cgrp, enum bpf_attach_type type,
+		       u32 query_flags, u32 *attach_flags, u32 __user *prog_ids,
+		       u32 *prog_cnt)
+{
+	struct list_head *progs = &cgrp->bpf.progs[type];
+	struct bpf_prog_list *pl;
+	u32 cnt = 0, total = 0;
+
+	if (query_flags & ~BPF_F_QUERY_EFFECTIVE)
+		return -EINVAL;
+
+	/* effective mode: report inherited programs actually in effect;
+	 * attach_flags is always 0 in this mode (cf. upstream).
+	 * IDs are collected under RCU into a kernel buffer first:
+	 * copy_to_user() may fault and must not run under rcu_read_lock().
+	 */
+	if (query_flags & BPF_F_QUERY_EFFECTIVE) {
+		struct bpf_prog_array *array;
+		struct bpf_prog **prog;
+		u32 *ids, cnt = 0;
+
+		ids = kcalloc(*prog_cnt, sizeof(*ids),
+			      GFP_KERNEL | __GFP_NOWARN);
+		if (*prog_cnt && !ids)
+			return -ENOMEM;
+
+		rcu_read_lock();
+		array = rcu_dereference(cgrp->bpf.effective[type]);
+		if (array) {
+			for (prog = array->progs; *prog; prog++) {
+				total++;
+				if (cnt >= *prog_cnt)
+					continue;
+				ids[cnt++] = (u32)(*prog)->aux->id;
+			}
+		}
+		rcu_read_unlock();
+
+		if (cnt && copy_to_user(prog_ids, ids, cnt * sizeof(*ids))) {
+			kfree(ids);
+			return -EFAULT;
+		}
+		kfree(ids);
+
+		*attach_flags = 0;
+		*prog_cnt = total;
+		return 0;
+	}
+
+	list_for_each_entry(pl, progs, node) {
+		u32 id;
+
+		if (!pl->prog)
+			continue;
+		total++;
+		if (cnt >= *prog_cnt)
+			continue;
+		id = (u32)pl->prog->aux->id;
+		if (copy_to_user(&prog_ids[cnt], &id, sizeof(id)))
+			return -EFAULT;
+		cnt++;
+	}
+
+	*attach_flags = cgrp->bpf.flags[type];
+	*prog_cnt = total;
+	return 0;
+}

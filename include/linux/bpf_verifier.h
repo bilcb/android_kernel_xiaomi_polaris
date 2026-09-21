@@ -34,6 +34,9 @@ struct bpf_reg_state {
 		struct bpf_map *map_ptr;
 	};
 	u32 id;
+	/* valid when type == PTR_TO_MEM | PTR_TO_MEM_OR_NULL: size of the
+	 * reserved ring buffer record accessible from this pointer */
+	u32 mem_size;
 	/* Used to determine if any memory access using this register will
 	 * result in a bad access. These two fields must be last.
 	 * See states_equal()

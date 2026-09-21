@@ -54,6 +54,16 @@ int __cgroup_bpf_run_filter(struct sock *sk,
 			    struct sk_buff *skb,
 			    enum bpf_attach_type type);
 
+int __cgroup_bpf_check_dev_permission(short dev_type, u32 major, u32 minor,
+				      short access, enum bpf_attach_type type);
+
+int cgroup_bpf_query(struct cgroup *cgrp, enum bpf_attach_type type,
+		     u32 query_flags, u32 *attach_flags, u32 __user *prog_ids,
+		     u32 *prog_cnt);
+int __cgroup_bpf_query(struct cgroup *cgrp, enum bpf_attach_type type,
+		       u32 query_flags, u32 *attach_flags,
+		       u32 __user *prog_ids, u32 *prog_cnt);
+
 /* Wrappers for __cgroup_bpf_run_filter() guarded by cgroup_bpf_enabled. */
 #define BPF_CGROUP_RUN_PROG_INET_INGRESS(sk,skb)			\
 ({									\
@@ -77,6 +87,20 @@ int __cgroup_bpf_run_filter(struct sock *sk,
 	__ret;								\
 })
 
+/* Wrapper for __cgroup_bpf_check_dev_permission() guarded by
+ * cgroup_bpf_enabled.  Returns 0 when allowed, 1 when denied.
+ */
+#define BPF_CGROUP_RUN_PROG_DEVICE_CGROUP(type, major, minor, access)	      \
+({									      \
+	int __ret = 0;							      \
+	if (cgroup_bpf_enabled)						      \
+		__ret = __cgroup_bpf_check_dev_permission(type, major, minor, \
+							  access,	      \
+							  BPF_CGROUP_DEVICE); \
+									      \
+	__ret;								      \
+})
+
 #else
 
 struct cgroup_bpf {};
@@ -85,6 +109,7 @@ static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
 
 #define BPF_CGROUP_RUN_PROG_INET_INGRESS(sk,skb) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk,skb) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_DEVICE_CGROUP(type,major,minor,access) ({ 0; })
 
 #endif /* CONFIG_CGROUP_BPF */
 

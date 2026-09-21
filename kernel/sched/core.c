@@ -758,6 +758,10 @@ static void set_load_weight(struct task_struct *p)
 	load->inv_weight = sched_prio_to_wmult[prio];
 }
 
+/* uclamp rq tracking (defined below, after task_group infra) */
+static inline void uclamp_rq_inc(struct rq *rq, struct task_struct *p);
+static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p);
+
 static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	update_rq_clock(rq);
@@ -766,6 +770,7 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 		psi_enqueue(p, flags & ENQUEUE_WAKEUP);
 	}
 	p->sched_class->enqueue_task(rq, p, flags);
+	uclamp_rq_inc(rq, p);
 	walt_update_last_enqueue(p);
 	trace_sched_enq_deq_task(p, 1, cpumask_bits(&p->cpus_allowed)[0]);
 }
@@ -778,6 +783,7 @@ static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 		psi_dequeue(p, flags & DEQUEUE_SLEEP);
 	}
 	p->sched_class->dequeue_task(rq, p, flags);
+	uclamp_rq_dec(rq, p);
 	trace_sched_enq_deq_task(p, 0, cpumask_bits(&p->cpus_allowed)[0]);
 }
 
@@ -2314,9 +2320,30 @@ void __dl_clear_params(struct task_struct *p)
  * p is forked by current.
  *
  * __sched_fork() is basic setup used by init_idle() too:
+ * uclamp state is explicitly initialized here so idle tasks never
+ * depend on memcpy ordering (sched_fork() overwrites with inherited
+ * values for normal forks below).
  */
 static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 {
+	/* Defaults: MIN=0 (bucket 0), MAX=SCHED_CAPACITY_SCALE (last bucket).
+	 * Literals used here because uclamp_none()/uclamp_bucket_id() are
+	 * defined further below; sched_fork() overwrites with inherited
+	 * values for normal forks.
+	 */
+	p->uclamp_req[UCLAMP_MIN].value = 0;
+	p->uclamp_req[UCLAMP_MIN].bucket_id = 0;
+	p->uclamp_req[UCLAMP_MIN].active = false;
+	p->uclamp_req[UCLAMP_MAX].value = SCHED_CAPACITY_SCALE;
+	p->uclamp_req[UCLAMP_MAX].bucket_id = UCLAMP_BUCKETS - 1;
+	p->uclamp_req[UCLAMP_MAX].active = false;
+	p->uclamp[UCLAMP_MIN].value = 0;
+	p->uclamp[UCLAMP_MIN].bucket_id = 0;
+	p->uclamp[UCLAMP_MIN].active = false;
+	p->uclamp[UCLAMP_MAX].value = SCHED_CAPACITY_SCALE;
+	p->uclamp[UCLAMP_MAX].bucket_id = UCLAMP_BUCKETS - 1;
+	p->uclamp[UCLAMP_MAX].active = false;
+
 	p->on_rq			= 0;
 
 	p->se.on_rq			= 0;
@@ -2489,8 +2516,259 @@ static inline void init_schedstats(void) {}
 #endif /* CONFIG_SCHEDSTATS */
 
 /*
- * fork()/clone()-time setup:
+ * __sched_fork() is basic setup used by init_idle() too:
  */
+DEFINE_STATIC_KEY_FALSE(sched_uclamp_used);
+
+/* Integer rounded range for each bucket */
+#define UCLAMP_BUCKET_DELTA DIV_ROUND_CLOSEST(SCHED_CAPACITY_SCALE, UCLAMP_BUCKETS)
+
+#define for_each_clamp_id(clamp_id) \
+	for ((clamp_id) = 0; (clamp_id) < UCLAMP_CNT; (clamp_id)++)
+
+static inline unsigned int uclamp_bucket_id(unsigned int clamp_value)
+{
+	return min_t(unsigned int, clamp_value / UCLAMP_BUCKET_DELTA,
+		     UCLAMP_BUCKETS - 1);
+}
+
+static inline unsigned int uclamp_none(enum uclamp_id clamp_id)
+{
+	if (clamp_id == UCLAMP_MIN)
+		return 0;
+	return SCHED_CAPACITY_SCALE;
+}
+
+/*
+ * cgroup uclamp files use percentages with two decimal digits, e.g.
+ * 12.34 for 12.34%, plus the "max" alias for 100%.  Matches upstream
+ * (capacity_from_percent + uclamp_pct[] rounding tracking).
+ */
+#define UCLAMP_PERCENT_SHIFT 2
+#define UCLAMP_PERCENT_SCALE (100 * 100)
+
+static inline void uclamp_enable(void)
+{
+	if (!uclamp_is_used())
+		static_branch_enable(&sched_uclamp_used);
+}
+
+/*
+ * Effective clamp of a task: task request constrained by the
+ * task_group hierarchy (max of mins, min of maxes).  Group defaults
+ * {0, 1024} are neutral, so no user_defined flags are needed.
+ */
+unsigned int uclamp_eff_value(struct task_struct *p,
+			      enum uclamp_id clamp_id)
+{
+#ifdef CONFIG_CGROUP_SCHED
+	struct cgroup_subsys_state *css;
+#endif
+	unsigned int eff;
+
+	if (clamp_id == UCLAMP_MIN) {
+		eff = READ_ONCE(p->uclamp_req[UCLAMP_MIN].value);
+#ifdef CONFIG_CGROUP_SCHED
+		rcu_read_lock();
+		css = task_css(p, cpu_cgrp_id);
+		for (; css; css = css->parent) {
+			struct task_group *tg = css_tg(css);
+
+			eff = max(eff, READ_ONCE(tg->uclamp[UCLAMP_MIN]));
+		}
+		rcu_read_unlock();
+#endif
+	} else {
+		eff = READ_ONCE(p->uclamp_req[UCLAMP_MAX].value);
+#ifdef CONFIG_CGROUP_SCHED
+		rcu_read_lock();
+		css = task_css(p, cpu_cgrp_id);
+		for (; css; css = css->parent) {
+			struct task_group *tg = css_tg(css);
+
+			eff = min(eff, READ_ONCE(tg->uclamp[UCLAMP_MAX]));
+		}
+		rcu_read_unlock();
+#endif
+	}
+
+	return eff;
+}
+
+static inline unsigned int uclamp_rq_max_value(struct rq *rq,
+					       unsigned int clamp_id)
+{
+	struct uclamp_bucket *bucket = rq->uclamp[clamp_id].bucket;
+	int bucket_id = UCLAMP_BUCKETS - 1;
+
+	/* both min and max clamps are max aggregated */
+	for (; bucket_id >= 0; bucket_id--) {
+		if (!bucket[bucket_id].tasks)
+			continue;
+		return bucket[bucket_id].value;
+	}
+
+	/* No tasks -- default clamp values */
+	return uclamp_none(clamp_id);
+}
+
+unsigned int uclamp_rq_get(struct rq *rq, unsigned int clamp_id)
+{
+	return READ_ONCE(rq->uclamp[clamp_id].value);
+}
+
+static inline void uclamp_rq_set(struct rq *rq, unsigned int clamp_id,
+				 unsigned int value)
+{
+	WRITE_ONCE(rq->uclamp[clamp_id].value, value);
+}
+
+static inline void uclamp_rq_inc_id(struct rq *rq, struct task_struct *p,
+				    unsigned int clamp_id)
+{
+	struct uclamp_rq *uc_rq = &rq->uclamp[clamp_id];
+	struct uclamp_se *uc_se = &p->uclamp[clamp_id];
+	struct uclamp_bucket *bucket = &uc_rq->bucket[uc_se->bucket_id];
+
+	lockdep_assert_held(&rq->lock);
+
+	bucket->tasks++;
+	if (uc_se->value > bucket->value)
+		bucket->value = uc_se->value;
+	if (uc_se->value > uclamp_rq_get(rq, clamp_id))
+		uclamp_rq_set(rq, clamp_id, uc_se->value);
+}
+
+static inline void uclamp_rq_dec_id(struct rq *rq, struct task_struct *p,
+				    unsigned int clamp_id)
+{
+	struct uclamp_rq *uc_rq = &rq->uclamp[clamp_id];
+	struct uclamp_se *uc_se = &p->uclamp[clamp_id];
+	struct uclamp_bucket *bucket = &uc_rq->bucket[uc_se->bucket_id];
+	unsigned int rq_clamp;
+
+	lockdep_assert_held(&rq->lock);
+
+	/* never tracked (e.g. enqueued before first use): nothing to do */
+	if (unlikely(!uc_se->active))
+		return;
+
+	WARN_ON_ONCE(!bucket->tasks);
+	if (likely(bucket->tasks))
+		bucket->tasks--;
+	uc_se->active = false;
+
+	if (likely(bucket->tasks))
+		return;
+
+	rq_clamp = uclamp_rq_get(rq, clamp_id);
+	WARN_ON_ONCE(bucket->value > rq_clamp);
+	if (bucket->value >= rq_clamp) {
+		bucket->value = 0;
+		uclamp_rq_set(rq, clamp_id,
+			      uclamp_rq_max_value(rq, clamp_id));
+	}
+}
+
+/* reconcile a task's rq tracking with its current effective clamps */
+static inline void uclamp_update_active_task(struct rq *rq,
+					     struct task_struct *p)
+{
+	unsigned int clamp_id;
+
+	lockdep_assert_held(&rq->lock);
+
+	if (p->sched_class != &fair_sched_class)
+		return;
+
+	for_each_clamp_id(clamp_id) {
+		struct uclamp_se *uc_se = &p->uclamp[clamp_id];
+		unsigned int eff = uclamp_eff_value(p, clamp_id);
+
+		if (uc_se->active && uc_se->value == eff)
+			continue;
+		if (uc_se->active)
+			uclamp_rq_dec_id(rq, p, clamp_id);
+		uc_se->value = eff;
+		uc_se->bucket_id = uclamp_bucket_id(eff);
+		uclamp_rq_inc_id(rq, p, clamp_id);
+		uc_se->active = true;
+	}
+}
+
+static inline void uclamp_rq_inc(struct rq *rq, struct task_struct *p)
+{
+	unsigned int clamp_id;
+
+	if (!uclamp_is_used())
+		return;
+
+	/* fair tasks only (matches upstream scope) */
+	if (p->sched_class != &fair_sched_class)
+		return;
+
+	for_each_clamp_id(clamp_id) {
+		struct uclamp_se *uc_se = &p->uclamp[clamp_id];
+
+		uc_se->value = uclamp_eff_value(p, clamp_id);
+		uc_se->bucket_id = uclamp_bucket_id(uc_se->value);
+		uclamp_rq_inc_id(rq, p, clamp_id);
+		uc_se->active = true;
+	}
+}
+
+static inline void uclamp_rq_dec(struct rq *rq, struct task_struct *p)
+{
+	unsigned int clamp_id;
+
+	if (!uclamp_is_used())
+		return;
+
+	if (p->sched_class != &fair_sched_class)
+		return;
+
+	for_each_clamp_id(clamp_id)
+		uclamp_rq_dec_id(rq, p, clamp_id);
+}
+
+/*
+ * Refresh rq tracking for a task whose clamps may have changed
+ * (sched_setattr, cgroup file write).  Safe against enqueues,
+ * dequeues and migrations via task_rq_lock().
+ */
+static void uclamp_update_active(struct task_struct *p)
+{
+	struct rq_flags rf;
+	struct rq *rq;
+
+	rq = task_rq_lock(p, &rf);
+	if (uclamp_is_used() && task_on_rq_queued(p))
+		uclamp_update_active_task(rq, p);
+	task_rq_unlock(rq, p, &rf);
+}
+
+static void __init init_uclamp(void)
+{
+	unsigned int clamp_id;
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		struct rq *rq = cpu_rq(cpu);
+
+		memset(&rq->uclamp, 0, sizeof(rq->uclamp));
+		uclamp_rq_set(rq, UCLAMP_MAX, SCHED_CAPACITY_SCALE);
+	}
+
+	for_each_clamp_id(clamp_id) {
+		init_task.uclamp_req[clamp_id].value =
+			uclamp_none(clamp_id);
+		init_task.uclamp[clamp_id].value =
+			uclamp_none(clamp_id);
+		init_task.uclamp[clamp_id].bucket_id =
+			uclamp_bucket_id(uclamp_none(clamp_id));
+	}
+}
+
 int sched_fork(unsigned long clone_flags, struct task_struct *p)
 {
 	unsigned long flags;
@@ -2511,6 +2789,38 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	 * Make sure we do not leak PI boosting priority to the child.
 	 */
 	p->prio = current->normal_prio;
+
+	/*
+	 * Inherit utilization clamps (a restricted parent can't be
+	 * escaped by forking); cgroup constraints apply on top.
+	 * Not yet contributing to any rq: active flags stay clear and
+	 * effective state is reset to defaults (recomputed on enqueue).
+	 */
+	p->uclamp_req[UCLAMP_MIN].value = current->uclamp_req[UCLAMP_MIN].value;
+	p->uclamp_req[UCLAMP_MIN].bucket_id =
+		uclamp_bucket_id(p->uclamp_req[UCLAMP_MIN].value);
+	p->uclamp_req[UCLAMP_MIN].active = false;
+	p->uclamp_req[UCLAMP_MAX].value = current->uclamp_req[UCLAMP_MAX].value;
+	p->uclamp_req[UCLAMP_MAX].bucket_id =
+		uclamp_bucket_id(p->uclamp_req[UCLAMP_MAX].value);
+	p->uclamp_req[UCLAMP_MAX].active = false;
+	p->uclamp[UCLAMP_MIN].value = uclamp_none(UCLAMP_MIN);
+	p->uclamp[UCLAMP_MIN].bucket_id =
+		uclamp_bucket_id(uclamp_none(UCLAMP_MIN));
+	p->uclamp[UCLAMP_MIN].active = false;
+	p->uclamp[UCLAMP_MAX].value = uclamp_none(UCLAMP_MAX);
+	p->uclamp[UCLAMP_MAX].bucket_id =
+		uclamp_bucket_id(uclamp_none(UCLAMP_MAX));
+	p->uclamp[UCLAMP_MAX].active = false;
+	if (unlikely(p->sched_reset_on_fork)) {
+		/* RESET_ON_FORK: child starts from default clamps (a87498a) */
+		p->uclamp_req[UCLAMP_MIN].value = uclamp_none(UCLAMP_MIN);
+		p->uclamp_req[UCLAMP_MIN].bucket_id =
+			uclamp_bucket_id(uclamp_none(UCLAMP_MIN));
+		p->uclamp_req[UCLAMP_MAX].value = uclamp_none(UCLAMP_MAX);
+		p->uclamp_req[UCLAMP_MAX].bucket_id =
+			uclamp_bucket_id(uclamp_none(UCLAMP_MAX));
+	}
 
 	/*
 	 * Revert to default priority/policy on fork if requested.
@@ -4342,7 +4652,9 @@ recheck:
 			return -EINVAL;
 	}
 
-	if (attr->sched_flags & ~(SCHED_FLAG_RESET_ON_FORK))
+	if (attr->sched_flags & ~(SCHED_FLAG_RESET_ON_FORK |
+				  SCHED_FLAG_UTIL_CLAMP_MIN |
+				  SCHED_FLAG_UTIL_CLAMP_MAX))
 		return -EINVAL;
 
 	/*
@@ -4412,6 +4724,48 @@ recheck:
 		retval = security_task_setscheduler(p);
 		if (retval)
 			return retval;
+	}
+
+	/* utilization clamps: validated and applied independently of
+	 * policy changes (same-owner, like nice; hierarchy still bounds).
+	 * A value of -1 resets that clamp to the system default. */
+	if (attr->sched_flags & (SCHED_FLAG_UTIL_CLAMP_MIN |
+				 SCHED_FLAG_UTIL_CLAMP_MAX)) {
+		unsigned int min = READ_ONCE(p->uclamp_req[UCLAMP_MIN].value);
+		unsigned int max = READ_ONCE(p->uclamp_req[UCLAMP_MAX].value);
+
+		if (attr->sched_flags & SCHED_FLAG_UTIL_CLAMP_MIN) {
+			if (attr->sched_util_min == (u32)-1)
+				min = uclamp_none(UCLAMP_MIN);
+			else {
+				if (attr->sched_util_min > SCHED_CAPACITY_SCALE)
+					return -EINVAL;
+				min = attr->sched_util_min;
+			}
+		}
+		if (attr->sched_flags & SCHED_FLAG_UTIL_CLAMP_MAX) {
+			if (attr->sched_util_max == (u32)-1)
+				max = uclamp_none(UCLAMP_MAX);
+			else {
+				if (attr->sched_util_max > SCHED_CAPACITY_SCALE)
+					return -EINVAL;
+				max = attr->sched_util_max;
+			}
+		}
+		if (min > max)
+			return -EINVAL;
+
+		/* Paired with READ_ONCE() in uclamp_eff_value(); the two
+		 * stores are validated as a pair above so the final state
+		 * is always consistent. A concurrent reader may briefly
+		 * observe new_min/old_max, which the next
+		 * uclamp_update_active() reconciles.
+		 */
+		WRITE_ONCE(p->uclamp_req[UCLAMP_MIN].value, min);
+		WRITE_ONCE(p->uclamp_req[UCLAMP_MAX].value, max);
+		if (min != 0 || max != SCHED_CAPACITY_SCALE)
+			uclamp_enable();
+		uclamp_update_active(p);
 	}
 
 	/*
@@ -4915,6 +5269,9 @@ SYSCALL_DEFINE4(sched_getattr, pid_t, pid, struct sched_attr __user *, uattr,
 		attr.sched_priority = p->rt_priority;
 	else
 		attr.sched_nice = task_nice(p);
+
+	attr.sched_util_min = p->uclamp_req[UCLAMP_MIN].value;
+	attr.sched_util_max = p->uclamp_req[UCLAMP_MAX].value;
 
 	rcu_read_unlock();
 
@@ -8290,8 +8647,14 @@ void __init sched_init(void)
 	list_add(&root_task_group.list, &task_groups);
 	INIT_LIST_HEAD(&root_task_group.children);
 	INIT_LIST_HEAD(&root_task_group.siblings);
+	root_task_group.uclamp[UCLAMP_MIN] = 0;
+	root_task_group.uclamp[UCLAMP_MAX] = SCHED_CAPACITY_SCALE;
+	root_task_group.uclamp_pct[UCLAMP_MIN] = 0;
+	root_task_group.uclamp_pct[UCLAMP_MAX] = UCLAMP_PERCENT_SCALE;
 	autogroup_init(&init_task);
 #endif /* CONFIG_CGROUP_SCHED */
+
+	init_uclamp();
 
 	for_each_possible_cpu(i) {
 		struct rq *rq;
@@ -8598,6 +8961,12 @@ struct task_group *sched_create_group(struct task_group *parent)
 	tg = kmem_cache_alloc(task_group_cache, GFP_KERNEL | __GFP_ZERO);
 	if (!tg)
 		return ERR_PTR(-ENOMEM);
+
+	/* no clamping by default (zeroed max would pin everything to 0) */
+	tg->uclamp[UCLAMP_MIN] = 0;
+	tg->uclamp[UCLAMP_MAX] = SCHED_CAPACITY_SCALE;
+	tg->uclamp_pct[UCLAMP_MIN] = 0;
+	tg->uclamp_pct[UCLAMP_MAX] = UCLAMP_PERCENT_SCALE;
 
 	if (!alloc_fair_sched_group(tg, parent))
 		goto err;
@@ -9439,6 +9808,7 @@ static int tg_cfs_schedulable_down(struct task_group *tg, void *data)
 	struct cfs_schedulable_data *d = data;
 	struct cfs_bandwidth *cfs_b = &tg->cfs_bandwidth;
 	s64 quota = 0, parent_quota = -1;
+	extern struct cgroup_subsys cpu_cgrp_subsys;
 
 	if (!tg->parent) {
 		quota = RUNTIME_INF;
@@ -9449,13 +9819,20 @@ static int tg_cfs_schedulable_down(struct task_group *tg, void *data)
 		parent_quota = parent_b->hierarchical_quota;
 
 		/*
-		 * ensure max(child_quota) <= parent_quota, inherit when no
-		 * limit is set
+		 * Ensure max(child_quota) <= parent_quota.  On cgroup2,
+		 * always take the min.  On cgroup1, only inherit when no
+		 * limit is set.  This allows delegation on v2: a descendant
+		 * must not be able to restrict what its ancestors configure.
 		 */
-		if (quota == RUNTIME_INF)
-			quota = parent_quota;
-		else if (parent_quota != RUNTIME_INF && quota > parent_quota)
-			return -EINVAL;
+		if (cgroup_subsys_on_dfl(cpu_cgrp_subsys)) {
+			quota = min(quota, parent_quota);
+		} else {
+			if (quota == RUNTIME_INF)
+				quota = parent_quota;
+			else if (parent_quota != RUNTIME_INF &&
+				 quota > parent_quota)
+				return -EINVAL;
+		}
 	}
 	cfs_b->hierarchical_quota = quota;
 
@@ -9523,7 +9900,7 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
 }
 #endif /* CONFIG_RT_GROUP_SCHED */
 
-static struct cftype cpu_files[] = {
+static struct cftype cpu_legacy_files[] = {
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	{
 		.name = "shares",
@@ -9562,6 +9939,357 @@ static struct cftype cpu_files[] = {
 	{ }	/* terminate */
 };
 
+/*
+ * cgroup2 cpu controller interface, backported from upstream 4.15
+ * (commit 0d5936344f30). cpu.stat reports usage_usec/user_usec/
+ * system_usec via the backported basic CPU accounting plus CFS
+ * bandwidth stats. No threaded mode on 4.9.
+ */
+static int cpu_stat_show(struct seq_file *sf, void *v)
+{
+	/* basic usage stats (usage_usec/user_usec/system_usec) */
+	cgroup_stat_show_cputime(sf, "");
+#ifdef CONFIG_CFS_BANDWIDTH
+	{
+		struct task_group *tg = css_tg(seq_css(sf));
+		struct cfs_bandwidth *cfs_b = &tg->cfs_bandwidth;
+		u64 throttled_usec;
+
+		throttled_usec = cfs_b->throttled_time;
+		do_div(throttled_usec, NSEC_PER_USEC);
+
+		seq_printf(sf, "nr_periods %d\n"
+			   "nr_throttled %d\n"
+			   "throttled_usec %llu\n",
+			   cfs_b->nr_periods, cfs_b->nr_throttled,
+			   throttled_usec);
+	}
+#endif
+	return 0;
+}
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+static u64 cpu_weight_read_u64(struct cgroup_subsys_state *css,
+			       struct cftype *cft)
+{
+	struct task_group *tg = css_tg(css);
+	u64 weight = scale_load_down(tg->shares);
+
+	return DIV_ROUND_CLOSEST_ULL(weight * CGROUP_WEIGHT_DFL, 1024);
+}
+
+static int cpu_weight_write_u64(struct cgroup_subsys_state *css,
+				struct cftype *cft, u64 weight)
+{
+	/*
+	 * cgroup weight knobs should use the common MIN, DFL and MAX
+	 * values which are 1, 100 and 10000 respectively.  While it loses
+	 * a bit of range on both ends, it maps pretty well onto the shares
+	 * value used by scheduler and the round-trip conversions preserve
+	 * the original value over the entire range.
+	 */
+	if (weight < CGROUP_WEIGHT_MIN || weight > CGROUP_WEIGHT_MAX)
+		return -ERANGE;
+
+	weight = DIV_ROUND_CLOSEST_ULL(weight * 1024, CGROUP_WEIGHT_DFL);
+
+	return sched_group_set_shares(css_tg(css), scale_load(weight));
+}
+
+static s64 cpu_weight_nice_read_s64(struct cgroup_subsys_state *css,
+				    struct cftype *cft)
+{
+	unsigned long weight = scale_load_down(css_tg(css)->shares);
+	int last_delta = INT_MAX;
+	int prio, delta;
+
+	/* find the closest nice value to the current weight */
+	for (prio = 0; prio < ARRAY_SIZE(sched_prio_to_weight); prio++) {
+		delta = abs(sched_prio_to_weight[prio] - weight);
+		if (delta >= last_delta)
+			break;
+		last_delta = delta;
+	}
+
+	return PRIO_TO_NICE(prio - 1 + MAX_RT_PRIO);
+}
+
+static int cpu_weight_nice_write_s64(struct cgroup_subsys_state *css,
+				     struct cftype *cft, s64 nice)
+{
+	unsigned long weight;
+
+	if (nice < MIN_NICE || nice > MAX_NICE)
+		return -ERANGE;
+
+	weight = sched_prio_to_weight[NICE_TO_PRIO(nice) - MAX_RT_PRIO];
+	return sched_group_set_shares(css_tg(css), scale_load(weight));
+}
+#endif
+
+static void __maybe_unused cpu_period_quota_print(struct seq_file *sf,
+						  long period, long quota)
+{
+	if (quota < 0)
+		seq_puts(sf, "max");
+	else
+		seq_printf(sf, "%ld", quota);
+
+	seq_printf(sf, " %ld\n", period);
+}
+
+/* caller should put the current value in *@periodp before calling */
+static int __maybe_unused cpu_period_quota_parse(char *buf,
+						 u64 *periodp, u64 *quotap)
+{
+	char tok[21];	/* U64_MAX */
+
+	if (!sscanf(buf, "%20s %llu", tok, periodp))
+		return -EINVAL;
+
+	*periodp *= NSEC_PER_USEC;
+
+	if (sscanf(tok, "%llu", quotap))
+		*quotap *= NSEC_PER_USEC;
+	else if (!strcmp(tok, "max"))
+		*quotap = RUNTIME_INF;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+
+#ifdef CONFIG_CFS_BANDWIDTH
+static int cpu_max_show(struct seq_file *sf, void *v)
+{
+	struct task_group *tg = css_tg(seq_css(sf));
+
+	cpu_period_quota_print(sf, tg_get_cfs_period(tg), tg_get_cfs_quota(tg));
+	return 0;
+}
+
+static ssize_t cpu_max_write(struct kernfs_open_file *of,
+			     char *buf, size_t nbytes, loff_t off)
+{
+	struct task_group *tg = css_tg(of_css(of));
+	u64 period = tg_get_cfs_period(tg);
+	u64 quota;
+	int ret;
+
+	ret = cpu_period_quota_parse(buf, &period, &quota);
+	if (!ret)
+		ret = tg_set_cfs_bandwidth(tg, period, quota);
+	return ret ?: nbytes;
+}
+#endif /* CONFIG_CFS_BANDWIDTH */
+
+/*
+ * cgroup v2 utilization clamp files (cpu.uclamp.min/max), backported
+ * from upstream 5.x.  Task effective clamp = task request constrained
+ * by the hierarchy (max of mins, min of maxes); rq/freq/placement
+ * honor it once any non-default clamp exists (sched_uclamp_used).
+ */
+static void uclamp_update_active_tasks(struct cgroup_subsys_state *css)
+{
+	struct cgroup_subsys_state *pos;
+
+	rcu_read_lock();
+	css_for_each_descendant_pre(pos, css) {
+		struct css_task_iter it;
+		struct task_struct *task;
+
+		if (!css_tryget_online(pos))
+			continue;
+		rcu_read_unlock();
+
+		css_task_iter_start(pos, 0, &it);
+		while ((task = css_task_iter_next(&it))) {
+			struct rq_flags rf;
+			struct rq *rq = task_rq_lock(task, &rf);
+
+			if (uclamp_is_used() && task_on_rq_queued(task))
+				uclamp_update_active_task(rq, task);
+			task_rq_unlock(rq, task, &rf);
+		}
+		css_task_iter_end(&it);
+
+		rcu_read_lock();
+		css_put(pos);
+	}
+	rcu_read_unlock();
+}
+
+struct uclamp_request {
+	s64 percent;
+	u64 util;
+	int ret;
+};
+
+/*
+ * Parse a percentage with up to UCLAMP_PERCENT_SHIFT decimal digits
+ * into percent (0..100 scaled by UCLAMP_PERCENT_SCALE).  Stand-in for
+ * cgroup_parse_float(), which does not exist on 4.9.
+ */
+static int uclamp_parse_percent(char *buf, s64 *percent)
+{
+	s64 whole = 0, frac = 0;
+	int frac_len = 0;
+
+	if (*buf == '-')
+		return -ERANGE;
+	if (!isdigit(*buf))
+		return -EINVAL;
+	while (isdigit(*buf)) {
+		whole = whole * 10 + (*buf - '0');
+		if (whole > 100)
+			return -ERANGE;
+		buf++;
+	}
+	if (*buf == '.') {
+		buf++;
+		while (isdigit(*buf)) {
+			if (frac_len >= UCLAMP_PERCENT_SHIFT)
+				return -EINVAL;
+			frac = frac * 10 + (*buf - '0');
+			frac_len++;
+			buf++;
+		}
+		if (!frac_len)
+			return -EINVAL;
+	}
+	if (*buf != '\0')
+		return -EINVAL;
+	while (frac_len < UCLAMP_PERCENT_SHIFT) {
+		frac *= 10;
+		frac_len++;
+	}
+	/* percent is in [0, 10000]: whole percent points plus
+	 * two decimal digits, e.g. 12.34% -> 1234 */
+	*percent = whole * 100 + frac;
+	return 0;
+}
+
+static inline struct uclamp_request capacity_from_percent(char *buf)
+{
+	struct uclamp_request req = {
+		.percent = UCLAMP_PERCENT_SCALE,
+		.util = SCHED_CAPACITY_SCALE,
+		.ret = 0,
+	};
+
+	buf = strstrip(buf);
+	if (strcmp("max", buf)) {
+		req.ret = uclamp_parse_percent(buf, &req.percent);
+		if (req.ret)
+			return req;
+		/* unsigned compare: also rejects negatives (b562d1) */
+		if ((u64)req.percent > UCLAMP_PERCENT_SCALE) {
+			req.ret = -ERANGE;
+			return req;
+		}
+
+		req.util = req.percent << SCHED_CAPACITY_SHIFT;
+		req.util = DIV_ROUND_CLOSEST_ULL(req.util,
+						UCLAMP_PERCENT_SCALE);
+	}
+
+	return req;
+}
+
+static int cpu_uclamp_seq_show(struct seq_file *sf, void *v)
+{
+	struct task_group *tg = css_tg(seq_css(sf));
+	struct cftype *cft = seq_cft(sf);
+	unsigned int id = (unsigned int)(uintptr_t)cft->private;
+	u64 percent;
+	u32 rem;
+
+	if (READ_ONCE(tg->uclamp[id]) == SCHED_CAPACITY_SCALE) {
+		seq_puts(sf, "max\n");
+		return 0;
+	}
+
+	percent = READ_ONCE(tg->uclamp_pct[id]);
+	percent = div_u64_rem(percent, 100, &rem);
+	seq_printf(sf, "%llu.%0*u\n", percent, UCLAMP_PERCENT_SHIFT, rem);
+	return 0;
+}
+
+static ssize_t cpu_uclamp_write(struct kernfs_open_file *of,
+				char *buf, size_t nbytes, loff_t off)
+{
+	struct task_group *tg = css_tg(of_css(of));
+	unsigned int id = (unsigned int)(uintptr_t)of_cft(of)->private;
+	struct uclamp_request req;
+
+	req = capacity_from_percent(buf);
+	if (req.ret)
+		return req.ret;
+
+	if (READ_ONCE(tg->uclamp[id]) != req.util ||
+	    READ_ONCE(tg->uclamp_pct[id]) != req.percent) {
+		/* Paired with READ_ONCE() in uclamp_eff_value()/seq_show().
+		 * Aligned u32/u64 stores are single-copy atomic on arm64;
+		 * kernfs serializes writers for the same file.
+		 */
+		WRITE_ONCE(tg->uclamp[id], req.util);
+		/*
+		 * Because of not recoverable conversion rounding we keep
+		 * track of the exact requested value
+		 */
+		WRITE_ONCE(tg->uclamp_pct[id], req.percent);
+		if (req.util != uclamp_none(id))
+			uclamp_enable();
+		/* Update immediately all tasks' clamp values */
+		uclamp_update_active_tasks(of_css(of));
+	}
+	return nbytes;
+}
+
+static struct cftype cpu_files[] = {
+	{
+		.name = "stat",
+		.seq_show = cpu_stat_show,
+	},
+#ifdef CONFIG_FAIR_GROUP_SCHED
+	{
+		.name = "weight",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = cpu_weight_read_u64,
+		.write_u64 = cpu_weight_write_u64,
+	},
+	{
+		.name = "weight.nice",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_s64 = cpu_weight_nice_read_s64,
+		.write_s64 = cpu_weight_nice_write_s64,
+	},
+#endif
+#ifdef CONFIG_CFS_BANDWIDTH
+	{
+		.name = "max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_max_show,
+		.write = cpu_max_write,
+	},
+#endif
+	{
+		.name = "uclamp.min",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_uclamp_seq_show,
+		.write = cpu_uclamp_write,
+		.private = UCLAMP_MIN,
+	},
+	{
+		.name = "uclamp.max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_uclamp_seq_show,
+		.write = cpu_uclamp_write,
+		.private = UCLAMP_MAX,
+	},
+	{ }	/* terminate */
+};
+
 struct cgroup_subsys cpu_cgrp_subsys = {
 	.css_alloc	= cpu_cgroup_css_alloc,
 	.css_online	= cpu_cgroup_css_online,
@@ -9571,7 +10299,9 @@ struct cgroup_subsys cpu_cgrp_subsys = {
 	.can_attach	= cpu_cgroup_can_attach,
 	.attach		= cpu_cgroup_attach,
 	.allow_attach   = subsys_cgroup_allow_attach,
-	.legacy_cftypes	= cpu_files,
+	.legacy_cftypes	= cpu_legacy_files,
+	.dfl_cftypes	= cpu_files,
+	.threaded	= true,
 	.early_init	= true,
 };
 

@@ -127,7 +127,7 @@ static inline void task_group_account_field(struct task_struct *p, int index,
 	 */
 	__this_cpu_add(kernel_cpustat.cpustat[index], tmp);
 
-	cpuacct_account_field(p, index, tmp);
+	cgroup_account_cputime_field(p, index, tmp);
 }
 
 /*
@@ -626,9 +626,9 @@ drop_precision:
  *
  * Assuming that rtime_i+1 >= rtime_i.
  */
-static void cputime_adjust(struct task_cputime *curr,
-			   struct prev_cputime *prev,
-			   cputime_t *ut, cputime_t *st)
+void cputime_adjust(struct task_cputime *curr,
+		   struct prev_cputime *prev,
+		   cputime_t *ut, cputime_t *st)
 {
 	cputime_t rtime, stime, utime;
 	unsigned long flags;

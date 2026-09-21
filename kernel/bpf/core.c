@@ -73,6 +73,9 @@ void *bpf_internal_load_pointer_neg_helper(const struct sk_buff *skb, int k, uns
 	return NULL;
 }
 
+/* unique prog id for query support (never reused) */
+static atomic64_t bpf_prog_id;
+
 struct bpf_prog *bpf_prog_alloc(unsigned int size, gfp_t gfp_extra_flags)
 {
 	gfp_t gfp_flags = GFP_KERNEL | __GFP_HIGHMEM | __GFP_ZERO |
@@ -96,6 +99,7 @@ struct bpf_prog *bpf_prog_alloc(unsigned int size, gfp_t gfp_extra_flags)
 	fp->pages = size / PAGE_SIZE;
 	fp->aux = aux;
 	fp->aux->prog = fp;
+	fp->aux->id = atomic64_inc_return(&bpf_prog_id);
 
 	return fp;
 }
@@ -150,7 +154,8 @@ void __bpf_prog_free(struct bpf_prog *fp)
 
 static bool bpf_is_jmp_and_has_target(const struct bpf_insn *insn)
 {
-	return BPF_CLASS(insn->code) == BPF_JMP  &&
+	return (BPF_CLASS(insn->code) == BPF_JMP ||
+		BPF_CLASS(insn->code) == BPF_JMP32) &&
 	       /* Call and Exit are both special jumps with no
 		* target inside the BPF instruction image.
 		*/
@@ -631,6 +636,8 @@ static unsigned int __bpf_prog_run(const struct sk_buff *ctx, const struct bpf_i
 		[BPF_ALU64 | BPF_MOV | BPF_K] = &&ALU64_MOV_K,
 		[BPF_ALU64 | BPF_ARSH | BPF_X] = &&ALU64_ARSH_X,
 		[BPF_ALU64 | BPF_ARSH | BPF_K] = &&ALU64_ARSH_K,
+		[BPF_ALU | BPF_ARSH | BPF_X] = &&ALU_ARSH_X,
+		[BPF_ALU | BPF_ARSH | BPF_K] = &&ALU_ARSH_K,
 		[BPF_ALU64 | BPF_DIV | BPF_X] = &&ALU64_DIV_X,
 		[BPF_ALU64 | BPF_DIV | BPF_K] = &&ALU64_DIV_K,
 		[BPF_ALU64 | BPF_MOD | BPF_X] = &&ALU64_MOD_X,
@@ -638,9 +645,12 @@ static unsigned int __bpf_prog_run(const struct sk_buff *ctx, const struct bpf_i
 		[BPF_ALU64 | BPF_NEG] = &&ALU64_NEG,
 		/* Call instruction */
 		[BPF_JMP | BPF_CALL] = &&JMP_CALL,
+		[BPF_JMP32 | BPF_CALL] = &&JMP_CALL,
 		[BPF_JMP | BPF_CALL | BPF_X] = &&JMP_TAIL_CALL,
+		[BPF_JMP32 | BPF_CALL | BPF_X] = &&JMP_TAIL_CALL,
 		/* Jumps */
 		[BPF_JMP | BPF_JA] = &&JMP_JA,
+		[BPF_JMP32 | BPF_JA] = &&JMP_JA,
 		[BPF_JMP | BPF_JEQ | BPF_X] = &&JMP_JEQ_X,
 		[BPF_JMP | BPF_JEQ | BPF_K] = &&JMP_JEQ_K,
 		[BPF_JMP | BPF_JNE | BPF_X] = &&JMP_JNE_X,
@@ -655,8 +665,25 @@ static unsigned int __bpf_prog_run(const struct sk_buff *ctx, const struct bpf_i
 		[BPF_JMP | BPF_JSGE | BPF_K] = &&JMP_JSGE_K,
 		[BPF_JMP | BPF_JSET | BPF_X] = &&JMP_JSET_X,
 		[BPF_JMP | BPF_JSET | BPF_K] = &&JMP_JSET_K,
+		/* 32-bit jumps: compare low 32 bits (backported for
+		 * toolchains defaulting to BPF v3+ ISA) */
+		[BPF_JMP32 | BPF_JEQ | BPF_X] = &&JMP32_JEQ_X,
+		[BPF_JMP32 | BPF_JEQ | BPF_K] = &&JMP32_JEQ_K,
+		[BPF_JMP32 | BPF_JNE | BPF_X] = &&JMP32_JNE_X,
+		[BPF_JMP32 | BPF_JNE | BPF_K] = &&JMP32_JNE_K,
+		[BPF_JMP32 | BPF_JGT | BPF_X] = &&JMP32_JGT_X,
+		[BPF_JMP32 | BPF_JGT | BPF_K] = &&JMP32_JGT_K,
+		[BPF_JMP32 | BPF_JGE | BPF_X] = &&JMP32_JGE_X,
+		[BPF_JMP32 | BPF_JGE | BPF_K] = &&JMP32_JGE_K,
+		[BPF_JMP32 | BPF_JSGT | BPF_X] = &&JMP32_JSGT_X,
+		[BPF_JMP32 | BPF_JSGT | BPF_K] = &&JMP32_JSGT_K,
+		[BPF_JMP32 | BPF_JSGE | BPF_X] = &&JMP32_JSGE_X,
+		[BPF_JMP32 | BPF_JSGE | BPF_K] = &&JMP32_JSGE_K,
+		[BPF_JMP32 | BPF_JSET | BPF_X] = &&JMP32_JSET_X,
+		[BPF_JMP32 | BPF_JSET | BPF_K] = &&JMP32_JSET_K,
 		/* Program return */
 		[BPF_JMP | BPF_EXIT] = &&JMP_EXIT,
+		[BPF_JMP32 | BPF_EXIT] = &&JMP_EXIT,
 		/* Store instructions */
 		[BPF_STX | BPF_MEM | BPF_B] = &&STX_MEM_B,
 		[BPF_STX | BPF_MEM | BPF_H] = &&STX_MEM_H,
@@ -745,6 +772,12 @@ select_insn:
 		CONT;
 	ALU64_ARSH_K:
 		(*(s64 *) &DST) >>= IMM;
+		CONT;
+	ALU_ARSH_X:
+		DST = (u32)(((s32) DST) >> SRC);
+		CONT;
+	ALU_ARSH_K:
+		DST = (u32)(((s32) DST) >> IMM);
 		CONT;
 	ALU64_MOD_X:
 		if (unlikely(SRC == 0))
@@ -934,6 +967,90 @@ out:
 		CONT;
 	JMP_JSET_K:
 		if (DST & IMM) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JEQ_X:
+		if ((u32) DST == (u32) SRC) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JEQ_K:
+		if ((u32) DST == (u32) IMM) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JNE_X:
+		if ((u32) DST != (u32) SRC) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JNE_K:
+		if ((u32) DST != (u32) IMM) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JGT_X:
+		if ((u32) DST > (u32) SRC) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JGT_K:
+		if ((u32) DST > (u32) IMM) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JGE_X:
+		if ((u32) DST >= (u32) SRC) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JGE_K:
+		if ((u32) DST >= (u32) IMM) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JSGT_X:
+		if (((s32) DST) > ((s32) SRC)) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JSGT_K:
+		if (((s32) DST) > ((s32) IMM)) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JSGE_X:
+		if (((s32) DST) >= ((s32) SRC)) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JSGE_K:
+		if (((s32) DST) >= ((s32) IMM)) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JSET_X:
+		if ((u32) DST & (u32) SRC) {
+			insn += insn->off;
+			CONT_JMP;
+		}
+		CONT;
+	JMP32_JSET_K:
+		if ((u32) DST & (u32) IMM) {
 			insn += insn->off;
 			CONT_JMP;
 		}
@@ -1290,6 +1407,8 @@ const struct bpf_func_proto bpf_map_delete_elem_proto __weak;
 const struct bpf_func_proto bpf_get_prandom_u32_proto __weak;
 const struct bpf_func_proto bpf_get_smp_processor_id_proto __weak;
 const struct bpf_func_proto bpf_ktime_get_ns_proto __weak;
+const struct bpf_func_proto bpf_ktime_get_boot_ns_proto __weak;
+const struct bpf_func_proto bpf_get_current_cgroup_id_proto __weak;
 
 const struct bpf_func_proto bpf_get_current_pid_tgid_proto __weak;
 const struct bpf_func_proto bpf_get_current_uid_gid_proto __weak;

@@ -966,7 +966,7 @@ int mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
 		struct css_task_iter it;
 		struct task_struct *task;
 
-		css_task_iter_start(&iter->css, &it);
+		css_task_iter_start(&iter->css, 0, &it);
 		while (!ret && (task = css_task_iter_next(&it)))
 			ret = fn(task, arg);
 		css_task_iter_end(&it);
@@ -3135,7 +3135,9 @@ static int mem_cgroup_move_charge_write(struct cgroup_subsys_state *css,
 #endif
 
 #ifdef CONFIG_NUMA
-static int memcg_numa_stat_show(struct seq_file *m, void *v)
+static void memcg_numa_stat_show_lines(struct seq_file *m,
+				       struct mem_cgroup *memcg,
+				       bool hierarchical)
 {
 	struct numa_stat {
 		const char *name;
@@ -3151,21 +3153,21 @@ static int memcg_numa_stat_show(struct seq_file *m, void *v)
 	const struct numa_stat *stat;
 	int nid;
 	unsigned long nr;
-	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
-
-	for (stat = stats; stat < stats + ARRAY_SIZE(stats); stat++) {
-		nr = mem_cgroup_nr_lru_pages(memcg, stat->lru_mask);
-		seq_printf(m, "%s=%lu", stat->name, nr);
-		for_each_node_state(nid, N_MEMORY) {
-			nr = mem_cgroup_node_nr_lru_pages(memcg, nid,
-							  stat->lru_mask);
-			seq_printf(m, " N%d=%lu", nid, nr);
-		}
-		seq_putc(m, '\n');
-	}
 
 	for (stat = stats; stat < stats + ARRAY_SIZE(stats); stat++) {
 		struct mem_cgroup *iter;
+
+		if (!hierarchical) {
+			nr = mem_cgroup_nr_lru_pages(memcg, stat->lru_mask);
+			seq_printf(m, "%s=%lu", stat->name, nr);
+			for_each_node_state(nid, N_MEMORY) {
+				nr = mem_cgroup_node_nr_lru_pages(
+					memcg, nid, stat->lru_mask);
+				seq_printf(m, " N%d=%lu", nid, nr);
+			}
+			seq_putc(m, '\n');
+			continue;
+		}
 
 		nr = 0;
 		for_each_mem_cgroup_tree(iter, memcg)
@@ -3180,6 +3182,24 @@ static int memcg_numa_stat_show(struct seq_file *m, void *v)
 		}
 		seq_putc(m, '\n');
 	}
+}
+
+static int memcg_numa_stat_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+
+	memcg_numa_stat_show_lines(m, memcg, false);
+	memcg_numa_stat_show_lines(m, memcg, true);
+
+	return 0;
+}
+
+/* v2 memory.numa_stat: per-node breakdown without hierarchical_ lines */
+static int memory_numa_stat_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+
+	memcg_numa_stat_show_lines(m, memcg, false);
 
 	return 0;
 }
@@ -3636,6 +3656,8 @@ static int mem_cgroup_oom_control_read(struct seq_file *sf, void *v)
 
 	seq_printf(sf, "oom_kill_disable %d\n", memcg->oom_kill_disable);
 	seq_printf(sf, "under_oom %d\n", (bool)memcg->under_oom);
+	seq_printf(sf, "oom_kill %lu\n",
+		   mem_cgroup_read_events(memcg, MEMCG_OOM_KILL));
 	return 0;
 }
 
@@ -5110,6 +5132,27 @@ static u64 memory_current_read(struct cgroup_subsys_state *css,
 	return (u64)page_counter_read(&memcg->memory) * PAGE_SIZE;
 }
 
+/* historical maximum usage, cf. upstream memory.peak */
+static u64 memory_peak_read(struct cgroup_subsys_state *css,
+			    struct cftype *cft)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+	return (u64)memcg->memory.watermark * PAGE_SIZE;
+}
+
+/* Reset peak to current usage (mirrors legacy max_usage_in_bytes reset
+ * via mem_cgroup_reset); any write resets the high watermark.
+ */
+static ssize_t memory_peak_write(struct kernfs_open_file *of,
+				 char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+
+	page_counter_reset_watermark(&memcg->memory);
+	return nbytes;
+}
+
 static int memory_low_show(struct seq_file *m, void *v)
 {
 	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
@@ -5247,8 +5290,72 @@ static int memory_events_show(struct seq_file *m, void *v)
 	seq_printf(m, "high %lu\n", mem_cgroup_read_events(memcg, MEMCG_HIGH));
 	seq_printf(m, "max %lu\n", mem_cgroup_read_events(memcg, MEMCG_MAX));
 	seq_printf(m, "oom %lu\n", mem_cgroup_read_events(memcg, MEMCG_OOM));
+	seq_printf(m, "oom_kill %lu\n",
+		   mem_cgroup_read_events(memcg, MEMCG_OOM_KILL));
 
 	return 0;
+}
+
+/*
+ * Local (non-hierarchical) event counts.  In this tree the v2
+ * memory.events counters are already per-cgroup (no ancestor
+ * propagation), so this shows the same numbers under the upstream
+ * events.local name for userspace compatibility.
+ */
+static int memory_events_local_show(struct seq_file *m, void *v)
+{
+	return memory_events_show(m, v);
+}
+
+/* treat the sub-tree as an indivisible OOM victim (memory.oom.group) */
+static int memory_oom_group_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
+
+	seq_printf(m, "%d\n", memcg->oom_group);
+
+	return 0;
+}
+
+static ssize_t memory_oom_group_write(struct kernfs_open_file *of,
+				      char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	int oom_group;
+	int err;
+
+	err = kstrtoint(strstrip(buf), 0, &oom_group);
+	if (err)
+		return err;
+	if (oom_group != 0 && oom_group != 1)
+		return -EINVAL;
+
+	memcg->oom_group = oom_group;
+
+	return nbytes;
+}
+
+/**
+ * mem_cgroup_get_oom_group - find the cgroup to kill for an OOM event
+ * @memcg: the memcg scope of the OOM event
+ *
+ * If @memcg or any ancestor up to (but excluding) the root has
+ * memory.oom.group set, return the highest such ancestor with a
+ * reference held.  Otherwise return NULL.
+ */
+struct mem_cgroup *mem_cgroup_get_oom_group(struct mem_cgroup *memcg)
+{
+	struct mem_cgroup *iter, *oom_group = NULL;
+
+	for (iter = memcg; iter && parent_mem_cgroup(iter);
+	     iter = parent_mem_cgroup(iter)) {
+		if (mem_cgroup_oom_group(iter))
+			oom_group = iter;
+	}
+
+	if (oom_group)
+		css_get(&oom_group->css);
+	return oom_group;
 }
 
 static int memory_stat_show(struct seq_file *m, void *v)
@@ -5323,6 +5430,12 @@ static struct cftype memory_files[] = {
 		.read_u64 = memory_current_read,
 	},
 	{
+		.name = "peak",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.read_u64 = memory_peak_read,
+		.write = memory_peak_write,
+	},
+	{
 		.name = "low",
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = memory_low_show,
@@ -5347,10 +5460,28 @@ static struct cftype memory_files[] = {
 		.seq_show = memory_events_show,
 	},
 	{
+		.name = "events.local",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_events_local_show,
+	},
+	{
+		.name = "oom.group",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_oom_group_show,
+		.write = memory_oom_group_write,
+	},
+	{
 		.name = "stat",
 		.flags = CFTYPE_NOT_ON_ROOT,
 		.seq_show = memory_stat_show,
 	},
+#ifdef CONFIG_NUMA
+	{
+		.name = "numa_stat",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = memory_numa_stat_show,
+	},
+#endif
 	{ }	/* terminate */
 };
 
@@ -5368,6 +5499,7 @@ struct cgroup_subsys memory_cgrp_subsys = {
 	.bind = mem_cgroup_bind,
 	.dfl_cftypes = memory_files,
 	.legacy_cftypes = mem_cgroup_legacy_files,
+	.threaded = true,
 	.early_init = 0,
 };
 

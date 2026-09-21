@@ -350,6 +350,93 @@ static char *mem_fmt(char *buf, int size, unsigned long hsize)
 	return buf;
 }
 
+/*
+ * cgroup v2 hugetlb interface, simplified backport of upstream
+ * (Leandro/Mina series): per-hstate files
+ *   hugetlb.<size>.current  (read usage in bytes)
+ *   hugetlb.<size>.max      (read/write limit, "max" for unlimited)
+ *   hugetlb.<size>.events   (flat-keyed "max <failcnt>")
+ * events.local is omitted on 4.9 (page_counter has no local failcnt);
+ * read events for the hierarchical count.
+ */
+static int hugetlb_cgroup_read_u64_max(struct seq_file *seq, void *v)
+{
+	struct cftype *cft = seq_cft(seq);
+	struct hugetlb_cgroup *h_cg = hugetlb_cgroup_from_css(seq_css(seq));
+	struct page_counter *counter;
+	unsigned long limit;
+	int idx = MEMFILE_IDX(cft->private);
+	u64 val;
+
+	counter = &h_cg->hugepage[idx];
+	limit = round_down(PAGE_COUNTER_MAX,
+			   1 << huge_page_order(&hstates[idx]));
+
+	switch (MEMFILE_ATTR(cft->private)) {
+	case RES_USAGE:
+		val = (u64)page_counter_read(counter);
+		seq_printf(seq, "%llu\n", val * PAGE_SIZE);
+		break;
+	case RES_LIMIT:
+		val = (u64)counter->limit;
+		if (val >= limit)
+			seq_puts(seq, "max\n");
+		else
+			seq_printf(seq, "%llu\n", val * PAGE_SIZE);
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static ssize_t hugetlb_cgroup_write_dfl(struct kernfs_open_file *of,
+					char *buf, size_t nbytes, loff_t off)
+{
+	struct hugetlb_cgroup *h_cg = hugetlb_cgroup_from_css(of_css(of));
+	unsigned long nr_pages, limit;
+	int ret, idx;
+
+	if (hugetlb_cgroup_is_root(h_cg)) /* Can't set limit on root */
+		return -EINVAL;
+
+	buf = strstrip(buf);
+	idx = MEMFILE_IDX(of_cft(of)->private);
+
+	if (MEMFILE_ATTR(of_cft(of)->private) != RES_LIMIT)
+		return -EINVAL;
+
+	limit = round_down(PAGE_COUNTER_MAX,
+			   1 << huge_page_order(&hstates[idx]));
+
+	if (!strcmp(buf, "max")) {
+		nr_pages = limit;
+	} else {
+		ret = page_counter_memparse(buf, "-1", &nr_pages);
+		if (ret)
+			return ret;
+		nr_pages = round_down(nr_pages,
+				      1 << huge_page_order(&hstates[idx]));
+	}
+
+	mutex_lock(&hugetlb_limit_mutex);
+	ret = page_counter_limit(&h_cg->hugepage[idx], nr_pages);
+	mutex_unlock(&hugetlb_limit_mutex);
+	return ret ?: nbytes;
+}
+
+static int hugetlb_events_show(struct seq_file *seq, void *v)
+{
+	struct cftype *cft = seq_cft(seq);
+	struct hugetlb_cgroup *h_cg = hugetlb_cgroup_from_css(seq_css(seq));
+	struct page_counter *counter;
+	int idx = MEMFILE_IDX(cft->private);
+
+	counter = &h_cg->hugepage[idx];
+	seq_printf(seq, "max %llu\n", (u64)counter->failcnt);
+	return 0;
+}
+
 static void __init __hugetlb_cgroup_file_init(int idx)
 {
 	char buf[32];
@@ -392,6 +479,32 @@ static void __init __hugetlb_cgroup_file_init(int idx)
 
 	WARN_ON(cgroup_add_legacy_cftypes(&hugetlb_cgrp_subsys,
 					  h->cgroup_files));
+
+	/* v2 files: max / current / events */
+	cft = &h->cgroup_files_dfl[0];
+	snprintf(cft->name, MAX_CFTYPE_NAME, "%s.max", buf);
+	cft->private = MEMFILE_PRIVATE(idx, RES_LIMIT);
+	cft->seq_show = hugetlb_cgroup_read_u64_max;
+	cft->write = hugetlb_cgroup_write_dfl;
+	cft->flags = CFTYPE_NOT_ON_ROOT;
+
+	cft = &h->cgroup_files_dfl[1];
+	snprintf(cft->name, MAX_CFTYPE_NAME, "%s.current", buf);
+	cft->private = MEMFILE_PRIVATE(idx, RES_USAGE);
+	cft->seq_show = hugetlb_cgroup_read_u64_max;
+	cft->flags = CFTYPE_NOT_ON_ROOT;
+
+	cft = &h->cgroup_files_dfl[2];
+	snprintf(cft->name, MAX_CFTYPE_NAME, "%s.events", buf);
+	cft->private = MEMFILE_PRIVATE(idx, RES_FAILCNT);
+	cft->seq_show = hugetlb_events_show;
+	cft->flags = CFTYPE_NOT_ON_ROOT;
+
+	cft = &h->cgroup_files_dfl[3];
+	memset(cft, 0, sizeof(*cft));
+
+	WARN_ON(cgroup_add_dfl_cftypes(&hugetlb_cgrp_subsys,
+				       h->cgroup_files_dfl));
 }
 
 void __init hugetlb_cgroup_file_init(void)
@@ -433,8 +546,18 @@ void hugetlb_cgroup_migrate(struct page *oldhpage, struct page *newhpage)
 	return;
 }
 
+static struct cftype hugetlb_legacy_files[] = {
+	{ }	/* legacy files are added dynamically per-hstate */
+};
+
+static struct cftype hugetlb_dfl_files[] = {
+	{ }	/* v2 files are added dynamically per-hstate */
+};
+
 struct cgroup_subsys hugetlb_cgrp_subsys = {
 	.css_alloc	= hugetlb_cgroup_css_alloc,
 	.css_offline	= hugetlb_cgroup_css_offline,
 	.css_free	= hugetlb_cgroup_css_free,
+	.dfl_cftypes	= hugetlb_dfl_files,
+	.legacy_cftypes	= hugetlb_legacy_files,
 };

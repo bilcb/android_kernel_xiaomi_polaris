@@ -123,6 +123,10 @@ struct sched_attr {
 	u64 sched_runtime;
 	u64 sched_deadline;
 	u64 sched_period;
+
+	/* Utilization clamp values (SCHED_FLAG_UTIL_CLAMP_*): 0..1024 */
+	__u32 sched_util_min;
+	__u32 sched_util_max;
 };
 
 struct futex_pi_state;
@@ -1678,6 +1682,26 @@ struct tlbflush_unmap_batch {
 	bool writable;
 };
 
+/*
+ * Utilization clamping (uclamp) for CFS tasks.  Backported from upstream
+ * 5.x for Android task-profile (UclampMin/Max) support.  Unconditional
+ * (no Kconfig): costs ~40 bytes per task_struct, zero runtime overhead
+ * until first use via the sched_uclamp_used static key.
+ */
+enum uclamp_id {
+	UCLAMP_MIN = 0,
+	UCLAMP_MAX = 1,
+	UCLAMP_CNT = 2
+};
+
+#define UCLAMP_BUCKETS 20
+
+struct uclamp_se {
+	unsigned int value;		/* effective clamp value */
+	unsigned int bucket_id;		/* rq bucket currently refcounted */
+	bool active;			/* refcounting an rq bucket */
+};
+
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/*
@@ -1711,6 +1735,10 @@ struct task_struct {
 	const struct sched_class *sched_class;
 	struct sched_entity se;
 	struct sched_rt_entity rt;
+	/* requested utilization clamps (sched_setattr), defaults 0/1024 */
+	struct uclamp_se uclamp_req[UCLAMP_CNT];
+	/* last contributed (effective) clamps + rq bucket tracking */
+	struct uclamp_se uclamp[UCLAMP_CNT];
 	u64 last_sleep_ts;
 	u64 last_cpu_selected_ts;
 #ifdef CONFIG_SCHED_WALT
@@ -2499,6 +2527,8 @@ static inline cputime_t task_gtime(struct task_struct *t)
 #endif
 extern void task_cputime_adjusted(struct task_struct *p, cputime_t *ut, cputime_t *st);
 extern void thread_group_cputime_adjusted(struct task_struct *p, cputime_t *ut, cputime_t *st);
+extern void cputime_adjust(struct task_cputime *curr, struct prev_cputime *prev,
+			   cputime_t *ut, cputime_t *st);
 
 /*
  * Per process flags

@@ -9,6 +9,7 @@
  */
 
 #include <linux/sched.h>
+#include <linux/kernel_stat.h>
 #include <linux/cpumask.h>
 #include <linux/nodemask.h>
 #include <linux/rculist.h>
@@ -39,9 +40,14 @@
 /* a css_task_iter should be treated as an opaque object */
 struct css_task_iter {
 	struct cgroup_subsys		*ss;
+	unsigned int			flags;
 
 	struct list_head		*cset_pos;
 	struct list_head		*cset_head;
+
+	struct css_set			*cur_dcset;
+	struct list_head		*tcset_head;
+	struct list_head		*tcset_pos;
 
 	struct list_head		*task_pos;
 	struct list_head		*tasks_head;
@@ -50,6 +56,12 @@ struct css_task_iter {
 	struct css_set			*cur_cset;
 	struct task_struct		*cur_task;
 	struct list_head		iters_node;	/* css_set->task_iters */
+};
+
+/* css_task_iter flags */
+enum {
+	CSS_TASK_ITER_PROCS	= (1 << 0),	/* walk threadgroup leaders */
+	CSS_TASK_ITER_THREADED	= (1 << 1),	/* walk threaded csets too */
 };
 
 extern struct cgroup_root cgrp_dfl_root;
@@ -130,7 +142,7 @@ struct task_struct *cgroup_taskset_next(struct cgroup_taskset *tset,
 					struct cgroup_subsys_state **dst_cssp);
 
 void css_task_iter_start(struct cgroup_subsys_state *css,
-			 struct css_task_iter *it);
+			 unsigned int flags, struct css_task_iter *it);
 struct task_struct *css_task_iter_next(struct css_task_iter *it);
 void css_task_iter_end(struct css_task_iter *it);
 
@@ -570,6 +582,57 @@ static inline bool cgroup_is_populated(struct cgroup *cgrp)
 	return cgrp->populated_cnt;
 }
 
+#ifdef CONFIG_CGROUP_CPUACCT
+extern void cpuacct_charge(struct task_struct *tsk, u64 cputime);
+extern void cpuacct_account_field(struct task_struct *tsk, int index,
+				  u64 val);
+#else
+static inline void cpuacct_charge(struct task_struct *tsk, u64 cputime) {}
+static inline void cpuacct_account_field(struct task_struct *tsk, int index,
+					 u64 val) {}
+#endif
+
+/*
+ * Wrappers for CPU time accounting.  They charge the legacy cpuacct
+ * controller and, on the default (v2) hierarchy, feed the cgroup core
+ * basic CPU usage statistics (see cgroup_stat_show_cputime()).
+ * Backported from upstream 4.15.
+ */
+void cgroup_stat_show_cputime(struct seq_file *seq, const char *prefix);
+
+void __cgroup_account_cputime(struct cgroup *cgrp, u64 delta_exec);
+void __cgroup_account_cputime_field(struct cgroup *cgrp,
+				    enum cpu_usage_stat index, u64 delta_exec);
+
+static inline void cgroup_account_cputime(struct task_struct *task,
+					  u64 delta_exec)
+{
+	struct cgroup *cgrp;
+
+	cpuacct_charge(task, delta_exec);
+
+	rcu_read_lock();
+	cgrp = task_dfl_cgroup(task);
+	if (cgroup_parent(cgrp))
+		__cgroup_account_cputime(cgrp, delta_exec);
+	rcu_read_unlock();
+}
+
+static inline void cgroup_account_cputime_field(struct task_struct *task,
+						enum cpu_usage_stat index,
+						u64 delta_exec)
+{
+	struct cgroup *cgrp;
+
+	cpuacct_account_field(task, index, delta_exec);
+
+	rcu_read_lock();
+	cgrp = task_dfl_cgroup(task);
+	if (cgroup_parent(cgrp))
+		__cgroup_account_cputime_field(cgrp, index, delta_exec);
+	rcu_read_unlock();
+}
+
 /* returns ino associated with a cgroup */
 static inline ino_t cgroup_ino(struct cgroup *cgrp)
 {
@@ -628,6 +691,15 @@ static inline void pr_cont_cgroup_path(struct cgroup *cgrp)
  * Returns 0 if this is allowed, or -EACCES otherwise.
  */
 int subsys_cgroup_allow_attach(struct cgroup_taskset *tset);
+
+#ifdef CONFIG_CGROUP_FREEZER
+extern bool cgroup_freezer_frozen(struct cgroup *cgrp);
+#else
+static inline bool cgroup_freezer_frozen(struct cgroup *cgrp)
+{
+	return false;
+}
+#endif
 
 static inline struct psi_group *cgroup_psi(struct cgroup *cgrp)
 {
@@ -696,6 +768,12 @@ static inline int subsys_cgroup_allow_attach(void *tset)
 {
 	return -EINVAL;
 }
+
+static inline void cgroup_account_cputime(struct task_struct *task,
+					  u64 delta_exec) {}
+static inline void cgroup_account_cputime_field(struct task_struct *task,
+						enum cpu_usage_stat index,
+						u64 delta_exec) {}
 #endif /* !CONFIG_CGROUPS */
 
 /*

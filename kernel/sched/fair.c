@@ -909,7 +909,7 @@ static void update_curr(struct cfs_rq *cfs_rq)
 		struct task_struct *curtask = task_of(curr);
 
 		trace_sched_stat_runtime(curtask, delta_exec, curr->vruntime);
-		cpuacct_charge(curtask, delta_exec);
+		cgroup_account_cputime(curtask, delta_exec);
 		account_group_exec_runtime(curtask, delta_exec);
 	}
 
@@ -6274,6 +6274,27 @@ static int wake_affine(struct sched_domain *sd, struct task_struct *p,
 
 static inline unsigned long boosted_task_util(struct task_struct *p);
 
+static inline unsigned long uclamp_clamp_util(struct task_struct *p,
+					      unsigned long util)
+{
+	if (uclamp_is_used()) {
+		unsigned int min = uclamp_eff_value(p, UCLAMP_MIN);
+		unsigned int max = uclamp_eff_value(p, UCLAMP_MAX);
+
+		if (util < min)
+			util = min;
+		else if (util > max)
+			util = max;
+	}
+	return util;
+}
+
+/* task's compute demand for placement/freq, after uclamp */
+static inline unsigned long uclamp_task_util(struct task_struct *p)
+{
+	return uclamp_clamp_util(p, task_util(p));
+}
+
 static inline bool __task_fits(struct task_struct *p, int cpu, int util)
 {
 	unsigned int margin;
@@ -6412,7 +6433,9 @@ boosted_task_util(struct task_struct *p)
 
 	trace_sched_boost_task(p, util, margin);
 
-	return util + margin;
+	/* schedtune margin first (existing behavior), then uclamp
+	 * floor/ceiling (identity when unused) */
+	return uclamp_clamp_util(p, util + margin);
 }
 
 static unsigned long capacity_spare_wake(int cpu, struct task_struct *p)
@@ -6980,7 +7003,7 @@ static unsigned long cpu_estimated_capacity(int cpu, struct task_struct *p)
 	if (task_in_cum_window_demand(cpu_rq(cpu), p))
 		tutil = 0;
 	else
-		tutil = task_util(p);
+		tutil = uclamp_task_util(p);
 
 	estimated_capacity = cpu_util_cum(cpu, tutil);
 
@@ -7133,7 +7156,7 @@ retry:
 			 * accounting. However, the blocked utilization may be zero.
 			 */
 			wake_util = cpu_util_wake(i, p);
-			new_util = wake_util + task_util(p);
+			new_util = wake_util + uclamp_task_util(p);
 			spare_cap = capacity_orig_of(i) - wake_util;
 
 			if (spare_cap > most_spare_cap) {
@@ -7662,7 +7685,7 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 		int delta = 0;
 		struct energy_env eenv = {
 			.p              = p,
-			.util_delta     = task_util(p),
+			.util_delta     = uclamp_task_util(p),
 			/* Task's previous CPU candidate */
 			.cpu[EAS_CPU_PRV] = {
 				.cpu_id = prev_cpu,
@@ -7681,7 +7704,7 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 #ifdef CONFIG_SCHED_WALT
 		if (!walt_disabled && sysctl_sched_use_walt_cpu_util &&
 			p->state == TASK_WAKING)
-			delta = task_util(p);
+			delta = uclamp_task_util(p);
 #endif
 		/* Not enough spare capacity on previous cpu */
 		if (__cpu_overutilized(prev_cpu, delta)) {
@@ -8533,7 +8556,7 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 		long util_cum_dst, util_cum_src;
 		unsigned long demand;
 
-		demand = task_util(p);
+		demand = uclamp_task_util(p);
 		util_cum_dst = cpu_util_cum(env->dst_cpu, 0) + demand;
 		util_cum_src = cpu_util_cum(env->src_cpu, 0) - demand;
 

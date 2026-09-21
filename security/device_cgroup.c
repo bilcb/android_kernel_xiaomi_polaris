@@ -871,11 +871,17 @@ int __devcgroup_inode_permission(struct inode *inode, int mask)
 	if (mask & MAY_READ)
 		access |= ACC_READ;
 
+	/* eBPF device filter (cgroup v2) runs before the v1 whitelist.
+	 * ACC and DEV values match the BPF_DEVCG ABI. */
+	if (BPF_CGROUP_RUN_PROG_DEVICE_CGROUP(type, imajor(inode),
+					      iminor(inode), access))
+		return -EPERM;
+
 	return __devcgroup_check_permission(type, imajor(inode), iminor(inode),
 			access);
 }
 
-int devcgroup_inode_mknod(int mode, dev_t dev)
+int __devcgroup_inode_mknod(int mode, dev_t dev)
 {
 	short type;
 
@@ -886,6 +892,10 @@ int devcgroup_inode_mknod(int mode, dev_t dev)
 		type = DEV_BLOCK;
 	else
 		type = DEV_CHAR;
+
+	if (BPF_CGROUP_RUN_PROG_DEVICE_CGROUP(type, MAJOR(dev), MINOR(dev),
+					      ACC_MKNOD))
+		return -EPERM;
 
 	return __devcgroup_check_permission(type, MAJOR(dev), MINOR(dev),
 			ACC_MKNOD);

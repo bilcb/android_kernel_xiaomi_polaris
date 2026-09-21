@@ -148,6 +148,7 @@ struct bpf_call_arg_meta {
 	bool pkt_access;
 	int regno;
 	int access_size;
+	u64 mem_size;
 };
 
 /* verbose verifier prints what it's seeing
@@ -183,6 +184,8 @@ static const char * const reg_type_str[] = {
 	[PTR_TO_MAP_VALUE]	= "map_value",
 	[PTR_TO_MAP_VALUE_OR_NULL] = "map_value_or_null",
 	[PTR_TO_MAP_VALUE_ADJ]	= "map_value_adj",
+	[PTR_TO_MEM]		= "mem",
+	[PTR_TO_MEM_OR_NULL]	= "mem_or_null",
 	[FRAME_PTR]		= "fp",
 	[PTR_TO_STACK]		= "fp",
 	[CONST_IMM]		= "imm",
@@ -238,7 +241,8 @@ static const char *const bpf_class_string[] = {
 	[BPF_STX]   = "stx",
 	[BPF_ALU]   = "alu",
 	[BPF_JMP]   = "jmp",
-	[BPF_RET]   = "BUG",
+	/* class 0x06 is classic BPF_RET, reused as eBPF JMP32 */
+	[BPF_JMP32] = "jmp32",
 	[BPF_ALU64] = "alu64",
 };
 
@@ -361,7 +365,7 @@ static void print_bpf_insn(const struct bpf_verifier_env *env,
 			verbose("BUG_ld_%02x\n", insn->code);
 			return;
 		}
-	} else if (class == BPF_JMP) {
+	} else if (class == BPF_JMP || class == BPF_JMP32) {
 		u8 opcode = BPF_OP(insn->code);
 
 		if (opcode == BPF_CALL) {
@@ -460,6 +464,7 @@ static void __mark_reg_unknown_value(struct bpf_reg_state *regs, u32 regno)
 	regs[regno].type = UNKNOWN_VALUE;
 	regs[regno].id = 0;
 	regs[regno].imm = 0;
+	regs[regno].mem_size = 0;
 }
 
 static void mark_reg_unknown_value(struct bpf_reg_state *regs, u32 regno)
@@ -884,6 +889,22 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		err = check_packet_access(env, regno, off, size);
 		if (!err && t == BPF_READ && value_regno >= 0)
 			mark_reg_unknown_value(state->regs, value_regno);
+	} else if (reg->type == PTR_TO_MEM) {
+		/* ringbuf reservation: direct accesses inside
+		 * [ptr, ptr + mem_size) only, no pointer stores */
+		if (off < 0 || off + size > reg->mem_size) {
+			verbose("R%d invalid mem access off=%d size=%d\n",
+				regno, off, size);
+			return -EACCES;
+		}
+		if (t == BPF_WRITE && value_regno >= 0 &&
+		    is_pointer_value(env, value_regno)) {
+			verbose("R%d leaks addr into mem\n", value_regno);
+			return -EACCES;
+		}
+		err = 0;
+		if (!err && t == BPF_READ && value_regno >= 0)
+			mark_reg_unknown_value(state->regs, value_regno);
 	} else {
 		verbose("R%d invalid mem access '%s'\n",
 			regno, reg_type_str[reg->type]);
@@ -1039,6 +1060,18 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		expected_type = PTR_TO_CTX;
 		if (type != expected_type)
 			goto err_type;
+	} else if (arg_type == ARG_PTR_TO_MEM) {
+		/* ringbuf reservation, must be null-checked first */
+		expected_type = PTR_TO_MEM;
+		if (type != expected_type)
+			goto err_type;
+	} else if (arg_type == ARG_CONST_ALLOC_SIZE_OR_ZERO) {
+		/* reservation size, const (zero allowed); stashed for
+		 * typing the reservation returned by the helper */
+		expected_type = CONST_IMM;
+		if (type != expected_type)
+			goto err_type;
+		meta->mem_size = reg->imm;
 	} else if (arg_type == ARG_PTR_TO_STACK ||
 		   arg_type == ARG_PTR_TO_RAW_STACK) {
 		expected_type = PTR_TO_STACK;
@@ -1148,6 +1181,14 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 		    func_id != BPF_FUNC_current_task_under_cgroup)
 			goto error;
 		break;
+	case BPF_MAP_TYPE_RINGBUF:
+		if (func_id != BPF_FUNC_ringbuf_reserve &&
+		    func_id != BPF_FUNC_ringbuf_submit &&
+		    func_id != BPF_FUNC_ringbuf_discard &&
+		    func_id != BPF_FUNC_ringbuf_query &&
+		    func_id != BPF_FUNC_ringbuf_output)
+			goto error;
+		break;
 	default:
 		break;
 	}
@@ -1156,6 +1197,12 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 	switch (func_id) {
 	case BPF_FUNC_tail_call:
 		if (map->map_type != BPF_MAP_TYPE_PROG_ARRAY)
+			goto error;
+		break;
+	case BPF_FUNC_ringbuf_reserve:
+	case BPF_FUNC_ringbuf_query:
+	case BPF_FUNC_ringbuf_output:
+		if (map->map_type != BPF_MAP_TYPE_RINGBUF)
 			goto error;
 		break;
 	case BPF_FUNC_perf_event_read:
@@ -1325,6 +1372,11 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 			return -EINVAL;
 		}
 		regs[BPF_REG_0].map_ptr = meta.map_ptr;
+		regs[BPF_REG_0].id = ++env->id_gen;
+	} else if (fn->ret_type == RET_PTR_TO_MEM_OR_NULL) {
+		regs[BPF_REG_0].type = PTR_TO_MEM_OR_NULL;
+		regs[BPF_REG_0].max_value = regs[BPF_REG_0].min_value = 0;
+		regs[BPF_REG_0].mem_size = (u32)meta.mem_size;
 		regs[BPF_REG_0].id = ++env->id_gen;
 	} else {
 		verbose("unknown return type %d of func %d\n",
@@ -1879,8 +1931,9 @@ static int check_alu_op(struct bpf_verifier_env *env, struct bpf_insn *insn)
 			return -EINVAL;
 		}
 
-		if (opcode == BPF_ARSH && BPF_CLASS(insn->code) != BPF_ALU64) {
-			verbose("BPF_ARSH not supported for 32 bit ALU\n");
+		if (opcode == BPF_ARSH && BPF_CLASS(insn->code) != BPF_ALU64 &&
+		    BPF_CLASS(insn->code) != BPF_ALU) {
+			verbose("BPF_ARSH not supported for this ALU class\n");
 			return -EINVAL;
 		}
 
@@ -1900,6 +1953,30 @@ static int check_alu_op(struct bpf_verifier_env *env, struct bpf_insn *insn)
 			return err;
 
 		dst_reg = &regs[insn->dst_reg];
+
+		/* Ringbuf reservations are not arithmetically adjustable.
+		 * Reject explicitly even for privileged programs (where
+		 * is_pointer_value() returns false); otherwise the
+		 * reservation would decay to UNKNOWN and escape the
+		 * submit/discard leak check at EXIT, pinning the record
+		 * BUSY forever. Matches upstream (no arithmetic on MEM).
+		 */
+		if (dst_reg->type == PTR_TO_MEM ||
+		    dst_reg->type == PTR_TO_MEM_OR_NULL) {
+			verbose("R%d arithmetic on mem reservation prohibited\n",
+				insn->dst_reg);
+			return -EACCES;
+		}
+		if (BPF_SRC(insn->code) == BPF_X) {
+			struct bpf_reg_state *src_reg = &regs[insn->src_reg];
+
+			if (src_reg->type == PTR_TO_MEM ||
+			    src_reg->type == PTR_TO_MEM_OR_NULL) {
+				verbose("R%d arithmetic on mem reservation prohibited\n",
+					insn->src_reg);
+				return -EACCES;
+			}
+		}
 
 		/* first we want to adjust our ranges. */
 		adjust_reg_min_max_vals(env, insn);
@@ -2200,13 +2277,33 @@ static void mark_map_reg(struct bpf_reg_state *regs, u32 regno, u32 id,
 	struct bpf_reg_state *reg = &regs[regno];
 
 	if (reg->type == PTR_TO_MAP_VALUE_OR_NULL && reg->id == id) {
-		reg->type = type;
+		/* Only MAP_VALUE/UNKNOWN narrow map lookups; a MEM safe
+		 * type here means the null check was for a different
+		 * reservation id namespace collision -- fail safe to
+		 * UNKNOWN rather than mistyping.
+		 */
+		if (type == PTR_TO_MAP_VALUE || type == UNKNOWN_VALUE)
+			reg->type = type;
+		else
+			reg->type = UNKNOWN_VALUE;
 		/* We don't need id from this point onwards anymore, thus we
 		 * should better reset it, so that state pruning has chances
 		 * to take effect.
 		 */
 		reg->id = 0;
-		if (type == UNKNOWN_VALUE)
+		if (reg->type == UNKNOWN_VALUE)
+			__mark_reg_unknown_value(regs, regno);
+	} else if (reg->type == PTR_TO_MEM_OR_NULL && reg->id == id) {
+		/* same null-check narrowing for ringbuf reservations;
+		 * mem_size is preserved for bounds checking. Only
+		 * MEM/UNKNOWN narrow reservations.
+		 */
+		if (type == PTR_TO_MEM || type == UNKNOWN_VALUE)
+			reg->type = type;
+		else
+			reg->type = UNKNOWN_VALUE;
+		reg->id = 0;
+		if (reg->type == UNKNOWN_VALUE)
 			__mark_reg_unknown_value(regs, regno);
 	}
 }
@@ -2277,7 +2374,10 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 	/* detect if R == 0 where R was initialized to zero earlier */
 	if (BPF_SRC(insn->code) == BPF_K &&
 	    (opcode == BPF_JEQ || opcode == BPF_JNE) &&
-	    dst_reg->type == CONST_IMM && dst_reg->imm == insn->imm) {
+	    dst_reg->type == CONST_IMM &&
+	    (BPF_CLASS(insn->code) != BPF_JMP32 ?
+	     dst_reg->imm == insn->imm :
+	     (u32)dst_reg->imm == (u32)insn->imm)) {
 		if (opcode == BPF_JEQ) {
 			/* if (imm == imm) goto pc+off;
 			 * only follow the goto, ignore fall-through
@@ -2298,8 +2398,11 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		return -EFAULT;
 
 	/* detect if we are comparing against a constant value so we can adjust
-	 * our min/max values for our dst register.
+	 * our min/max values for our dst register.  Skipped for JMP32:
+	 * 32-bit conditions don't imply 64-bit bounds, so propagate no
+	 * facts (both branches explored with unchanged bounds).
 	 */
+	if (BPF_CLASS(insn->code) != BPF_JMP32) {
 	if (BPF_SRC(insn->code) == BPF_X) {
 		if (regs[insn->src_reg].type == CONST_IMM)
 			reg_set_min_max(&other_branch->regs[insn->dst_reg],
@@ -2313,23 +2416,35 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		reg_set_min_max(&other_branch->regs[insn->dst_reg],
 					dst_reg, insn->imm, opcode);
 	}
+	}
 
-	/* detect if R == 0 where R is returned from bpf_map_lookup_elem() */
+	/* detect if R == 0 where R is returned from bpf_map_lookup_elem()
+	 * or bpf_ringbuf_reserve() */
 	if (BPF_SRC(insn->code) == BPF_K &&
 	    insn->imm == 0 && (opcode == BPF_JEQ || opcode == BPF_JNE) &&
-	    dst_reg->type == PTR_TO_MAP_VALUE_OR_NULL) {
+	    (dst_reg->type == PTR_TO_MAP_VALUE_OR_NULL ||
+	     dst_reg->type == PTR_TO_MEM_OR_NULL)) {
 		/* Mark all identical map registers in each branch as either
 		 * safe or unknown depending R == 0 or R != 0 conditional.
+		 * Use the matching safe type explicitly (MAP_VALUE vs MEM)
+		 * instead of relying on mark_map_reg() to fold one into
+		 * the other.
 		 */
+		enum bpf_reg_type safe_type =
+			(dst_reg->type == PTR_TO_MEM_OR_NULL) ?
+			PTR_TO_MEM : PTR_TO_MAP_VALUE;
+
 		mark_map_regs(this_branch, insn->dst_reg,
-			      opcode == BPF_JEQ ? PTR_TO_MAP_VALUE : UNKNOWN_VALUE);
+			      opcode == BPF_JEQ ? safe_type : UNKNOWN_VALUE);
 		mark_map_regs(other_branch, insn->dst_reg,
-			      opcode == BPF_JEQ ? UNKNOWN_VALUE : PTR_TO_MAP_VALUE);
-	} else if (BPF_SRC(insn->code) == BPF_X && opcode == BPF_JGT &&
+			      opcode == BPF_JEQ ? UNKNOWN_VALUE : safe_type);
+	} else if (BPF_CLASS(insn->code) == BPF_JMP &&
+		   BPF_SRC(insn->code) == BPF_X && opcode == BPF_JGT &&
 		   dst_reg->type == PTR_TO_PACKET &&
 		   regs[insn->src_reg].type == PTR_TO_PACKET_END) {
 		find_good_pkt_pointers(this_branch, dst_reg);
-	} else if (BPF_SRC(insn->code) == BPF_X && opcode == BPF_JGE &&
+	} else if (BPF_CLASS(insn->code) == BPF_JMP &&
+		   BPF_SRC(insn->code) == BPF_X && opcode == BPF_JGE &&
 		   dst_reg->type == PTR_TO_PACKET_END &&
 		   regs[insn->src_reg].type == PTR_TO_PACKET) {
 		find_good_pkt_pointers(other_branch, &regs[insn->src_reg]);
@@ -2586,7 +2701,8 @@ peek_stack:
 		goto check_state;
 	t = insn_stack[cur_stack - 1];
 
-	if (BPF_CLASS(insns[t].code) == BPF_JMP) {
+	if (BPF_CLASS(insns[t].code) == BPF_JMP ||
+	    BPF_CLASS(insns[t].code) == BPF_JMP32) {
 		u8 opcode = BPF_OP(insns[t].code);
 
 		if (opcode == BPF_EXIT) {
@@ -2760,6 +2876,16 @@ static bool states_equal(struct bpf_verifier_env *env,
 
 		if (memcmp(rold, rcur, sizeof(*rold)) == 0)
 			continue;
+
+		/* MEM reservations with different sizes are never
+		 * equivalent: pruning a smaller reservation against a
+		 * larger verified one would allow out-of-bounds access.
+		 */
+		if (rold->type == rcur->type &&
+		    (rold->type == PTR_TO_MEM ||
+		     rold->type == PTR_TO_MEM_OR_NULL) &&
+		    rold->mem_size != rcur->mem_size)
+			return false;
 
 		/* If the ranges were not the same, but everything else was and
 		 * we didn't do a variable access into a map then we are a-ok.
@@ -3064,7 +3190,7 @@ static int do_check(struct bpf_verifier_env *env)
 			if (err)
 				return err;
 
-		} else if (class == BPF_JMP) {
+		} else if (class == BPF_JMP || class == BPF_JMP32) {
 			u8 opcode = BPF_OP(insn->code);
 
 			if (opcode == BPF_CALL) {
@@ -3114,6 +3240,30 @@ static int do_check(struct bpf_verifier_env *env)
 				if (is_pointer_value(env, BPF_REG_0)) {
 					verbose("R0 leaks addr as return value\n");
 					return -EACCES;
+				}
+
+				/* ringbuf reservations must be submitted or
+				 * discarded before exit; a surviving concrete
+				 * reference would leak the record forever */
+				{
+					int i;
+
+					for (i = 0; i < MAX_BPF_REG; i++) {
+						if (regs[i].type == PTR_TO_MEM) {
+							verbose("R%d leaks mem reservation\n",
+								i);
+							return -EACCES;
+						}
+					}
+					for (i = 0; i < MAX_BPF_STACK; i += BPF_REG_SIZE) {
+						if (state->stack_slot_type[i] == STACK_SPILL &&
+						    state->spilled_regs[i / BPF_REG_SIZE].type ==
+						    PTR_TO_MEM) {
+							verbose("fp%d leaks mem reservation\n",
+								-MAX_BPF_STACK + i);
+							return -EACCES;
+						}
+					}
 				}
 
 process_bpf_exit:

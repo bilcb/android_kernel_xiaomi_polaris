@@ -381,5 +381,9 @@ struct cgroup_subsys cpuacct_cgrp_subsys = {
 	.css_alloc	= cpuacct_css_alloc,
 	.css_free	= cpuacct_css_free,
 	.legacy_cftypes	= files,
+	/* cpuacct has no v2 files but stays enabled (implicit) on v2 so
+	 * that per-cgroup CPU accounting keeps working there */
+	.implicit_on_dfl = true,
+	.threaded	= true,
 	.early_init	= true,
 };

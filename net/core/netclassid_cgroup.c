@@ -128,7 +128,7 @@ static int write_classid(struct cgroup_subsys_state *css, struct cftype *cft,
 
 	cs->classid = (u32)value;
 
-	css_task_iter_start(css, &it);
+	css_task_iter_start(css, 0, &it);
 	while ((p = css_task_iter_next(&it))) {
 		update_classid_task(p, cs->classid);
 		cond_resched();
@@ -153,4 +153,5 @@ struct cgroup_subsys net_cls_cgrp_subsys = {
 	.css_free		= cgrp_css_free,
 	.attach			= cgrp_attach,
 	.legacy_cftypes		= ss_files,
+	.threaded		= true,
 };

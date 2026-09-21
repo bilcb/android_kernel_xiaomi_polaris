@@ -325,8 +325,9 @@ struct hstate {
 	unsigned int free_huge_pages_node[MAX_NUMNODES];
 	unsigned int surplus_huge_pages_node[MAX_NUMNODES];
 #ifdef CONFIG_CGROUP_HUGETLB
-	/* cgroup control files */
+	/* cgroup control files, legacy and v2 */
 	struct cftype cgroup_files[5];
+	struct cftype cgroup_files_dfl[4];
 #endif
 	char name[HSTATE_NAME_LEN];
 };

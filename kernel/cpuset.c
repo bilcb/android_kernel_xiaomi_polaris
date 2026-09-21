@@ -880,7 +880,7 @@ static void update_tasks_cpumask(struct cpuset *cs)
 	struct css_task_iter it;
 	struct task_struct *task;
 
-	css_task_iter_start(&cs->css, &it);
+	css_task_iter_start(&cs->css, 0, &it);
 	while ((task = css_task_iter_next(&it)))
 		update_cpus_allowed(cs, task, cs->effective_cpus);
 	css_task_iter_end(&it);
@@ -1126,7 +1126,7 @@ static void update_tasks_nodemask(struct cpuset *cs)
 	 * It's ok if we rebind the same mm twice; mpol_rebind_mm()
 	 * is idempotent.  Also migrate pages in each mm to new nodes.
 	 */
-	css_task_iter_start(&cs->css, &it);
+	css_task_iter_start(&cs->css, 0, &it);
 	while ((task = css_task_iter_next(&it))) {
 		struct mm_struct *mm;
 		bool migrate;
@@ -1319,7 +1319,7 @@ static void update_tasks_flags(struct cpuset *cs)
 	struct css_task_iter it;
 	struct task_struct *task;
 
-	css_task_iter_start(&cs->css, &it);
+	css_task_iter_start(&cs->css, 0, &it);
 	while ((task = css_task_iter_next(&it)))
 		cpuset_update_task_spread_flag(cs, task);
 	css_task_iter_end(&it);
@@ -1960,6 +1960,41 @@ static struct cftype files[] = {
 };
 
 /*
+ * cgroup2 cpuset interface. Minimal subset backported for 4.9:
+ * cpus/mems + cpus.effective/mems.effective. Legacy exclusive/load-balance/spread
+ * knobs have no v2 equivalent and stay on v1. The core already has
+ * cgroup_subsys_on_dfl() branches (alloc/bind/can_attach), so
+ * exposing dfl_cftypes is sufficient for basic use.
+ */
+static struct cftype cpuset_dfl_files[] = {
+	{
+		.name = "cpus",
+		.seq_show = cpuset_common_seq_show,
+		.write = cpuset_write_resmask,
+		.max_write_len = (100U + 6 * NR_CPUS),
+		.private = FILE_CPULIST,
+	},
+	{
+		.name = "mems",
+		.seq_show = cpuset_common_seq_show,
+		.write = cpuset_write_resmask,
+		.max_write_len = (100U + 6 * MAX_NUMNODES),
+		.private = FILE_MEMLIST,
+	},
+	{
+		.name = "cpus.effective",
+		.seq_show = cpuset_common_seq_show,
+		.private = FILE_EFFECTIVE_CPULIST,
+	},
+	{
+		.name = "mems.effective",
+		.seq_show = cpuset_common_seq_show,
+		.private = FILE_EFFECTIVE_MEMLIST,
+	},
+	{ }	/* terminate */
+};
+
+/*
  *	cpuset_css_alloc - allocate a cpuset css
  *	cgrp:	control group that the new cpuset will be part of
  */
@@ -2161,6 +2196,8 @@ struct cgroup_subsys cpuset_cgrp_subsys = {
 	.bind		= cpuset_bind,
 	.fork		= cpuset_fork,
 	.legacy_cftypes	= files,
+	.dfl_cftypes	= cpuset_dfl_files,
+	.threaded	= true,
 	.early_init	= true,
 };
 

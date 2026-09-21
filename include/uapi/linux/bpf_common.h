@@ -11,6 +11,8 @@
 #define		BPF_JMP		0x05
 #define		BPF_RET		0x06
 #define		BPF_MISC        0x07
+/* eBPF 32-bit jump class (shares classic BPF_RET encoding) */
+#define		BPF_JMP32	0x06
 
 /* ld/ldx fields */
 #define BPF_SIZE(code)  ((code) & 0x18)

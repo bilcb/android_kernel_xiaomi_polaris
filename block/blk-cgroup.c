@@ -1183,6 +1183,7 @@ struct cgroup_subsys io_cgrp_subsys = {
 	.bind = blkcg_bind,
 	.dfl_cftypes = blkcg_files,
 	.legacy_cftypes = blkcg_legacy_files,
+	.threaded = true,
 	.legacy_name = "blkio",
 #ifdef CONFIG_MEMCG
 	/*

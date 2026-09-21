@@ -268,7 +268,7 @@ static void update_if_frozen(struct cgroup_subsys_state *css)
 	rcu_read_unlock();
 
 	/* are all tasks frozen? */
-	css_task_iter_start(css, &it);
+	css_task_iter_start(css, 0, &it);
 
 	while ((task = css_task_iter_next(&it))) {
 		if (freezing(task)) {
@@ -320,7 +320,7 @@ static void freeze_cgroup(struct freezer *freezer)
 	struct css_task_iter it;
 	struct task_struct *task;
 
-	css_task_iter_start(&freezer->css, &it);
+	css_task_iter_start(&freezer->css, 0, &it);
 	while ((task = css_task_iter_next(&it)))
 		freeze_task(task);
 	css_task_iter_end(&it);
@@ -331,7 +331,7 @@ static void unfreeze_cgroup(struct freezer *freezer)
 	struct css_task_iter it;
 	struct task_struct *task;
 
-	css_task_iter_start(&freezer->css, &it);
+	css_task_iter_start(&freezer->css, 0, &it);
 	while ((task = css_task_iter_next(&it)))
 		__thaw_task(task);
 	css_task_iter_end(&it);
@@ -470,6 +470,117 @@ static struct cftype files[] = {
 	{ }	/* terminate */
 };
 
+/*
+ * cgroup v2 freezer interface for this 4.9 tree.  The freezer subsystem
+ * is bound to the unified hierarchy and reuses the full v1 freezing
+ * machinery (freeze_task, system_freezing_cnt, refrigerator, completion
+ * tracking), exposed with the upstream v2 file layout:
+ *
+ *   cgroup.freeze   - write 1/0 to freeze/thaw the subtree, read back
+ *                     1 when FROZEN else 0
+ *
+ * (see also the "frozen" key in core cgroup.events).  This is NOT the
+ * 5.1 core jobctl-based freezer, but the user-visible behavior for
+ * freeze/thaw/frozen polling is equivalent for process-granular use.
+ */
+static int freezer_freeze_show(struct seq_file *m, void *v)
+{
+	struct cgroup_subsys_state *css = seq_css(m), *pos;
+
+	mutex_lock(&freezer_mutex);
+	rcu_read_lock();
+
+	/* update states bottom-up */
+	css_for_each_descendant_post(pos, css) {
+		if (!css_tryget_online(pos))
+			continue;
+		rcu_read_unlock();
+
+		update_if_frozen(pos);
+
+		rcu_read_lock();
+		css_put(pos);
+	}
+
+	rcu_read_unlock();
+
+	seq_puts(m, (css_freezer(css)->state & CGROUP_FROZEN) ? "1\n" : "0\n");
+	mutex_unlock(&freezer_mutex);
+	return 0;
+}
+
+static ssize_t freezer_freeze_write(struct kernfs_open_file *of,
+				    char *buf, size_t nbytes, loff_t off)
+{
+	bool freeze;
+
+	buf = strstrip(buf);
+
+	if (!strcmp(buf, "1"))
+		freeze = true;
+	else if (!strcmp(buf, "0"))
+		freeze = false;
+	else
+		return -EINVAL;
+
+	freezer_change_state(css_freezer(of_css(of)), freeze);
+	return nbytes;
+}
+
+static struct cftype freezer_dfl_files[] = {
+	{
+		.name = "cgroup.freeze",
+		.flags = CFTYPE_NOT_ON_ROOT | CFTYPE_NO_PREFIX,
+		.seq_show = freezer_freeze_show,
+		.write = freezer_freeze_write,
+	},
+	{ }	/* terminate */
+};
+
+/**
+ * cgroup_freezer_frozen - report whether a cgroup is frozen
+ * @cgrp: cgroup of interest (on any hierarchy)
+ *
+ * Used by the core cgroup.events "frozen" key.  Returns false when the
+ * freezer controller isn't enabled for @cgrp.
+ */
+bool cgroup_freezer_frozen(struct cgroup *cgrp)
+{
+	struct cgroup_subsys_state *css, *pos;
+	bool frozen;
+
+	rcu_read_lock();
+	css = rcu_dereference(cgrp->subsys[freezer_cgrp_id]);
+	if (!css || !css_tryget_online(css)) {
+		rcu_read_unlock();
+		return false;
+	}
+	rcu_read_unlock();
+
+	mutex_lock(&freezer_mutex);
+	rcu_read_lock();
+
+	/* update states bottom-up */
+	css_for_each_descendant_post(pos, css) {
+		if (!css_tryget_online(pos))
+			continue;
+		rcu_read_unlock();
+
+		update_if_frozen(pos);
+
+		rcu_read_lock();
+		css_put(pos);
+	}
+
+	rcu_read_unlock();
+
+	frozen = css_freezer(css)->state & CGROUP_FROZEN;
+	mutex_unlock(&freezer_mutex);
+
+	css_put(css);
+	return frozen;
+}
+
 struct cgroup_subsys freezer_cgrp_subsys = {
 	.css_alloc	= freezer_css_alloc,
 	.css_online	= freezer_css_online,
@@ -478,4 +589,6 @@ struct cgroup_subsys freezer_cgrp_subsys = {
 	.attach		= freezer_attach,
 	.fork		= freezer_fork,
 	.legacy_cftypes	= files,
+	.dfl_cftypes	= freezer_dfl_files,
+	.threaded	= true,
 };

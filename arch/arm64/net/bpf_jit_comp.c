@@ -514,6 +514,7 @@ emit_bswap_uxt:
 
 	/* JUMP off */
 	case BPF_JMP | BPF_JA:
+	case BPF_JMP32 | BPF_JA:
 		jmp_offset = bpf2a64_offset(i + off, i, ctx);
 		check_imm26(jmp_offset);
 		emit(A64_B(jmp_offset), ctx);
@@ -526,6 +527,17 @@ emit_bswap_uxt:
 	case BPF_JMP | BPF_JSGT | BPF_X:
 	case BPF_JMP | BPF_JSGE | BPF_X:
 		emit(A64_CMP(1, dst, src), ctx);
+		goto emit_cond_jmp;
+	/* JMP32: 32-bit compares use W registers (is64 = 0), which compare
+	 * only the low 32 bits, matching BPF_JMP32 semantics.
+	 */
+	case BPF_JMP32 | BPF_JEQ | BPF_X:
+	case BPF_JMP32 | BPF_JGT | BPF_X:
+	case BPF_JMP32 | BPF_JGE | BPF_X:
+	case BPF_JMP32 | BPF_JNE | BPF_X:
+	case BPF_JMP32 | BPF_JSGT | BPF_X:
+	case BPF_JMP32 | BPF_JSGE | BPF_X:
+		emit(A64_CMP(0, dst, src), ctx);
 emit_cond_jmp:
 		jmp_offset = bpf2a64_offset(i + off, i, ctx);
 		check_imm19(jmp_offset);
@@ -557,6 +569,9 @@ emit_cond_jmp:
 	case BPF_JMP | BPF_JSET | BPF_X:
 		emit(A64_TST(1, dst, src), ctx);
 		goto emit_cond_jmp;
+	case BPF_JMP32 | BPF_JSET | BPF_X:
+		emit(A64_TST(0, dst, src), ctx);
+		goto emit_cond_jmp;
 	/* IF (dst COND imm) JUMP off */
 	case BPF_JMP | BPF_JEQ | BPF_K:
 	case BPF_JMP | BPF_JGT | BPF_K:
@@ -567,9 +582,22 @@ emit_cond_jmp:
 		emit_a64_mov_i(1, tmp, imm, ctx);
 		emit(A64_CMP(1, dst, tmp), ctx);
 		goto emit_cond_jmp;
+	case BPF_JMP32 | BPF_JEQ | BPF_K:
+	case BPF_JMP32 | BPF_JGT | BPF_K:
+	case BPF_JMP32 | BPF_JGE | BPF_K:
+	case BPF_JMP32 | BPF_JNE | BPF_K:
+	case BPF_JMP32 | BPF_JSGT | BPF_K:
+	case BPF_JMP32 | BPF_JSGE | BPF_K:
+		emit_a64_mov_i(0, tmp, imm, ctx);
+		emit(A64_CMP(0, dst, tmp), ctx);
+		goto emit_cond_jmp;
 	case BPF_JMP | BPF_JSET | BPF_K:
 		emit_a64_mov_i(1, tmp, imm, ctx);
 		emit(A64_TST(1, dst, tmp), ctx);
+		goto emit_cond_jmp;
+	case BPF_JMP32 | BPF_JSET | BPF_K:
+		emit_a64_mov_i(0, tmp, imm, ctx);
+		emit(A64_TST(0, dst, tmp), ctx);
 		goto emit_cond_jmp;
 	/* function call */
 	case BPF_JMP | BPF_CALL:
@@ -597,6 +625,14 @@ emit_cond_jmp:
 		check_imm26(jmp_offset);
 		emit(A64_B(jmp_offset), ctx);
 		break;
+	/* JMP32 CALL/TAILCALL/EXIT are never emitted by LLVM; reject
+	 * explicitly so such programs fall back to the interpreter
+	 * instead of hitting the generic unknown-opcode path.
+	 */
+	case BPF_JMP32 | BPF_CALL:
+	case BPF_JMP32 | BPF_CALL | BPF_X:
+	case BPF_JMP32 | BPF_EXIT:
+		goto notyet;
 
 	/* dst = imm64 */
 	case BPF_LD | BPF_IMM | BPF_DW:

@@ -37,6 +37,7 @@ CONTENTS
   4-1. Format
   4-2. Conventions
   4-3. Core Interface Files
+  4-4. Thread Mode (backported from upstream 4.14)
 5. Controllers
   5-1. CPU
     5-1-1. CPU Interface Files
@@ -47,6 +48,10 @@ CONTENTS
   5-3. IO
     5-3-1. IO Interface Files
     5-3-2. Writeback
+  5-4. HugeTLB (backported to this 4.9 tree)
+  5-5. Cpuset (backported to this 4.9 tree, minimal subset)
+  5-6. Freezer (backported to this 4.9 tree, 4.9 mechanics)
+  5-7. Devices via eBPF (backported to this 4.9 tree)
 6. Namespace
   6-1. Basics
   6-2. The Root and Views
@@ -316,8 +321,9 @@ in the delegated sub-hierarchy, nothing can escape the resource
 restrictions imposed by the parent.
 
 Currently, cgroup doesn't impose any restrictions on the number of
-cgroups in or nesting depth of a delegated sub-hierarchy; however,
-this may be limited explicitly in the future.
+cgroups in or nesting depth of a delegated sub-hierarchy by default;
+however, this can be limited explicitly with cgroup.max.descendants
+and cgroup.max.depth (see 4-3).
 
 
 2-5-2. Delegation Containment
@@ -648,12 +654,79 @@ All cgroup core files are prefixed with "cgroup."
 		1 if the cgroup or its descendants contains any live
 		processes; otherwise, 0.
 
+	  frozen
+
+		[this tree] 1 if the cgroup and its subtree finished
+		freezing (see 5-6); otherwise, 0.
+
+  cgroup.stat
+
+	[this tree, since the 4.14 backport] A read-only flat-keyed
+	file which exists on all cgroups.
+
+	  nr_descendants / nr_dying_descendants
+
+		Live and dying (deleted but not yet freed) descendant
+		counts.  (Per-subtree CPU consumption lives in the
+		cpu controller's cpu.stat, not here.)
+
+  cgroup.max.descendants / cgroup.max.depth
+
+	[this tree, since the 4.14 backport] Read-write single value
+	files.  The default is "max" (no limit).  They cap the number
+	of live descendant cgroups and the nesting depth below the
+	cgroup; mkdir(2) beyond a limit fails with EAGAIN.
+
+  cgroup.kill
+
+	[this tree, since the 5.14 backport] A write-only single value
+	file which exists on non-root cgroups.  The only allowed value
+	is "1"; writing it SIGKILLs the cgroup and all descendant
+	cgroups (kernel threads and already-dying tasks are skipped).
+	In a threaded cgroup the write fails with EOPNOTSUPP, as
+	killing is a process directed operation (same rule as
+	cgroup.procs reads).
+
+4-4. Thread Mode
+
+	[this tree, backported from upstream 4.14] cgroup v2 supports
+	thread granularity for controllers which explicitly opt in
+	(threaded controllers: cpu, cpuacct, cpuset, memory, io, pids,
+	freezer, perf_event, net_cls).
+
+	By default all threads of a process belong to the same cgroup
+	(domain mode).  Writing "threaded" to cgroup.type makes the
+	cgroup join the parent's resource domain; the nearest
+	non-threaded ancestor (thread root) serves as the resource
+	domain for the whole subtree.  Inside a threaded subtree,
+	threads may be spread across cgroups (cgroup.threads) without
+	process granularity or no-internal-process constraint, and
+	only threaded controllers may be enabled there.  The operation
+	is one-directional.
+
+  cgroup.type
+
+	A read-write single value file on non-root cgroups: "domain",
+	"domain threaded" (thread root), "domain invalid" or
+	"threaded".
+
+  cgroup.threads
+
+	Like cgroup.procs but per-thread (TIDs); migration through it
+	must stay inside the same resource domain.
+
 
 5. Controllers
 
 5-1. CPU
 
-[NOTE: The interface for the cpu controller hasn't been merged yet]
+[NOTE: backported to this 4.9 tree: cpu.weight/weight.nice/max/stat
+ are available on v2. cpu.stat reports usage_usec/user_usec/
+ system_usec (via the 4.15 basic CPU accounting backport, jiffies
+ tick-based user/sys breakdown adjusted to scheduler runtime) plus
+ nr_periods/nr_throttled/throttled_usec when CFS bandwidth is in
+ use. cpuacct is implicitly enabled on v2 (no files) so legacy
+ accounting keeps working.]
 
 The "cpu" controllers regulates distribution of CPU cycles.  This
 controller implements weight and absolute bandwidth limit models for
@@ -686,7 +759,6 @@ All time durations are in microseconds.
 	The weight in the range [1, 10000].
 
   cpu.max
-
 	A read-write two value file which exists on non-root cgroups.
 	The default is "max 100000".
 
@@ -697,6 +769,30 @@ All time durations are in microseconds.
 	which indicates that the group may consume upto $MAX in each
 	$PERIOD duration.  "max" for $MAX indicates no limit.  If only
 	one number is written, $MAX is updated.
+
+  cpu.uclamp.min / cpu.uclamp.max
+
+	[this tree, backported from upstream 5.x] Read-write single
+	value files on non-root cgroups.  Defaults "0.00" / "max".
+
+	The requested minimum/maximum utilization (protection/limit)
+	as a percentage with two decimal digits, e.g. 12.34 for
+	12.34%; "max" selects 100%.  Out-of-range writes fail with
+	ERANGE (negatives included).  Unlike other interfaces,
+	cpu.uclamp.max may be set below cpu.uclamp.min.  The exact
+	requested percentage is remembered (rounding is not
+	recoverable from the internal 0..1024 representation), so
+	readback reproduces what was written.
+
+	Utilization clamp floor/ceiling for CFS tasks:
+	schedutil frequency and EAS placement honor
+	clamp(boosted_util, min, max).  A task's effective clamp is
+	its sched_setattr request constrained by the hierarchy (max
+	of mins, min of maxes).  Per-task requests go through
+	sched_setattr (SCHED_FLAG_UTIL_CLAMP_MIN/MAX, -1 resets one
+	clamp to default; fork with SCHED_FLAG_RESET_ON_FORK resets
+	both).  Coexists with schedtune (boost margin applies first,
+	clamp second); with defaults everything is identity.
 
   cpu.rt.max
 
@@ -759,6 +855,11 @@ PAGE_SIZE multiple when read back.
 
 	The total amount of memory currently being used by the cgroup
 	and its descendants.
+
+  memory.peak
+
+	[this tree] A read-only single value file which exists on
+	non-root cgroups.  Historical maximum usage in bytes.
 
   memory.low
 
@@ -835,6 +936,38 @@ PAGE_SIZE multiple when read back.
 		The number of times the OOM killer has been invoked in
 		the cgroup.  This may not exactly match the number of
 		processes killed but should generally be close.
+
+	  oom_kill
+
+		[this tree, backported from upstream 8e675f7] The
+		number of processes belonging to this cgroup killed by
+		any kind of OOM killer.  Also reported in
+		/proc/vmstat as "oom_kill" and, for v1, in
+		memory.oom_control.
+
+  memory.events.local
+
+	[this tree] Same counters as memory.events (in this tree the
+	v2 event counters are already per-cgroup), provided under the
+	upstream name for userspace compatibility.
+
+  memory.numa_stat
+
+	[this tree, requires CONFIG_NUMA] Per-node breakdown
+	(total/file/anon/unevictable) without the hierarchical_
+	lines of the v1 file.
+
+  memory.oom.group
+
+	[this tree] A read-write single value file which exists on
+	non-root cgroups.  The default is "0".
+
+	If set, the cgroup is treated as an indivisible OOM victim:
+	when an OOM scoped to this cgroup (or any descendant scope
+	below an oom.group ancestor) triggers, all processes in the
+	subtree are SIGKILLed together instead of a single victim.
+	Unkillable tasks (init, kthreads, oom_score_adj -1000) are
+	still skipped.
 
   memory.stat
 
@@ -987,6 +1120,10 @@ limit distribution; however, weight based distribution is available
 only if cfq-iosched is in use and neither scheme is available for
 blk-mq devices.
 
+[NOTE: this tree's polaris defconfig now enables BLK_CGROUP +
+CFQ_GROUP_IOSCHED + BLK_DEV_THROTTLING so io.stat/weight/max are
+available on v2. Default iosched here is CFQ.]
+
 
 5-3-1. IO Interface Files
 
@@ -1134,7 +1271,119 @@ writeback as follows.
 
 	For cgroup writeback, this is calculated into ratio against
 	total available memory and applied the same way as
-	vm.dirty[_background]_ratio.
+ 	vm.dirty[_background]_ratio.
+
+
+5-4. HugeTLB
+
+[NOTE: backported to this 4.9 tree. Requires CONFIG_CGROUP_HUGETLB
+(which needs CONFIG_HUGETLB_PAGE). Off by default on mobile
+defconfigs.]
+
+Per-hstate files, existing on non-root cgroups:
+
+  hugetlb.<size>.current
+
+	Current usage in bytes.
+
+  hugetlb.<size>.max
+
+	Hard limit in bytes. "max" means unlimited (default).
+	Writing "max" or a byte value (rounded down to huge page
+	size) updates the limit. Cannot be set on root.
+
+  hugetlb.<size>.events
+
+	Flat-keyed, read-only. Reports:
+
+	  max <failcnt>
+
+	the number of allocation failures due to the limit.
+	events.local is omitted in this tree; read events for the
+	hierarchical count.
+
+Legacy names (<size>.limit_in_bytes / .usage_in_bytes /
+.max_usage_in_bytes / .failcnt) stay on v1.
+
+5-5. Cpuset
+
+[NOTE: minimal subset backported to this 4.9 tree.]
+
+  cpuset.cpus / cpuset.mems (read-write)
+  cpuset.cpus.effective / cpuset.mems.effective (read-only)
+
+Legacy exclusive / load-balance / spread / migrate knobs have no v2
+equivalent and stay on v1. Empty cpus/mems are allowed on v2
+(delegation-friendly); on v1 they are still rejected with -ENOSPC.
+
+5-6. Freezer
+
+[NOTE: backported to this 4.9 tree. This is NOT the 5.1 core
+jobctl-based freezer; it binds the existing 4.9 freezer subsystem to
+the unified hierarchy and reuses its machinery (freeze_task,
+system_freezing_cnt, refrigerator, completion tracking). The
+user-visible behavior of freeze/thaw/frozen is equivalent for
+process-granular use.]
+
+  cgroup.freeze
+
+	A read-write single value file which exists on non-root
+	cgroups. Write 1 to freeze the subtree, 0 to thaw it.
+	Reads back 1 when FROZEN, 0 otherwise.
+
+  cgroup.events:frozen
+
+	The core cgroup.events file additionally reports:
+
+	  frozen 0|1
+
+	1 when the cgroup (and its subtree) finished freezing.
+
+Notes / deliberate non-goals in this tree:
+
+* schedtune (Android/EAS, max 8 flat boost groups, nesting rejected
+  in code) cannot represent v2 hierarchies and stays on v1. If cpu
+  moves to v2, keep schedtune mounted on v1 for EAS tuning.
+* cpuacct/schedtune/perf/net_prio expose no v2 files
+  (cpuacct is implicitly enabled for accounting only).
+
+5-7. Devices via eBPF
+
+[NOTE: backported to this 4.9 tree from upstream 4.15 (commit
+ebc614f). There is no whitelist-style devices controller on v2 by
+design; device access is programmable instead.]
+
+A BPF_PROG_TYPE_CGROUP_DEVICE program can be attached (bpf(2)
+BPF_PROG_ATTACH, attach type BPF_CGROUP_DEVICE) to a unified-hierarchy
+cgroup directory fd. It runs on device open (inode permission) and
+mknod for tasks in the subtree, before the v1 whitelist when that is
+also enabled. The program may use map/uid-gid/trace_printk helpers.
+
+  struct bpf_cgroup_dev_ctx {
+	__u32 access_type; /* (access << 16) | type */
+	__u32 major;
+	__u32 minor;
+  };
+
+  access: BPF_DEVCG_ACC_MKNOD / _READ / _WRITE
+  type:   BPF_DEVCG_DEV_BLOCK / BPF_DEVCG_DEV_CHAR
+
+Return 0 to deny with -EPERM, non-zero to allow. Works without the
+v1 device controller (CONFIG_CGROUP_DEVICE off); only CONFIG_CGROUP_BPF
+is required. Example: allow only char 1:5 (/dev/zero) and 1:9
+(/dev/urandom), deny everything else.
+
+[this tree] Two more 5.15-era BPF pieces are backported alongside:
+BPF_PROG_QUERY (list programs attached to a cgroup, with
+BPF_F_QUERY_EFFECTIVE for the inherited set) and BPF_PROG_TEST_RUN
+(run CGROUP_DEVICE programs, or SOCKET_FILTER programs with a packet
+buffer, from userspace).
+
+[this tree] BPF ring buffer maps (BPF_MAP_TYPE_RINGBUF with
+ringbuf_reserve/submit/discard/query helpers and PTR_TO_MEM verifier
+tracking) are backported from 5.8: Android 16 ships a CRITICAL
+ringbuf selftest program, and TEST_RUN above is how it is executed.
+mmap/poll consumer side included.
 
 
 6. Namespace

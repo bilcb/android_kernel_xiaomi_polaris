@@ -29,6 +29,7 @@
 #include <linux/export.h>
 #include <linux/notifier.h>
 #include <linux/memcontrol.h>
+#include <linux/vmstat.h>
 #include <linux/mempolicy.h>
 #include <linux/security.h>
 #include <linux/ptrace.h>
@@ -827,6 +828,23 @@ static bool task_will_free_mem(struct task_struct *task)
 	return ret;
 }
 
+/*
+ * Kill one member of an oom_group cgroup.  Unkillable tasks (init,
+ * kernel threads, oom_score_adj -1000) are skipped, mirroring the
+ * regular OOM victim rules.
+ */
+static int oom_kill_memcg_member(struct task_struct *task, void *unused)
+{
+	if (is_global_init(task) || (task->flags & PF_KTHREAD) ||
+	    task->signal->oom_score_adj == OOM_SCORE_ADJ_MIN)
+		return 0;
+
+	get_task_struct(task);
+	do_send_sig_info(SIGKILL, SEND_SIG_FORCED, task, true);
+	put_task_struct(task);
+	return 0;
+}
+
 static void oom_kill_process(struct oom_control *oc, const char *message)
 {
 	struct task_struct *p = oc->chosen;
@@ -909,6 +927,11 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	/* Get a reference to safely compare mm after task_unlock(victim) */
 	mm = victim->mm;
 	atomic_inc(&mm->mm_count);
+
+	/* Raise event before sending signal: task reaper must see this */
+	count_vm_event(OOM_KILL);
+	count_memcg_event_mm(mm, MEMCG_OOM_KILL);
+
 	/*
 	 * We should send SIGKILL before setting TIF_MEMDIE in order to prevent
 	 * the OOM victim from depleting the memory reserves from the user
@@ -958,6 +981,24 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 
 	if (can_oom_reap)
 		wake_oom_reaper(victim);
+
+	/*
+	 * memory.oom.group: if the OOM scope (or an ancestor below root)
+	 * is marked as an indivisible victim, kill the whole sub-tree.
+	 * Unkillable tasks (init, kthreads, oom_score_adj -1000) are
+	 * skipped as with a regular OOM kill.
+	 */
+	if (is_memcg_oom(oc)) {
+		struct mem_cgroup *oom_group =
+			mem_cgroup_get_oom_group(oc->memcg);
+
+		if (oom_group) {
+			pr_err("Memory cgroup out of memory: killing oom group\n");
+			mem_cgroup_scan_tasks(oom_group, oom_kill_memcg_member,
+					      NULL);
+			css_put(&oom_group->css);
+		}
+	}
 
 	mmdrop(mm);
 	put_task_struct(victim);

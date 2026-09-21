@@ -1,5 +1,6 @@
 
 #include <linux/sched.h>
+#include <linux/jump_label.h>
 #include <linux/sched/sysctl.h>
 #include <linux/sched/rt.h>
 #include <linux/sched/smt.h>
@@ -341,6 +342,11 @@ struct cfs_bandwidth {
 /* task group related information */
 struct task_group {
 	struct cgroup_subsys_state css;
+
+	/* utilization clamp constraints, defaults {0, 1024} (no clamp) */
+	unsigned int uclamp[UCLAMP_CNT];
+	/* exact cgroup-requested percentages (two decimals, [0, 10000]) */
+	unsigned int uclamp_pct[UCLAMP_CNT];
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/* schedulable entities of this group on each cpu */
@@ -744,6 +750,15 @@ struct rq {
 	struct load_weight load;
 	unsigned long nr_load_updates;
 	u64 nr_switches;
+
+	/* Utilization clamp values based on CPU's RUNNABLE tasks */
+	struct uclamp_rq {
+		unsigned int value;
+		struct uclamp_bucket {
+			unsigned long value;
+			unsigned long tasks;
+		} bucket[UCLAMP_BUCKETS];
+	} uclamp[UCLAMP_CNT] ____cacheline_aligned;
 
 	struct cfs_rq cfs;
 	struct rt_rq rt;
@@ -1361,6 +1376,13 @@ extern struct static_key sched_feat_keys[__SCHED_FEAT_NR];
 
 extern struct static_key_false sched_numa_balancing;
 extern struct static_key_false sched_schedstats;
+
+/* zero overhead until the first non-default clamp is set */
+DECLARE_STATIC_KEY_FALSE(sched_uclamp_used);
+#define uclamp_is_used() static_branch_likely(&sched_uclamp_used)
+
+unsigned int uclamp_eff_value(struct task_struct *p, enum uclamp_id clamp_id);
+unsigned int uclamp_rq_get(struct rq *rq, unsigned int clamp_id);
 
 static inline u64 global_rt_period(void)
 {

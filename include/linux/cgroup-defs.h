@@ -15,6 +15,7 @@
 #include <linux/rcupdate.h>
 #include <linux/percpu-refcount.h>
 #include <linux/percpu-rwsem.h>
+#include <linux/u64_stats_sync.h>
 #include <linux/workqueue.h>
 #include <linux/bpf-cgroup.h>
 #include <linux/psi_types.h>
@@ -50,6 +51,50 @@ enum {
 	CSS_RELEASED	= (1 << 2), /* refcnt reached zero, released */
 	CSS_VISIBLE	= (1 << 3), /* css is visible to userland */
 	CSS_DYING	= (1 << 4), /* css is dying */
+};
+
+/*
+ * cgroup basic resource usage statistics.  Accounting is done per-cpu in
+ * cgroup_cpu_stat which is then lazily propagated up the hierarchy on
+ * reads.  Backported from upstream 4.15 (commit 041cd640b2f3) for
+ * cgroup2 CPU usage accounting (cpu.stat usage_usec/user_usec/
+ * system_usec).
+ *
+ * When a stat gets updated, the cgroup_cpu_stat and its ancestors are
+ * linked into the updated tree.  On the following read, propagation only
+ * considers and consumes the updated tree.  This makes reading O(the
+ * number of descendants which have been active since last read) instead of
+ * O(the total number of descendants).
+ */
+struct cgroup_cpu_stat {
+	/*
+	 * ->sync protects all the current counters.  These are the only
+	 * fields which get updated in the hot path.
+	 */
+	struct u64_stats_sync sync;
+	struct task_cputime cputime;
+
+	/*
+	 * Snapshots at the last reading.  These are used to calculate the
+	 * deltas to propagate to the global counters.
+	 */
+	struct task_cputime last_cputime;
+
+	/*
+	 * Child cgroups with stat updates on this cpu since the last read
+	 * are linked on the parent's ->updated_children through
+	 * ->updated_next.
+	 *
+	 * Protected by per-cpu cgroup_cpu_stat_lock.
+	 */
+	struct cgroup *updated_children;	/* terminated by self cgroup */
+	struct cgroup *updated_next;		/* NULL iff not on the list */
+};
+
+struct cgroup_stat {
+	/* per-cpu statistics are collected into the folowing global counters */
+	struct task_cputime cputime;
+	struct prev_cputime prev_cputime;
 };
 
 /* bits in struct cgroup flags field */
@@ -180,6 +225,15 @@ struct css_set {
 	struct cgroup *dfl_cgrp;
 
 	/*
+	 * For a domain cgroup, the following points to self.  If threaded,
+	 * to the matching cset of the nearest domain ancestor.  The
+	 * dom_cset provides access to the domain cgroup and its csses to
+	 * which domain level resource consumptions should be charged.
+	 * Backported from upstream 4.14 thread mode.
+	 */
+	struct css_set *dom_cset;
+
+	/*
 	 * Set of subsystem states, one for each subsystem. This array is
 	 * immutable after creation apart from the init_css_set during
 	 * subsystem registration (at boot time).
@@ -215,6 +269,10 @@ struct css_set {
 
 	/* all css_task_iters currently walking this cset */
 	struct list_head task_iters;
+
+	/* all threaded csets whose ->dom_cset points to this cset */
+	struct list_head threaded_csets;
+	struct list_head threaded_csets_node;
 
 	/* dead and being drained, ignore for migration */
 	bool dead;
@@ -309,6 +367,31 @@ struct cgroup {
 
 	/* used to store eBPF programs */
 	struct cgroup_bpf bpf;
+
+	/* cgroup basic resource statistics (cgroup2 cpu accounting) */
+	struct cgroup_cpu_stat __percpu *cpu_stat;
+	struct cgroup_stat pending_stat;	/* pending from children */
+	struct cgroup_stat stat;
+
+	/* live and dying descendant counts (cgroup.stat, max.* limits) */
+	atomic_t nr_descendants;
+	atomic_t nr_dying_descendants;
+
+	/* subtree limits, INT_MAX means "max" (no limit) */
+	int max_descendants;
+	int max_depth;
+
+	/*
+	 * If !threaded, self.  If threaded, it points to the nearest
+	 * domain ancestor.  Inside a threaded subtree, cgroups are exempt
+	 * from process granularity and no-internal-task constraint.
+	 * Domain level resource consumptions which aren't tied to a
+	 * specific task are charged to the dom_cgrp.
+	 * Backported from upstream 4.14 thread mode.
+	 */
+	struct cgroup *dom_cgrp;
+
+	int nr_threaded_children;	/* # of live threaded child cgroups */
 
 	/* ids of the ancestors at each level including self */
 	int ancestor_ids[];
@@ -483,6 +566,19 @@ struct cgroup_subsys {
 	 * hierarchies coexisting with csses for the current one.
 	 */
 	bool implicit_on_dfl:1;
+
+	/*
+	 * If %true, the controller supports threaded mode on the default
+	 * hierarchy.  In a threaded subtree, both process granularity and
+	 * no-internal-process constraint are ignored and a threaded
+	 * controller should be able to handle that.
+	 *
+	 * Note that as an implicit controller is automatically enabled on
+	 * all cgroups on the default hierarchy, it should also be
+	 * threaded.  implicit && !threaded is not supported.
+	 * Backported from upstream 4.14 thread mode.
+	 */
+	bool threaded:1;
 
 	/*
 	 * If %false, this subsystem is properly hierarchical -
