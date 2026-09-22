@@ -70,7 +70,7 @@ int fname_encrypt(struct inode *inode, const struct qstr *iname,
 	res = crypto_wait_req(crypto_skcipher_encrypt(req), &wait);
 	skcipher_request_free(req);
 	if (res < 0) {
-		fscrypt_err(inode->i_sb,
+		fscrypt_err(inode,
 			    "Filename encryption failed for inode %lu: %d",
 			    inode->i_ino, res);
 		return res;
@@ -116,7 +116,7 @@ static int fname_decrypt(struct inode *inode,
 	res = crypto_wait_req(crypto_skcipher_decrypt(req), &wait);
 	skcipher_request_free(req);
 	if (res < 0) {
-		fscrypt_err(inode->i_sb,
+		fscrypt_err(inode,
 			    "Filename decryption failed for inode %lu: %d",
 			    inode->i_ino, res);
 		return res;
@@ -184,7 +184,8 @@ static int digest_decode(const char *src, int len, char *dst)
 bool fscrypt_fname_encrypted_size(const struct inode *inode, u32 orig_len,
 				  u32 max_len, u32 *encrypted_len_ret)
 {
-	int padding = 4 << (inode->i_crypt_info->ci_flags &
+	int padding = 4 << (fscrypt_policy_flags(
+				&inode->i_crypt_info->ci_policy) &
 			    FS_POLICY_FLAGS_PAD_MASK);
 	u32 encrypted_len;
 

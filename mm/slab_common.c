@@ -1352,6 +1352,29 @@ void kzfree(const void *p)
 }
 EXPORT_SYMBOL(kzfree);
 
+/**
+ * kfree_sensitive - kfree with extra memory sanitization
+ * @p: object to free memory of
+ *
+ * The object's actual size (from ksize(), which sanity-checks the
+ * allocation) is zeroed with memzero_explicit() before the memory is
+ * returned to the allocator, so that sensitive data such as key material
+ * does not linger in the freed object.  Prefer this over kfree() for
+ * buffers that may have contained secrets.
+ */
+void kfree_sensitive(const void *p)
+{
+	size_t ks;
+	void *mem = (void *)p;
+
+	if (unlikely(ZERO_OR_NULL_PTR(mem)))
+		return;
+	ks = ksize(mem);
+	memzero_explicit(mem, ks);
+	kfree(mem);
+}
+EXPORT_SYMBOL(kfree_sensitive);
+
 /* Tracepoints definitions. */
 EXPORT_TRACEPOINT_SYMBOL(kmalloc);
 EXPORT_TRACEPOINT_SYMBOL(kmem_cache_alloc);

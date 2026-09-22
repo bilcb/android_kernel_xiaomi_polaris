@@ -968,7 +968,12 @@ static struct inode *ext4_alloc_inode(struct super_block *sb)
 
 static int ext4_drop_inode(struct inode *inode)
 {
-	int drop = generic_drop_inode(inode);
+	int drop;
+
+	if (fscrypt_drop_inode(inode))
+		drop = 1;
+	else
+		drop = generic_drop_inode(inode);
 
 	trace_ext4_drop_inode(inode, drop);
 	return drop;

@@ -12,8 +12,6 @@
 
 #include "fscrypt_ice.h"
 
-extern int fscrypt_get_mode_key_size(int mode);
-
 int fscrypt_using_hardware_encryption(const struct inode *inode)
 {
 	struct fscrypt_info *ci = inode->i_crypt_info;

@@ -3,6 +3,18 @@
 
 #ifndef __ASSEMBLY__
 
+/*
+ * Optionally randomize structure layout.  No-op unless the GCC plugin
+ * is enabled; present so that backported code using the annotation
+ * still compiles.
+ */
+#ifndef __randomize_layout
+# define __randomize_layout
+#endif
+#ifndef __randomize_struct
+# define __randomize_struct __randomize_layout
+#endif
+
 #ifdef __CHECKER__
 # define __user		__attribute__((noderef, address_space(1)))
 # define __kernel	__attribute__((address_space(0)))
