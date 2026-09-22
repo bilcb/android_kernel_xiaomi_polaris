@@ -1046,6 +1046,7 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group,
 	t->event = 0;
 	t->last_event_time = 0;
 	init_waitqueue_head(&t->event_wait);
+	kref_init(&t->refcount);
 
 	mutex_lock(&group->trigger_lock);
 
@@ -1078,22 +1079,32 @@ struct psi_trigger *psi_trigger_create(struct psi_group *group,
 	return t;
 }
 
-void psi_trigger_destroy(struct psi_trigger *t)
+static void psi_trigger_destroy(struct kref *ref)
 {
-	struct psi_group *group;
+	struct psi_trigger *t = container_of(ref, struct psi_trigger, refcount);
+	struct psi_group *group = t->group;
 	struct kthread_worker *kworker_to_destroy = NULL;
 
 	/*
-	 * We do not check psi_disabled since it might have been disabled after
-	 * the trigger got created.
+	 * Unlike mainline, checking psi_disabled here is safe: psi_init()
+	 * runs from sched_init() long before any trigger can exist, so it
+	 * can never be disabled after a trigger got created. The check only
+	 * guards against a refcount reaching zero while psi=0 boot
+	 * parameter left the subsystem off (defensive, effectively dead).
 	 */
-	if (!t)
+	if (static_branch_likely(&psi_disabled))
 		return;
 
-	group = t->group;
 	/*
 	 * Wakeup waiters to stop polling. Can happen if cgroup is deleted
 	 * from under a polling process.
+	 *
+	 * Known limitation of replace-on-write on 4.9 (no wake_up_pollfree
+	 * here): poll/select waiters are removed by the woken autoremove
+	 * entry or by poll_freewalk(), but an epoll waiter stays linked to
+	 * t->event_wait until EPOLL_CTL_DEL/close, i.e. into the freed
+	 * trigger. Do not rewrite the trigger of a file that is being
+	 * watched with epoll; close and reopen it instead.
 	 */
 	wake_up_interruptible(&t->event_wait);
 
@@ -1125,9 +1136,9 @@ void psi_trigger_destroy(struct psi_trigger *t)
 	mutex_unlock(&group->trigger_lock);
 
 	/*
-	 * Wait for psi_schedule_poll_work RCU to complete its read-side
-	 * critical section before destroying the trigger and optionally the
-	 * poll_task.
+	 * Wait for both *trigger_ptr from psi_trigger_replace and
+	 * poll_kworker RCUs to complete their read-side critical sections
+	 * before destroying the trigger and optionally the poll_kworker
 	 */
 	synchronize_rcu();
 	/*
@@ -1149,6 +1160,27 @@ void psi_trigger_destroy(struct psi_trigger *t)
 	kfree(t);
 }
 
+/*
+ * Replace the trigger pointed to by *trigger_ptr, destroying the old one.
+ * The caller must serialize updates of *trigger_ptr (psi_write holds
+ * seq->lock, cgroup writes hold kernfs of->mutex); readers go through
+ * RCU in psi_trigger_poll().
+ */
+void psi_trigger_replace(void **trigger_ptr, struct psi_trigger *new)
+{
+	struct psi_trigger *old = *trigger_ptr;
+
+	/* psi_disabled is fixed in sched_init(), before any trigger can
+	 * exist, so bailing out here never leaks a live trigger.
+	 */
+	if (static_branch_likely(&psi_disabled))
+		return;
+
+	rcu_assign_pointer(*trigger_ptr, new);
+	if (old)
+		kref_put(&old->refcount, psi_trigger_destroy);
+}
+
 unsigned int psi_trigger_poll(void **trigger_ptr, struct file *file,
 			      poll_table *wait)
 {
@@ -1158,14 +1190,33 @@ unsigned int psi_trigger_poll(void **trigger_ptr, struct file *file,
 	if (static_branch_likely(&psi_disabled))
 		return DEFAULT_POLLMASK | POLLERR | POLLPRI;
 
-	t = smp_load_acquire(trigger_ptr);
-	if (!t)
+	rcu_read_lock();
+
+	t = rcu_dereference(*(void __rcu __force **)trigger_ptr);
+	/*
+	 * A concurrent psi_trigger_replace() may already have dropped the
+	 * last reference and entered psi_trigger_destroy(), which waits for
+	 * this RCU section and then frees the trigger regardless of the
+	 * refcount. A plain kref_get() here would resurrect a zero count,
+	 * racing the kfree and causing a second destroy on our own
+	 * kref_put(). Refuse to poll a trigger that is going away; the
+	 * pointer already reads NULL/new on the re-poll.
+	 */
+	if (t && !kref_get_unless_zero(&t->refcount))
+		t = NULL;
+	if (!t) {
+		rcu_read_unlock();
 		return DEFAULT_POLLMASK | POLLERR | POLLPRI;
+	}
+
+	rcu_read_unlock();
 
 	poll_wait(file, &t->event_wait, wait);
 
 	if (cmpxchg(&t->event, 1, 0) == 1)
 		ret |= POLLPRI;
+
+	kref_put(&t->refcount, psi_trigger_destroy);
 
 	return ret;
 }
@@ -1190,24 +1241,14 @@ static ssize_t psi_write(struct file *file, const char __user *user_buf,
 
 	buf[buf_size - 1] = '\0';
 
-	seq = file->private_data;
+	new = psi_trigger_create(&psi_system, buf, nbytes, res);
+	if (IS_ERR(new))
+		return PTR_ERR(new);
 
+	seq = file->private_data;
 	/* Take seq->lock to protect seq->private from concurrent writes */
 	mutex_lock(&seq->lock);
-
-	/* Allow only one trigger per file descriptor */
-	if (seq->private) {
-		mutex_unlock(&seq->lock);
-		return -EBUSY;
-	}
-
-	new = psi_trigger_create(&psi_system, buf, nbytes, res);
-	if (IS_ERR(new)) {
-		mutex_unlock(&seq->lock);
-		return PTR_ERR(new);
-	}
-
-	smp_store_release(&seq->private, new);
+	psi_trigger_replace(&seq->private, new);
 	mutex_unlock(&seq->lock);
 
 	return nbytes;
@@ -1242,7 +1283,7 @@ static int psi_fop_release(struct inode *inode, struct file *file)
 {
 	struct seq_file *seq = file->private_data;
 
-	psi_trigger_destroy(seq->private);
+	psi_trigger_replace(&seq->private, NULL);
 	return single_release(inode, file);
 }
 
