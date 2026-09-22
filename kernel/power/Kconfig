@@ -340,3 +340,15 @@ config PM_GENERIC_DOMAINS_OF
 
 config CPU_PM
 	bool
+
+config BOEFFLA_WL_BLOCKER
+	bool "Boeffla generic wakelock blocker driver"
+	depends on PM
+	default n
+	help
+	  Allow blocking wakeup sources (wakelocks) by name via
+	  /sys/devices/virtual/misc/boeffla_wakelock_blocker/.
+	  Useful to suppress noisy platform wakelocks
+	  (qcom_rx_wakelock, wlan_*, NETLINK, ...) for better idle
+	  battery life. Lists are runtime-tunable, blocking can be
+	  disabled by emptying both lists. If unsure, say N.
