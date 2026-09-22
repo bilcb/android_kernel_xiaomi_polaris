@@ -54,6 +54,16 @@ config ANDROID_BINDER_IPC_SELFTEST
 	  exhaustively with combinations of various buffer sizes and
 	  alignments.
 
+config ANDROID_BINDERFS
+	bool "Android Binderfs"
+	depends on ANDROID_BINDER_IPC
+	---help---
+	  Binderfs is a lightweight IPC binder special filesystem that
+	  provides the capability to dynamically allocate binder devices
+	  in a sandbox environment such as containers or Android.
+
+	  Note that enabling this will break the traditional binder devices.
+
 endif # if ANDROID
 
 endmenu
