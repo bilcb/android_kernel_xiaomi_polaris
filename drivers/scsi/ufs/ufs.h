@@ -109,7 +109,11 @@ enum {
 	UPIU_TRANSACTION_DATA_OUT	= 0x02,
 	UPIU_TRANSACTION_TASK_REQ	= 0x04,
 	UPIU_TRANSACTION_QUERY_REQ	= 0x16,
+	UPIU_TRANSACTION_UIC_CMD	= 0x1F,
 };
+
+/* UIC commands are 4 dwords long, per UFSHCI spec */
+#define UIC_CMD_SIZE	(sizeof(__u32) * 4)
 
 /* UTP UPIU Transaction Codes Target to Initiator */
 enum {
@@ -378,6 +382,9 @@ struct utp_upiu_req {
 	union {
 		struct utp_upiu_cmd sc;
 		struct utp_upiu_query qr;
+		struct utp_upiu_query tr;
+		/* use utp_upiu_query to host the 4 dwords of uic command */
+		struct utp_upiu_query uc;
 	};
 };
 

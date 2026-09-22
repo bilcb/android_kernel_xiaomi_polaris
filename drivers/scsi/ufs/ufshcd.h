@@ -80,6 +80,7 @@
 #define UFS_MASK(x, y)	(x << ((y) % BITS_PER_LONG))
 
 struct ufs_hba;
+struct request_queue;
 
 enum dev_cmd_type {
 	DEV_CMD_TYPE_NOP		= 0x0,
@@ -777,6 +778,11 @@ struct ufs_hba {
 
 	struct Scsi_Host *host;
 	struct device *dev;
+#ifdef CONFIG_SCSI_UFS_BSG
+	/* BSG transport endpoint (/dev/bsg/ufs-bsgN) */
+	struct device bsg_dev;
+	struct request_queue *bsg_queue;
+#endif
 	/*
 	 * This field is to keep a reference to "scsi_device" corresponding to
 	 * "UFS device" W-LU.
@@ -1240,6 +1246,8 @@ int ufshcd_query_descriptor(struct ufs_hba *hba, enum query_opcode opcode,
 
 int ufshcd_hold(struct ufs_hba *hba, bool async);
 void ufshcd_release(struct ufs_hba *hba, bool no_sched);
+int ufshcd_send_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd);
+int ufshcd_send_nop(struct ufs_hba *hba);
 int ufshcd_wait_for_doorbell_clr(struct ufs_hba *hba, u64 wait_timeout_us);
 int ufshcd_change_power_mode(struct ufs_hba *hba,
 			     struct ufs_pa_layer_attr *pwr_mode);

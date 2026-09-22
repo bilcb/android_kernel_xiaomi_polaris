@@ -47,6 +47,7 @@
 #include "ufshcd.h"
 #include "ufshci.h"
 #include "ufs_quirks.h"
+#include "ufs_bsg.h"
 #include "ufs-debugfs.h"
 #include "ufs-qcom.h"
 
@@ -2636,7 +2637,7 @@ __ufshcd_send_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd,
  *
  * Returns 0 only if success.
  */
-static int
+int
 ufshcd_send_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
 {
 	int ret;
@@ -2663,6 +2664,7 @@ ufshcd_send_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(ufshcd_send_uic_cmd);
 
 /**
  * ufshcd_map_sg - Map scatter-gather list to prdt
@@ -5312,6 +5314,36 @@ out:
 
 	return ret;
 }
+
+/**
+ * ufshcd_send_nop - Issue a NOP OUT UPIU and wait for NOP IN
+ * @hba: per adapter instance
+ *
+ * Sends a single NOP OUT transaction to the device and waits up to
+ * %NOP_OUT_TIMEOUT for the NOP IN response. Returns 0 on success or
+ * -ETIMEDOUT/-errno. Used by the bsg NOP_OUT message code so that
+ * userspace liveness probes really talk to the device.
+ */
+int ufshcd_send_nop(struct ufs_hba *hba)
+{
+	int err;
+	bool has_read_lock = false;
+
+	ufshcd_hold_all(hba);
+	if (!ufshcd_is_shutdown_ongoing(hba) && !ufshcd_eh_in_progress(hba)) {
+		down_read(&hba->lock);
+		has_read_lock = true;
+	}
+	mutex_lock(&hba->dev_cmd.lock);
+	err = ufshcd_exec_dev_cmd(hba, DEV_CMD_TYPE_NOP, NOP_OUT_TIMEOUT);
+	mutex_unlock(&hba->dev_cmd.lock);
+	if (has_read_lock)
+		up_read(&hba->lock);
+	ufshcd_release_all(hba);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(ufshcd_send_nop);
 
 /**
  * ufshcd_verify_dev_init() - Verify device initialization
@@ -10066,6 +10098,7 @@ ufshcd_exit_latency_hist(struct ufs_hba *hba)
  */
 void ufshcd_remove(struct ufs_hba *hba)
 {
+	ufs_bsg_remove(hba);
 	scsi_remove_host(hba->host);
 	/* disable interrupts */
 	ufshcd_disable_intr(hba, hba->intr_mask);
@@ -10833,6 +10866,13 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	ufsdbg_add_debugfs(hba);
 
 	ufshcd_add_sysfs_nodes(hba);
+
+	/*
+	 * BSG node is best-effort: userspace RPMB/provisioning tools
+	 * want it, but a failure here must not fail HBA probe.
+	 */
+	if (ufs_bsg_probe(hba))
+		dev_warn(hba->dev, "failed to create ufs-bsg node\n");
 
 	return 0;
 

@@ -126,3 +126,19 @@ config SCSI_UFSHCD_CMD_LOGGING
 
 	  Select this if you want above mentioned debug information captured.
 	  If unsure, say N.
+
+config SCSI_UFS_BSG
+	bool "UFS BSG device node support"
+	depends on SCSI_UFSHCD
+	select BLK_DEV_BSGLIB
+	help
+	  This selects the UFS BSG (block layer SG v4) transport endpoint.
+	  It creates /dev/bsg/ufs-bsgN so userspace (QCOM librpmb,
+	  ufs-utils, recovery GPT tools) can exchange UPIUs (QUERY, NOP,
+	  UIC) with the UFS device. The RPMB well-known LUN stays
+	  reachable through its SCSI sg node for SECURITY PROTOCOL
+	  IN/OUT frames.
+
+	  Select this if your userspace needs /dev/bsg/ufs-bsgN
+	  (fixes "could not find the ufs-bsg dev" from rpmb_ufs).
+	  If unsure, say N.
