@@ -27,8 +27,23 @@
 #include <linux/vmpressure.h>
 #include <linux/eventfd.h>
 #include <linux/mmzone.h>
+#include <linux/mm_types.h>
 #include <linux/writeback.h>
 #include <linux/page-flags.h>
+#include <linux/vmstat.h>
+
+/* node-level approximation of the 4.19 per-lruvec vmstat counters */
+static inline void __mod_lruvec_state(struct lruvec *lruvec,
+				      enum node_stat_item idx, int val)
+{
+	__mod_node_page_state(lruvec_pgdat(lruvec), idx, val);
+}
+
+static inline void mod_lruvec_state(struct lruvec *lruvec,
+				    enum node_stat_item idx, int val)
+{
+	mod_node_page_state(lruvec_pgdat(lruvec), idx, val);
+}
 
 struct mem_cgroup;
 struct page;
@@ -280,6 +295,11 @@ struct mem_cgroup {
 	struct list_head event_list;
 	spinlock_t event_list_lock;
 
+#ifdef CONFIG_LRU_GEN
+	/* per-memcg mm_struct list */
+	struct lru_gen_mm_list mm_list;
+#endif
+
 	struct mem_cgroup_per_node *nodeinfo[0];
 	/* WARNING: nodeinfo must be the last member here */
 };
@@ -323,6 +343,17 @@ static struct mem_cgroup_per_node *
 mem_cgroup_nodeinfo(struct mem_cgroup *memcg, int nid)
 {
 	return memcg->nodeinfo[nid];
+}
+
+static inline struct mem_cgroup *lruvec_memcg(struct lruvec *lruvec)
+{
+	struct mem_cgroup_per_node *mz;
+
+	if (mem_cgroup_disabled())
+		return NULL;
+
+	mz = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+	return mz->memcg;
 }
 
 /**
@@ -692,6 +723,11 @@ static inline void mem_cgroup_uncharge_list(struct list_head *page_list)
 
 static inline void mem_cgroup_migrate(struct page *old, struct page *new)
 {
+}
+
+static inline struct mem_cgroup *lruvec_memcg(struct lruvec *lruvec)
+{
+	return NULL;
 }
 
 static inline struct lruvec *mem_cgroup_lruvec(struct pglist_data *pgdat,

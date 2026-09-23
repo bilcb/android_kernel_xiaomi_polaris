@@ -278,6 +278,31 @@ int page_mapped_in_vma(struct page *page, struct vm_area_struct *vma);
  * anon_lock: for getting anon_lock by optimized way rather than default
  * invalid_vma: for skipping uninterested vma
  */
+/* Avoid racy checks */
+#define PVMW_SYNC		(1 << 0)
+/* Look for migration entries rather than present PTEs */
+#define PVMW_MIGRATION		(1 << 1)
+
+struct page_vma_mapped_walk {
+	struct page *page;
+	struct vm_area_struct *vma;
+	unsigned long address;
+	pmd_t *pmd;
+	pte_t *pte;
+	spinlock_t *ptl;
+	unsigned int flags;
+};
+
+static inline void page_vma_mapped_walk_done(struct page_vma_mapped_walk *pvmw)
+{
+	if (pvmw->pte)
+		pte_unmap(pvmw->pte);
+	if (pvmw->ptl)
+		spin_unlock(pvmw->ptl);
+}
+
+bool page_vma_mapped_walk(struct page_vma_mapped_walk *pvmw);
+
 struct rmap_walk_control {
 	void *arg;
 	struct vm_area_struct *target_vma;

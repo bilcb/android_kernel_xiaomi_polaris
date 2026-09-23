@@ -46,6 +46,7 @@
  */
 
 #include <linux/mm.h>
+#include <linux/mm_inline.h>
 #include <linux/pagemap.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
@@ -945,6 +946,21 @@ static int page_referenced_one(struct page *page, struct vm_area_struct *vma,
 	}
 
 	if (pte) {
+		if (lru_gen_enabled() && pte_young(*pte) &&
+		    !(vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ))) {
+			struct page_vma_mapped_walk pvmw = {
+				.page = page,
+				.vma = vma,
+				.address = address,
+				.ptl = ptl,
+			};
+
+			pvmw.pmd = pmd;
+			pvmw.pte = pte;
+			lru_gen_look_around(&pvmw);
+			referenced++;
+		}
+
 		if (ptep_clear_flush_young_notify(vma, address, pte)) {
 			/*
 			 * Don't treat a reference through a sequentially read
