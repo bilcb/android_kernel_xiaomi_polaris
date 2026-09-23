@@ -396,7 +396,7 @@ bool ufs_qcom_testbus_cfg_is_ok(struct ufs_qcom_host *host, u8 select_major,
 int ufs_qcom_testbus_config(struct ufs_qcom_host *host);
 void ufs_qcom_print_hw_debug_reg_all(struct ufs_hba *hba, void *priv,
 		void (*print_fn)(struct ufs_hba *hba, int offset, int num_regs,
-				char *str, void *priv));
+				const char *str, void *priv));
 
 static inline bool ufs_qcom_cap_qunipro(struct ufs_qcom_host *host)
 {

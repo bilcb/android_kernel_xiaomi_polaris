@@ -36,7 +36,7 @@ enum ufsdbg_err_inject_scenario {
 void ufsdbg_add_debugfs(struct ufs_hba *hba);
 void ufsdbg_remove_debugfs(struct ufs_hba *hba);
 void ufsdbg_pr_buf_to_std(struct ufs_hba *hba, int offset, int num_regs,
-				char *str, void *priv);
+				const char *str, void *priv);
 void ufsdbg_set_err_state(struct ufs_hba *hba);
 void ufsdbg_clr_err_state(struct ufs_hba *hba);
 #else
@@ -47,7 +47,7 @@ static inline void ufsdbg_remove_debugfs(struct ufs_hba *hba)
 {
 }
 static inline void ufsdbg_pr_buf_to_std(struct ufs_hba *hba, int offset,
-	int num_regs, char *str, void *priv)
+	int num_regs, const char *str, void *priv)
 {
 }
 void ufsdbg_set_err_state(struct ufs_hba *hba)

@@ -1477,4 +1477,7 @@ static inline void ufshcd_vops_pm_qos_req_end(struct ufs_hba *hba,
 		hba->var->pm_qos_vops->req_end(hba, req, lock);
 }
 
+int ufshcd_dump_regs(struct ufs_hba *hba, size_t offset, size_t len,
+                     const char *prefix);
+
 #endif /* End of Header */

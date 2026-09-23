@@ -282,9 +282,31 @@ static void ufshcd_hex_dump(struct ufs_hba *hba, const char * const str,
 	/* concatenate the device name and "str" */
 	snprintf(prefix_str, MAX_PREFIX_STR_SIZE, "%s %s: ",
 		 dev_name(hba->dev), str);
-	print_hex_dump(KERN_ERR, prefix_str, DUMP_PREFIX_OFFSET,
+	print_hex_dump(KERN_ERR, prefix_str,
+		       len > 4 ? DUMP_PREFIX_OFFSET : DUMP_PREFIX_NONE,
 		       16, 4, buf, len, false);
 }
+
+int ufshcd_dump_regs(struct ufs_hba *hba, size_t offset, size_t len,
+                     const char *prefix)
+{
+	u8 *regs;
+
+	/*
+	 * GFP_ATOMIC: the callers run from IRQ/error-handling paths with
+	 * locks held, where the GFP_KERNEL used upstream would sleep.
+	 */
+	regs = kmalloc(len, GFP_ATOMIC);
+	if (!regs)
+		return -ENOMEM;
+
+	memcpy_fromio(regs, hba->mmio_base + offset, len);
+	ufshcd_hex_dump(hba, prefix, regs, len);
+	kfree(regs);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(ufshcd_dump_regs);
 
 enum {
 	UFSHCD_MAX_CHANNEL	= 0,
@@ -812,16 +834,7 @@ static inline void __ufshcd_print_host_regs(struct ufs_hba *hba, bool no_sleep)
 	if (!(hba->ufshcd_dbg_print & UFSHCD_DBG_PRINT_HOST_REGS_EN))
 		return;
 
-	/*
-	 * hex_dump reads its data without the readl macro. This might
-	 * cause inconsistency issues on some platform, as the printed
-	 * values may be from cache and not the most recent value.
-	 * To know whether you are looking at an un-cached version verify
-	 * that IORESOURCE_MEM flag is on when xxx_get_resource() is invoked
-	 * during platform/pci probe function.
-	 */
-	ufshcd_hex_dump(hba, "host regs", hba->mmio_base,
-			UFSHCI_REG_SPACE_SIZE);
+	ufshcd_dump_regs(hba, 0, UFSHCI_REG_SPACE_SIZE, "host regs");
 	dev_err(hba->dev, "hba->ufs_version = 0x%x, hba->capabilities = 0x%x",
 		hba->ufs_version, hba->capabilities);
 	dev_err(hba->dev,
@@ -2804,6 +2817,7 @@ static int ufshcd_prepare_req_desc_hdr(struct ufs_hba *hba,
 	struct utp_transfer_req_desc *req_desc = lrbp->utr_descriptor_ptr;
 	u32 data_direction;
 	u32 dword_0;
+	u32 command_type;
 
 	if (cmd_dir == DMA_FROM_DEVICE) {
 		data_direction = UTP_DEVICE_TO_HOST;
@@ -2816,8 +2830,18 @@ static int ufshcd_prepare_req_desc_hdr(struct ufs_hba *hba,
 		*upiu_flags = UPIU_CMD_FLAGS_NONE;
 	}
 
-	dword_0 = data_direction | (lrbp->command_type
-				<< UPIU_COMMAND_TYPE_OFFSET);
+	/*
+	 * The UTRD command type follows the UFSHCI version: HCI v1.0/1.1
+	 * keep the legacy per-UPIU types, while HCI v2.0 and later (UFS 2.1
+	 * defines the command type as in 2.0) require UTS for every request
+	 * descriptor.  lrbp->command_type is deliberately left untouched:
+	 * it also keys UPIU composition and the completion paths below.
+	 */
+	command_type = ((hba->ufs_version == UFSHCI_VERSION_10) ||
+			(hba->ufs_version == UFSHCI_VERSION_11)) ?
+			lrbp->command_type : UTP_CMD_TYPE_UFS_STORAGE;
+
+	dword_0 = data_direction | (command_type << UPIU_COMMAND_TYPE_OFFSET);
 	if (lrbp->intr_cmd)
 		dword_0 |= UTP_REQ_DESC_INT_CMD;
 
@@ -6007,7 +6031,7 @@ static int ufshcd_disable_ee(struct ufs_hba *hba, u16 mask)
 		goto out;
 
 	val = hba->ee_ctrl_mask & ~mask;
-	val &= 0xFFFF; /* 2 bytes */
+	val &= MASK_EE_STATUS;
 	err = ufshcd_query_attr_retry(hba, UPIU_QUERY_OPCODE_WRITE_ATTR,
 			QUERY_ATTR_IDN_EE_CONTROL, 0, 0, &val);
 	if (!err)
@@ -6035,7 +6059,7 @@ static int ufshcd_enable_ee(struct ufs_hba *hba, u16 mask)
 		goto out;
 
 	val = hba->ee_ctrl_mask | mask;
-	val &= 0xFFFF; /* 2 bytes */
+	val &= MASK_EE_STATUS;
 	err = ufshcd_query_attr_retry(hba, UPIU_QUERY_OPCODE_WRITE_ATTR,
 			QUERY_ATTR_IDN_EE_CONTROL, 0, 0, &val);
 	if (!err)
@@ -6929,8 +6953,7 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 	if (retval == IRQ_NONE) {
 		dev_err(hba->dev, "%s: Unhandled interrupt 0x%08x\n",
 					__func__, intr_status);
-		ufshcd_hex_dump(hba, "host regs: ", hba->mmio_base,
-					UFSHCI_REG_SPACE_SIZE);
+		ufshcd_dump_regs(hba, 0, UFSHCI_REG_SPACE_SIZE, "host regs: ");
 	}
 
 	spin_unlock(hba->host->host_lock);
@@ -7423,7 +7446,8 @@ static int ufshcd_eh_host_reset_handler(struct scsi_cmnd *cmd)
 	do {
 		spin_lock_irqsave(hba->host->host_lock, flags);
 		if (!(work_pending(&hba->eh_work) ||
-				hba->ufshcd_state == UFSHCD_STATE_RESET))
+			    hba->ufshcd_state == UFSHCD_STATE_RESET ||
+			    hba->ufshcd_state == UFSHCD_STATE_EH_SCHEDULED))
 			break;
 		spin_unlock_irqrestore(hba->host->host_lock, flags);
 		dev_err(hba->dev, "%s: reset in progress - 1\n", __func__);
@@ -7476,7 +7500,7 @@ static u32 ufshcd_get_max_icc_level(int sup_curr_uA, u32 start_scan, char *buff)
 	u16 unit;
 
 	for (i = start_scan; i >= 0; i--) {
-		data = be16_to_cpu(*((u16 *)(buff + 2*i)));
+		data = be16_to_cpup((__be16 *)&buff[2 * i]);
 		unit = (data & ATTR_ICC_LVL_UNIT_MASK) >>
 						ATTR_ICC_LVL_UNIT_OFFSET;
 		curr_uA = data & ATTR_ICC_LVL_VALUE_MASK;
@@ -7654,12 +7678,12 @@ static int ufshcd_scsi_add_wlus(struct ufs_hba *hba)
 			NULL);
 
 		if (IS_ERR(sdev_boot)) {
-			dev_err(hba->dev, "%s: failed adding BOOT_WLUN. ret %d\n",
-				__func__, ret);
-			ret = PTR_ERR(sdev_boot);
-			goto remove_sdev_ufs_device;
+			dev_err(hba->dev, "%s: BOOT WLUN not found\n",
+				__func__);
+			sdev_boot = NULL;
+		} else {
+			scsi_device_put(sdev_boot);
 		}
-		scsi_device_put(sdev_boot);
 	}
 
 	if (is_embedded_dev) {
@@ -7677,9 +7701,8 @@ static int ufshcd_scsi_add_wlus(struct ufs_hba *hba)
 	goto out;
 
 remove_sdev_boot:
-	if (is_bootable_dev)
+	if (sdev_boot)
 		scsi_remove_device(sdev_boot);
-remove_sdev_ufs_device:
 	scsi_remove_device(hba->sdev_ufs_device);
 out:
 	return ret;
@@ -9952,6 +9975,12 @@ static inline void ufshcd_add_sysfs_nodes(struct ufs_hba *hba)
 	ufshcd_add_spm_lvl_sysfs_nodes(hba);
 }
 
+static inline void ufshcd_remove_sysfs_nodes(struct ufs_hba *hba)
+{
+	device_remove_file(hba->dev, &hba->rpm_lvl_attr);
+	device_remove_file(hba->dev, &hba->spm_lvl_attr);
+}
+
 static void __ufshcd_shutdown_clkscaling(struct ufs_hba *hba)
 {
 	bool suspend = false;
@@ -10088,7 +10117,7 @@ ufshcd_init_latency_hist(struct ufs_hba *hba)
 static void
 ufshcd_exit_latency_hist(struct ufs_hba *hba)
 {
-	device_create_file(hba->dev, &dev_attr_latency_hist);
+	device_remove_file(hba->dev, &dev_attr_latency_hist);
 }
 
 /**
@@ -10098,6 +10127,7 @@ ufshcd_exit_latency_hist(struct ufs_hba *hba)
  */
 void ufshcd_remove(struct ufs_hba *hba)
 {
+	ufshcd_remove_sysfs_nodes(hba);
 	ufs_bsg_remove(hba);
 	scsi_remove_host(hba->host);
 	/* disable interrupts */
@@ -10112,8 +10142,6 @@ void ufshcd_remove(struct ufs_hba *hba)
 		if (hba->devfreq)
 			devfreq_remove_device(hba->devfreq);
 	}
-
-	ufshcd_exit_latency_hist(hba);
 
 	ufshcd_hba_exit(hba);
 	ufsdbg_remove_debugfs(hba);
