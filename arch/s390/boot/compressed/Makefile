@@ -12,6 +12,13 @@ targets += misc.o piggy.o sizes.h head.o
 
 KBUILD_CFLAGS := -m64 -D__KERNEL__ $(LINUX_INCLUDE) -O2
 KBUILD_CFLAGS += -DDISABLE_BRANCH_PROFILING
+# decompress_unlz4.c builds the vendored LZ4 sources, which include a few
+# ISO C headers -nostdinc drops.
+KBUILD_CFLAGS += -I$(srctree)/lib/lz4/freestanding
+# The vendored sources need C11 and are exempt from
+# -Wdeclaration-after-statement; see lib/lz4/Makefile.
+KBUILD_CFLAGS += -std=gnu11
+KBUILD_CFLAGS += $(call cc-disable-warning,declaration-after-statement)
 KBUILD_CFLAGS += $(cflags-y) -fno-delete-null-pointer-checks -msoft-float
 KBUILD_CFLAGS += $(call cc-option,-mpacked-stack)
 KBUILD_CFLAGS += $(call cc-option,-ffreestanding)

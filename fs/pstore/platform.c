@@ -366,7 +366,7 @@ static int decompress_lz4(void *in, void *out, size_t inlen, size_t outlen)
 
 static void allocate_lz4(void)
 {
-	big_oops_buf_sz = LZ4_compressBound(psinfo->bufsize);
+	big_oops_buf_sz = LZ4_COMPRESSBOUND(psinfo->bufsize);
 	big_oops_buf = kmalloc(big_oops_buf_sz, GFP_KERNEL);
 	if (big_oops_buf) {
 		workspace = kmalloc(LZ4_MEM_COMPRESS, GFP_KERNEL);

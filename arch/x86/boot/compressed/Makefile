@@ -28,6 +28,13 @@ targets := vmlinux vmlinux.bin vmlinux.bin.gz vmlinux.bin.bz2 vmlinux.bin.lzma \
 KBUILD_CFLAGS := -m$(BITS) -D__KERNEL__ $(LINUX_INCLUDE) -O2
 KBUILD_CFLAGS += -fno-strict-aliasing $(call cc-option, -fPIE, -fPIC)
 KBUILD_CFLAGS += -DDISABLE_BRANCH_PROFILING
+# decompress_unlz4.c builds the vendored LZ4 sources, which include a few
+# ISO C headers -nostdinc drops.
+KBUILD_CFLAGS += -I$(srctree)/lib/lz4/freestanding
+# The vendored sources need C11 and are exempt from
+# -Wdeclaration-after-statement; see lib/lz4/Makefile.
+KBUILD_CFLAGS += -std=gnu11
+KBUILD_CFLAGS += $(call cc-disable-warning,declaration-after-statement)
 cflags-$(CONFIG_X86_32) := -march=i386
 cflags-$(CONFIG_X86_64) := -mcmodel=small
 KBUILD_CFLAGS += $(cflags-y)
