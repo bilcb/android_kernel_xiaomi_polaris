@@ -25,6 +25,14 @@ KBUILD_CFLAGS := $(filter-out -fstack-protector, $(KBUILD_CFLAGS))
 KBUILD_CFLAGS := $(LINUXINCLUDE) $(KBUILD_CFLAGS) -D__KERNEL__ \
 	-DBOOT_HEAP_SIZE=$(BOOT_HEAP_SIZE) -D"VMLINUX_LOAD_ADDRESS_ULL=$(VMLINUX_LOAD_ADDRESS)ull"
 
+# decompress_unlz4.c builds the vendored LZ4 sources, which include a few
+# ISO C headers -nostdinc drops.
+KBUILD_CFLAGS += -I$(srctree)/lib/lz4/freestanding
+# The vendored sources need C11 and are exempt from
+# -Wdeclaration-after-statement; see lib/lz4/Makefile.
+KBUILD_CFLAGS += -std=gnu11
+KBUILD_CFLAGS += $(call cc-disable-warning,declaration-after-statement)
+
 KBUILD_AFLAGS := $(LINUXINCLUDE) $(KBUILD_AFLAGS) -D__ASSEMBLY__ \
 	-DBOOT_HEAP_SIZE=$(BOOT_HEAP_SIZE) \
 	-DKERNEL_ENTRY=$(VMLINUX_ENTRY_ADDRESS)

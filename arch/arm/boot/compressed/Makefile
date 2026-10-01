@@ -99,6 +99,13 @@ clean-files += piggy_data lib1funcs.S ashldi3.S bswapsdi2.S \
 		$(libfdt) $(libfdt_hdrs) hyp-stub.S
 
 KBUILD_CFLAGS += -DDISABLE_BRANCH_PROFILING
+# decompress_unlz4.c builds the vendored LZ4 sources, which include a few
+# ISO C headers -nostdinc drops.
+KBUILD_CFLAGS += -I$(srctree)/lib/lz4/freestanding
+# The vendored sources need C11 and are exempt from
+# -Wdeclaration-after-statement; see lib/lz4/Makefile.
+KBUILD_CFLAGS += -std=gnu11
+KBUILD_CFLAGS += $(call cc-disable-warning,declaration-after-statement)
 
 ifeq ($(CONFIG_FUNCTION_TRACER),y)
 ORIG_CFLAGS := $(KBUILD_CFLAGS)
